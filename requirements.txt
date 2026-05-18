@@ -1,0 +1,9 @@
+# 가상환경(venv) 활성화 후 설치: pip install -r requirements.txt
+# (--upgrade pip 은 venv 안에서 한 번 실행 권장)
+finance-datareader
+pykrx
+pandas
+numpy
+pyyaml
+tabulate
+matplotlib

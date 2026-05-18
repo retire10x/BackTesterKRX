@@ -1,0 +1,24 @@
+# 백테스트 기간
+period:
+  start_date: "2021-01-01"
+  end_date: "2025-12-31"
+
+# 싱글 종목: 키워드로 후보를 좁힌 뒤 selected_code 1개만 매매
+universe:
+  market: "KOSPI"
+  search_keyword: "삼성"   # "" 이면 시장 전체(후보 목록용)
+  selected_code: "005930"
+
+# 전략
+strategy:
+  interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
+  ma_period: 20
+
+# 매매 비용
+trading_costs:
+  buy_cost: 0.00015
+  sell_cost: 0.0020
+
+# 자산 (한 종목 전액)
+portfolio:
+  initial_cash: 5000000

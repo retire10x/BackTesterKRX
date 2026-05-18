@@ -1,0 +1,28 @@
+# 가상환경 (프로젝트 루트 기준)
+venv/
+.venv/
+
+# 파이썬
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.eggs/
+*.egg-info/
+dist/
+build/
+
+# 도구 / IDE
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+
+# 로컬·비밀
+.env
+.env.*
+
+# 백테스트 생성 그래프·산출물
+output/
