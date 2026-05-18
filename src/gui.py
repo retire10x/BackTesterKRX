@@ -1,8 +1,7 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트는 output/backtest_report.png 를 CTkImage 로 표시(v2.3 줌·툴바 제거, 정적 이미지 복귀).
+차트: output/backtest_report.png → CTkImage (v2.6: 우측 전체 차트 전용, 성과 요약은 좌측 하단).
 엔진: src.metrics.run_backtest_detailed
-실행: 프로젝트 루트에서 인자 없이 `python main.py`
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ import customtkinter as ctk
 from PIL import Image
 
 from src.data_loader import fetch_filtered_universe, load_config
-from src.metrics import run_backtest_detailed
+from src.metrics import BacktestResult, run_backtest_detailed
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
@@ -26,6 +25,24 @@ COL_WEIGHT_LEFT = 1
 COL_WEIGHT_RIGHT = 2
 
 CHART_INNER_PAD = 16
+
+
+def _gui_summary_five_lines(res: BacktestResult) -> str:
+    """성공 시 좌측 패널 전용 5줄 성과 요약(지시서 v2.6)."""
+    d = {row[0]: row[1] for row in res.summary_rows}
+    final = d.get("최종 평가액", "-")
+    tot = d.get("누적 수익률", "-")
+    cagr = d.get("연평균 수익률", "-")
+    mdd = d.get("최대 손실 낙폭", "-")
+    return "\n".join(
+        [
+            f"■ 매매 횟수 : 매수 {res.n_buy}회 / 매도 {res.n_sell}회",
+            f"■ 최종 평가액 : {final}",
+            f"■ 누적 수익률 : {tot}",
+            f"■ 연평균 수익률 : {cagr}",
+            f"■ 최대 손실 낙폭 : {mdd}",
+        ]
+    )
 
 
 def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
@@ -107,7 +124,7 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v2.4 (정적 차트)")
+        self.title("BackTesterKRX v2.6")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -126,19 +143,27 @@ class BacktestGUI(ctk.CTk):
             left, text="입력", font=ctk.CTkFont(size=18, weight="bold")
         ).pack(anchor="w", padx=14, pady=(12, 6))
 
-        ctk.CTkLabel(left, text="시장").pack(anchor="w", padx=14)
+        row_mk = ctk.CTkFrame(left, fg_color="transparent")
+        row_mk.pack(fill="x", padx=14, pady=(0, 6))
+        row_mk.grid_columnconfigure(0, weight=1, uniform="mk")
+        row_mk.grid_columnconfigure(1, weight=1, uniform="mk")
+        mk_l = ctk.CTkFrame(row_mk, fg_color="transparent")
+        mk_l.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        mk_r = ctk.CTkFrame(row_mk, fg_color="transparent")
+        mk_r.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ctk.CTkLabel(mk_l, text="시장").pack(anchor="w")
         self.var_market = ctk.StringVar(value="KOSPI")
         ctk.CTkOptionMenu(
-            left,
+            mk_l,
             values=["KOSPI", "KOSDAQ"],
             variable=self.var_market,
-        ).pack(fill="x", padx=14, pady=(0, 8))
-
-        ctk.CTkLabel(left, text="종목명 키워드 (예: 삼성)").pack(anchor="w", padx=14)
+        ).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(mk_r, text="종목명 키워드").pack(anchor="w")
         self.var_keyword = ctk.StringVar(value="삼성")
-        ctk.CTkEntry(left, textvariable=self.var_keyword).pack(
-            fill="x", padx=14, pady=(0, 4)
+        ctk.CTkEntry(mk_r, textvariable=self.var_keyword).pack(
+            fill="x", pady=(2, 0)
         )
+
         ctk.CTkButton(left, text="종목 검색", command=self._on_search).pack(
             fill="x", padx=14, pady=(0, 6)
         )
@@ -148,7 +173,7 @@ class BacktestGUI(ctk.CTk):
         list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
         self.list_codes = tk.Listbox(
             list_frame,
-            height=9,
+            height=7,
             font=("Segoe UI", 11),
             selectmode=tk.SINGLE,
             activestyle="dotbox",
@@ -171,17 +196,20 @@ class BacktestGUI(ctk.CTk):
             rf, text="주봉", variable=self.var_interval, value="weekly"
         ).pack(side="left")
 
-        ctk.CTkLabel(left, text="시작일 (YYYY-MM-DD)").pack(anchor="w", padx=14)
+        row_dt = ctk.CTkFrame(left, fg_color="transparent")
+        row_dt.pack(fill="x", padx=14, pady=(0, 6))
+        row_dt.grid_columnconfigure(0, weight=1, uniform="dt")
+        row_dt.grid_columnconfigure(1, weight=1, uniform="dt")
+        d0 = ctk.CTkFrame(row_dt, fg_color="transparent")
+        d0.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
+        d1.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ctk.CTkLabel(d0, text="시작일 (YYYY-MM-DD)").pack(anchor="w")
         self.var_start = ctk.StringVar(value="2021-01-01")
-        ctk.CTkEntry(left, textvariable=self.var_start).pack(
-            fill="x", padx=14, pady=(0, 6)
-        )
-
-        ctk.CTkLabel(left, text="종료일 (YYYY-MM-DD)").pack(anchor="w", padx=14)
+        ctk.CTkEntry(d0, textvariable=self.var_start).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(d1, text="종료일 (YYYY-MM-DD)").pack(anchor="w")
         self.var_end = ctk.StringVar(value="2025-12-31")
-        ctk.CTkEntry(left, textvariable=self.var_end).pack(
-            fill="x", padx=14, pady=(0, 6)
-        )
+        ctk.CTkEntry(d1, textvariable=self.var_end).pack(fill="x", pady=(2, 0))
 
         ctk.CTkLabel(left, text="가상 원금 (원)").pack(anchor="w", padx=14)
         self.var_cash = ctk.StringVar(value="5000000")
@@ -189,25 +217,29 @@ class BacktestGUI(ctk.CTk):
             fill="x", padx=14, pady=(0, 6)
         )
 
-        ctk.CTkLabel(left, text="이평선 N").pack(anchor="w", padx=14)
+        row_ma = ctk.CTkFrame(left, fg_color="transparent")
+        row_ma.pack(fill="x", padx=14, pady=(0, 6))
+        row_ma.grid_columnconfigure(0, weight=0)
+        row_ma.grid_columnconfigure(1, weight=1)
+        ma_cell = ctk.CTkFrame(row_ma, fg_color="transparent")
+        ma_cell.grid(row=0, column=0, sticky="nw", padx=(0, 8))
+        ctk.CTkLabel(ma_cell, text="이평선 N").pack(anchor="w")
         self.var_ma = ctk.StringVar(value="20")
-        ctk.CTkEntry(left, textvariable=self.var_ma).pack(
-            fill="x", padx=14, pady=(0, 6)
+        ctk.CTkEntry(ma_cell, width=72, textvariable=self.var_ma).pack(
+            anchor="w", pady=(2, 0)
         )
-
-        ctk.CTkLabel(left, text="장기 추세선 표시 (선택)").pack(anchor="w", padx=14)
-        trend_row = ctk.CTkFrame(left, fg_color="transparent")
-        trend_row.pack(anchor="w", fill="x", padx=14, pady=(0, 10))
+        trend_cell = ctk.CTkFrame(row_ma, fg_color="transparent")
+        trend_cell.grid(row=0, column=1, sticky="e")
         self.var_show_ma120 = ctk.BooleanVar(value=False)
         self.var_show_ma200 = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            trend_row,
-            text="120일선 표시",
+            trend_cell,
+            text="120일선",
             variable=self.var_show_ma120,
-        ).pack(side="left", padx=(0, 16))
+        ).pack(side="left", padx=(0, 10))
         ctk.CTkCheckBox(
-            trend_row,
-            text="200일선 표시",
+            trend_cell,
+            text="200일선",
             variable=self.var_show_ma200,
         ).pack(side="left")
 
@@ -218,43 +250,30 @@ class BacktestGUI(ctk.CTk):
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._on_run,
         )
-        self.btn_run.pack(fill="x", padx=14, pady=(4, 14))
+        self.btn_run.pack(fill="x", padx=14, pady=(8, 8))
+
+        self.text_summary = ctk.CTkTextbox(
+            left,
+            height=128,
+            font=ctk.CTkFont(size=13),
+            wrap="word",
+        )
+        self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
+        self.text_summary.configure(state="disabled")
 
         right = ctk.CTkFrame(self, corner_radius=10)
         right.grid(row=0, column=1, sticky="nsew", padx=(6, 12), pady=(12, 6))
-        right.grid_rowconfigure(1, weight=0)
-        right.grid_rowconfigure(3, weight=1)
+        right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(
-            right, text="결과", font=ctk.CTkFont(size=18, weight="bold")
-        ).grid(row=0, column=0, sticky="w", padx=14, pady=(12, 6))
-
-        self.text_summary = ctk.CTkTextbox(
-            right,
-            height=160,
-            font=ctk.CTkFont(family="Consolas", size=14),
-            wrap="word",
-        )
-        self.text_summary.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
-        self.text_summary.configure(state="disabled")
-
-        ctk.CTkLabel(
-            right,
-            text="그래프 (output/backtest_report.png, 전체 기간)",
-            anchor="w",
-        ).grid(row=2, column=0, sticky="w", padx=14, pady=(4, 4))
-
         self.chart_frame = ctk.CTkFrame(right, fg_color=("gray95", "gray17"))
-        self.chart_frame.grid(
-            row=3, column=0, sticky="nsew", padx=14, pady=(0, 14)
-        )
+        self.chart_frame.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
 
         self.lbl_chart = ctk.CTkLabel(
             self.chart_frame,
-            text="백테스트 실행 후 그래프가 표시됩니다.",
+            text="백테스트 실행 후 차트가 표시됩니다.",
             fg_color="transparent",
         )
         self.lbl_chart.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
@@ -279,7 +298,9 @@ class BacktestGUI(ctk.CTk):
             pady=(0, 10),
         )
 
-        self._set_summary("왼쪽에서 조건을 넣고 「백테스트 실행」을 누르세요.\n")
+        self._set_summary(
+            "「백테스트 실행」 후 이곳에 성과 요약(5줄)이 표시됩니다."
+        )
         self._apply_maximized_geometry()
 
     def _apply_maximized_geometry(self) -> None:
@@ -378,20 +399,16 @@ class BacktestGUI(ctk.CTk):
     def _finish_run(self, res):
         self._busy = False
         self.btn_run.configure(state="normal", text="백테스트 실행")
-        log = "\n".join(res.log_lines) + "\n\n"
         if not res.ok:
             self._last_chart_path = None
             self._img_ref = None
             self.lbl_chart.configure(image=None, text=res.error or "오류")
-            self._set_summary(log + f"오류: {res.error}")
+            self._set_summary(res.error or "알 수 없는 오류")
             self.lbl_status.configure(text="오류로 종료됨.")
             messagebox.showerror("백테스트 실패", res.error or "알 수 없는 오류")
             return
 
-        lines = ["── 성과표 ──\n"]
-        for row in res.summary_rows:
-            lines.append(f"{row[0]:12}  {row[1]}")
-        self._set_summary(log + "\n".join(lines))
+        self._set_summary(_gui_summary_five_lines(res))
 
         self.update_idletasks()
         self._update_chart_image(res.report_path)

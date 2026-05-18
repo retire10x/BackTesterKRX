@@ -49,7 +49,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면 로직은 `src/gui.py` **v2.4** — 정적 PNG·`CTkImage`, 전체화면, 좌:우 = 1:2, 성과표 한글 항목명.)  
+(화면 로직은 `src/gui.py` **v2.6** — 우측 전면 차트·`CTkImage`, 좌측 슬림 입력+실행 버튼 아래 5줄 성과 요약, 좌:우 비율 **1:2** 유지.)  
 검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·N·(선택) 장기 추세선 → **백테스트 실행**.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (watchdog)
@@ -79,7 +79,7 @@ python main.py --list
 python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword 삼성 --code 005930 --ma 20 --ma120 --ma200
 ```
 
-**그래프:** `output/backtest_report.png` — **종가 + (선택) 120·200 장기 이평 + 매매 타점(▲/▼)** + 누적 수익률(2패널).
+**그래프:** `output/backtest_report.png` — **`mplfinance`** **캔들(OHLC)** + **거래량** + **N·(선택) 120·200 이평** + **시가 타점(▲/▼)** + **누적 수익률**(3패널, 비율 7:3:3 가이드).
 
 ## 설정
 

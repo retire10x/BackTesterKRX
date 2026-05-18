@@ -1,6 +1,6 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. matplotlib Figure 는 GUI 임베드·PNG 공용.)
+(GUI/Tkinter 비의존. v2.5: mplfinance 캔들+거래량+이평·시가 타점+수익률 → matplotlib Figure.)
 """
 from __future__ import annotations
 
@@ -9,6 +9,10 @@ import os
 from dataclasses import dataclass
 
 import matplotlib
+
+# PNG/워커스레드: mplfinance가 plt.figure()를 쓰므로 GUI 백엔드보다 먼저 비대화형으로 고정
+matplotlib.use("Agg")
+
 import numpy as np
 import pandas as pd
 from matplotlib.figure import Figure
@@ -25,10 +29,9 @@ from .strategy import add_signals
 WARMUP_DAYS_DAILY = 120
 WARMUP_DAYS_FOR_WEEKLY = 800
 
-# 차트 v2.1: 작은 화살표 + 종가선과 수직 간격(매수 아래·매도 위)
-MARKER_SIZE = 18
-MARKER_LINEWIDTH = 0.28
-MARKER_OFFSET_FRAC = 0.028
+# 차트 v2.5: 캔들 타점 마커 크기
+MARKER_SIZE = 60
+MARKER_LINEWIDTH = 0.35
 
 
 @dataclass
@@ -39,6 +42,8 @@ class BacktestResult:
     report_path: str | None
     log_lines: list[str]
     replay_chart: dict | None = None
+    n_buy: int = 0
+    n_sell: int = 0
 
 
 def normalize_interval(s: str) -> str:
@@ -74,33 +79,36 @@ def metrics_total_cagr_mdd_equity(
     return total_ret, cagr_pct, mdd_pct, ret_pct
 
 
-def _setup_korean_font():
-    for font in ("Malgun Gothic", "AppleGothic", "NanumGothic", "DejaVu Sans"):
-        try:
-            matplotlib.rcParams["font.family"] = font
-            matplotlib.rcParams["axes.unicode_minus"] = False
-            return
-        except Exception:
-            continue
-    matplotlib.rcParams["axes.unicode_minus"] = False
+def _korean_font_rc() -> dict:
+    """mplfinance·matplotlib 공통: 설치된 한글 고딕 우선(rc에 넣어 make_mpf_style과 동기화)."""
+    from matplotlib import font_manager
+
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    for name in ("Malgun Gothic", "AppleGothic", "NanumGothic", "Nanum Gothic"):
+        if name in installed:
+            return {
+                "font.sans-serif": [name],
+                "font.family": "sans-serif",
+                "axes.unicode_minus": False,
+            }
+    return {"axes.unicode_minus": False}
 
 
-def _price_axis_offset(close_series: pd.Series) -> float:
-    lo = float(close_series.min())
-    hi = float(close_series.max())
-    span = max(hi - lo, 1.0)
-    med = float(close_series.median()) if len(close_series) else span
-    return max(
-        span * MARKER_OFFSET_FRAC,
-        med * 0.0048,
-        span * 0.0065,
-    )
-
-
-def _trend_line_label(bar_label: str, period: int) -> str:
-    if "주" in bar_label:
-        return f"{period}봉 장기 이평"
-    return f"{period}일 장기 이평"
+def _trade_price_series_at_open(
+    trades: list[dict], index: pd.DatetimeIndex
+) -> pd.Series:
+    """체결 봉 인덱스에 익봉 시가(y) — 캔들 시가 위치와 일치."""
+    s = pd.Series(np.nan, index=index, dtype=float)
+    for t in trades:
+        ts = pd.Timestamp(t["date"])
+        if ts not in s.index:
+            pos = index.get_indexer([ts], method="nearest")
+            if pos.size and pos[0] >= 0:
+                ts = index[int(pos[0])]
+            else:
+                continue
+        s.loc[ts] = float(t["price"])
+    return s
 
 
 def make_backtest_figure(
@@ -112,95 +120,126 @@ def make_backtest_figure(
     ret_series: pd.Series,
     trend_ma: dict[int, pd.Series] | None = None,
 ) -> Figure:
-    """백테스트 2패널 Figure (PNG 저장·Tk 임베드 공용)."""
-    _setup_korean_font()
+    """캔들(OHLC)+거래량+전략·장기 이평+시가 타점+누적 수익률 (mplfinance)."""
+    import matplotlib.pyplot as plt
+    import mplfinance as mpf
+
+    font_rc = _korean_font_rc()
+    plt.rcParams.update(font_rc)
     buys = [t for t in trades if t["side"] == "BUY"]
     sells = [t for t in trades if t["side"] == "SELL"]
-    close = sim["Close"].astype(float)
-    off = _price_axis_offset(close)
 
-    fig = Figure(figsize=(12, 8))
-    ax_price, ax_ret = fig.subplots(
-        2,
-        1,
-        sharex=True,
-        gridspec_kw={"height_ratios": [2.0, 1.0]},
-    )
+    odata = sim[["Open", "High", "Low", "Close"]].copy().astype(float)
+    if "Volume" in sim.columns:
+        odata["Volume"] = pd.to_numeric(sim["Volume"], errors="coerce").fillna(0.0)
+    else:
+        odata["Volume"] = 0.0
 
-    ax_price.plot(
-        sim.index,
-        close.values,
-        color="#333333",
-        linewidth=1.2,
-        label="종가",
-        zorder=3,
-    )
+    idx = odata.index
+    ma_col = f"MA{ma_n}"
+    if ma_col in sim.columns:
+        ma_primary = sim[ma_col].reindex(idx).astype(float)
+    else:
+        ma_primary = odata["Close"].rolling(ma_n, min_periods=1).mean()
+
+    addplots: list = [
+        mpf.make_addplot(ma_primary, panel=0, color="#263238", width=1.05),
+    ]
     if trend_ma:
-        long_styles = (
-            (120, "#ff6f00", 0.95),
-            (200, "#6a1b9a", 0.95),
-        )
-        for period, color, lw in long_styles:
+        for period, color in ((120, "#ff6f00"), (200, "#6a1b9a")):
             if period not in trend_ma:
                 continue
-            ser = trend_ma[period].astype(float)
-            ax_price.plot(
-                sim.index,
-                ser.values,
-                color=color,
-                linewidth=lw,
-                alpha=0.88,
-                label=_trend_line_label(bar_label, period),
-                zorder=2,
+            ser = trend_ma[period].reindex(idx).astype(float)
+            if not ser.notna().any():
+                continue
+            addplots.append(
+                mpf.make_addplot(ser, panel=0, color=color, width=0.95),
             )
-    if buys:
-        y_buy = [t["price"] - off for t in buys]
-        ax_price.scatter(
-            [t["date"] for t in buys],
-            y_buy,
-            marker="^",
-            s=MARKER_SIZE,
-            c="#d32f2f",
-            edgecolors="#7f1010",
-            linewidths=MARKER_LINEWIDTH,
-            zorder=5,
-            label="매수 체결 (익봉 시가)",
+
+    buy_y = _trade_price_series_at_open(buys, idx)
+    sell_y = _trade_price_series_at_open(sells, idx)
+    ms = max(8.0, min(22.0, MARKER_SIZE / 2.5))
+    # mplfinance: y가 전부 NaN이면 내부 yd가 빈 배열이 되어 nanmax에서 실패함 → 거래 있을 때만 산점도 추가
+    if buys and buy_y.notna().any():
+        addplots.append(
+            mpf.make_addplot(
+                buy_y,
+                type="scatter",
+                marker="^",
+                markersize=ms,
+                color="#c62828",
+                edgecolors="#3e2723",
+                linewidths=MARKER_LINEWIDTH,
+                panel=0,
+            )
         )
-    if sells:
-        y_sell = [t["price"] + off for t in sells]
-        ax_price.scatter(
-            [t["date"] for t in sells],
-            y_sell,
-            marker="v",
-            s=MARKER_SIZE,
-            c="#1565c0",
-            edgecolors="#0a2f5c",
-            linewidths=MARKER_LINEWIDTH,
-            zorder=5,
-            label="매도 체결 (익봉 시가)",
+    if sells and sell_y.notna().any():
+        addplots.append(
+            mpf.make_addplot(
+                sell_y,
+                type="scatter",
+                marker="v",
+                markersize=ms,
+                color="#0d47a1",
+                edgecolors="#01579b",
+                linewidths=MARKER_LINEWIDTH,
+                panel=0,
+            )
         )
-    ax_price.set_ylabel("가격 (원)")
-    ax_price.grid(True, linestyle="--", alpha=0.45)
-    ax_price.legend(loc="upper left", fontsize=8, framealpha=0.92)
-    ax_price.set_title(
-        f"{name} · {bar_label} · {ma_n}봉 이평 | 주가·매매 타점",
-        fontsize=13,
-        pad=10,
+
+    ret_aligned = ret_series.reindex(idx).astype(float)
+    if not ret_aligned.notna().any():
+        ret_aligned = pd.Series(0.0, index=idx)
+    addplots.append(
+        mpf.make_addplot(
+            ret_aligned,
+            panel=2,
+            color="royalblue",
+            width=1.6,
+            ylabel="누적 수익률 (%)",
+        )
     )
 
-    ax_ret.plot(
-        sim.index,
-        ret_series.values,
-        color="royalblue",
-        linewidth=2,
-        label="누적 수익률 (%)",
+    mc = mpf.make_marketcolors(
+        up="#e53935",
+        down="#1e88e5",
+        edge={"up": "#e53935", "down": "#1e88e5"},
+        wick={"up": "#e53935", "down": "#1e88e5"},
+        volume={"up": "#e53935", "down": "#1e88e5"},
     )
-    ax_ret.set_xlabel("날짜 (봉 기준)")
-    ax_ret.set_ylabel("수익률 (%)")
-    ax_ret.grid(True, linestyle="--", alpha=0.45)
-    ax_ret.legend(loc="upper left", fontsize=9)
+    style = mpf.make_mpf_style(
+        base_mpf_style="charles",
+        marketcolors=mc,
+        gridstyle="--",
+        gridcolor="#cfcfcf",
+        rc=font_rc,
+    )
 
-    fig.tight_layout()
+    trend_note = ""
+    if trend_ma:
+        unit = "봉" if "주" in bar_label else "일"
+        trend_note = " · " + "·".join(f"{p}{unit}" for p in sorted(trend_ma))
+    unit_ma = "봉" if "주" in bar_label else "일"
+    title = (
+        f"{name} · {bar_label} · 캔들+거래량+수익률 · "
+        f"{ma_n}{unit_ma} 이평{trend_note}"
+    )
+
+    fig, _axlist = mpf.plot(
+        odata,
+        type="candle",
+        style=style,
+        addplot=addplots,
+        volume=True,
+        panel_ratios=(7, 3, 3),
+        returnfig=True,
+        figsize=(12, 10),
+        title=title,
+    )
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass
     return fig
 
 
@@ -369,5 +408,12 @@ def run_backtest_detailed(
     lines.append(f"[그래프] {out_png} (매수 {n_buy}회 / 매도 {n_sell}회)")
 
     return BacktestResult(
-        True, None, summary, out_png, lines, replay_chart=replay_chart
+        True,
+        None,
+        summary,
+        out_png,
+        lines,
+        replay_chart=replay_chart,
+        n_buy=n_buy,
+        n_sell=n_sell,
     )

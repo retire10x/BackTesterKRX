@@ -7,5 +7,6 @@ numpy
 pyyaml
 tabulate
 matplotlib
+mplfinance>=0.12.10b0
 customtkinter>=5.2.0
 watchdog>=4.0.0
