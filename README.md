@@ -5,6 +5,25 @@
 
 **싱글 종목**(500만 원 전액), **일봉/주봉**, 익 **다음 봉 시가** 체결.
 
+**시작점:** 프로젝트 루트의 **`main.py`** — 인자 없으면 **GUI**, `--list` 등이 있으면 **CLI**. 개발 시 GUI 자동 재시작은 **`python main.py --watch`** (또는 `-w`).
+
+## 폴더 구조 (요약)
+
+```
+BackTesterKRX/
+├── src/
+│   ├── __init__.py
+│   ├── gui.py          # 창·입력·성적표·차트 액자 (UI만)
+│   ├── data_loader.py  # 종목·OHLCV·주봉 집계·YAML 로드
+│   ├── strategy.py     # 골든/데드크로스 시그널
+│   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
+│   └── metrics.py      # 성과 지표·PNG 보고서·run_backtest_detailed
+├── output/             # backtest_report.png
+├── config/             # settings.yaml (기본 설정)
+├── main.py             # GUI/CLI 공통 진입
+└── requirements.txt
+```
+
 ## 가상환경 (필수)
 
 프로젝트 루트 `D:\develop\BackTesterKRX` 에서 **`venv`** 를 쓴다. 전역 `pip` 에 설치하지 않는다.
@@ -24,30 +43,55 @@ pip install -r requirements.txt
 **실행 스크립트 정책 오류 시 (관리자/사용자 설정에 따라):**  
 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` 후 다시 활성화.
 
-## 실행
-
-활성화된 `venv` 안에서:
+## 실행 (GUI — 권장)
 
 ```powershell
 python main.py
 ```
 
-**주봉 예:** `python main.py --interval weekly`
+(화면 로직은 `src/gui.py` **v2.4** — 정적 PNG·`CTkImage`, 전체화면, 좌:우 = 1:2, 성과표 한글 항목명.)  
+검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·N·(선택) 장기 추세선 → **백테스트 실행**.
 
-**후보 목록만:**
+### GUI 개발용 — 저장 시 창 자동 재시작 (watchdog)
+
+`src/` 또는 루트 **`main.py`** 를 저장할 때마다 GUI 프로세스를 끊고 다시 띄웁니다. **일반 사용은 위의 `python main.py` 만 쓰면 됩니다.**
+
+```powershell
+pip install -r requirements.txt
+python main.py --watch
+```
+
+- 터미널에는 `[watch] 코드 변경 감지 ...` 가 찍힙니다.
+- **CLI**(`--list` 등)와 `--watch` 는 **동시에 쓸 수 없습니다.**
+- 종료: GUI 창을 닫거나, 터미널에서 **Ctrl+C**.
+
+## 실행 (CLI)
 
 ```powershell
 python main.py --list
 ```
 
+**후보만 출력:** 위와 동일.
+
 **CLI로 YAML 덮어쓰기 (예):**
 
 ```powershell
-python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword 삼성 --code 005930 --ma 20
+python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword 삼성 --code 005930 --ma 20 --ma120 --ma200
 ```
 
-**그래프:** `output/backtest_report.png` — **종가 + 매매 타점(빨간 ▲ / 파란 ▼)** + 누적 수익률(2패널).
+**그래프:** `output/backtest_report.png` — **종가 + (선택) 120·200 장기 이평 + 매매 타점(▲/▼)** + 누적 수익률(2패널).
 
 ## 설정
 
-`config/settings.yaml` — `period`, `universe`, `strategy.interval` (`daily` / `weekly`), `strategy.ma_period`, 비용, `portfolio.initial_cash`.
+`config/settings.yaml` — `period`, `universe`, `strategy.interval`, `strategy.ma_period`, **`strategy.show_ma120` / `strategy.show_ma200`** (차트 장기선), 비용, `portfolio.initial_cash`.
+
+## 소스 역할 (파일별)
+
+| 경로 | 역할 |
+|------|------|
+| `main.py` | 인자 없음 → GUI; `--watch` → GUI+코드 변경 시 재시작; 그 외 → CLI |
+| `src/gui.py` | CustomTkinter UI만 |
+| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config` |
+| `src/strategy.py` | 이평 돌파 시그널 |
+| `src/simulator.py` | 익봉 시가 체결 시뮬 |
+| `src/metrics.py` | 누적·CAGR·MDD, PNG, `run_backtest_detailed` |

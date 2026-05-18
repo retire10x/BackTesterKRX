@@ -13,6 +13,9 @@ universe:
 strategy:
   interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
   ma_period: 20
+  # 장기 추세선 (차트 PNG에 겹침, v2.2) — 주봉일 때는 120·200「봉」이평
+  show_ma120: false
+  show_ma200: false
 
 # 매매 비용
 trading_costs:

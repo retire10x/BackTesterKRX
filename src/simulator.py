@@ -1,77 +1,64 @@
+"""
+익봉 시가 체결 시뮬레이션. GUI 비의존.
+"""
+from __future__ import annotations
+
 import math
 
 import pandas as pd
 
 
-class PortfolioSimulator:
-    def __init__(self, config):
-        self.initial_cash = config["portfolio"]["initial_cash"]
-        self.buy_cost = config["trading_costs"]["buy_cost"]
-        self.sell_cost = config["trading_costs"]["sell_cost"]
+def simulate_single(
+    df: pd.DataFrame,
+    start_date: str,
+    initial: float,
+    buy_cost: float,
+    sell_cost: float,
+):
+    """봉 종가에서 신호 확정 → 다음 봉 시가 체결. 전액 매수/전액 매도.
+    반환: (결과 DF, 체결 목록) 또는 None."""
+    start_ts = pd.Timestamp(start_date)
+    d = df.loc[df.index >= start_ts].copy()
+    if d.empty or len(d) < 2:
+        return None
 
-    def run_backtest(self, df, start_date):
-        """당일 종가 신호 -> 익일 시가 체결 모델 시뮬레이션"""
-        df = df.loc[start_date:].copy()
-        if df.empty:
-            return None
+    past = df.loc[df.index < start_ts]
+    pending = int(past["Signal"].iloc[-1]) if len(past) else 0
 
-        cash = self.initial_cash
-        shares = 0
-        position = 0
-        pending_signal = 0
+    cash = float(initial)
+    shares = 0
+    position = 0
+    equity = []
+    trades: list[dict] = []
 
-        asset_history = []
-        trades = []
+    for i in range(len(d)):
+        o = d["Open"].iloc[i]
+        cl = d["Close"].iloc[i]
+        sig = int(d["Signal"].iloc[i])
 
-        for i in range(len(df)):
-            current_date = df.index[i]
-            open_price = df["Open"].iloc[i]
-            close_price = df["Close"].iloc[i]
-            today_signal = df["Signal"].iloc[i]
-
-            if pending_signal == 1 and position == 0:
-                if (
-                    pd.notna(open_price)
-                    and open_price > 0
-                    and cash > 0
-                ):
-                    shares = math.floor(
-                        cash / (open_price * (1 + self.buy_cost))
-                    )
-                    if shares > 0:
-                        exec_money = shares * open_price
-                        fee = exec_money * self.buy_cost
-                        cash -= exec_money + fee
-                        position = 1
-                        trades.append(
-                            {
-                                "Date": current_date,
-                                "Type": "BUY",
-                                "Price": open_price,
-                                "Shares": shares,
-                            }
-                        )
-
-            elif pending_signal == -1 and position == 1:
-                if pd.notna(open_price) and open_price > 0 and shares > 0:
-                    exec_money = shares * open_price
-                    fee_and_tax = exec_money * self.sell_cost
-                    cash += exec_money - fee_and_tax
+        if pending == 1 and position == 0:
+            if pd.notna(o) and o > 0 and cash > 0:
+                sh = math.floor(cash / (o * (1 + buy_cost)))
+                if sh > 0:
+                    cash -= sh * o * (1 + buy_cost)
+                    position = 1
+                    shares = sh
                     trades.append(
-                        {
-                            "Date": current_date,
-                            "Type": "SELL",
-                            "Price": open_price,
-                            "Shares": shares,
-                        }
+                        {"date": d.index[i], "side": "BUY", "price": float(o)}
                     )
-                    shares = 0
-                    position = 0
+        elif pending == -1 and position == 1:
+            if pd.notna(o) and o > 0 and shares > 0:
+                cash += shares * o * (1 - sell_cost)
+                trades.append(
+                    {"date": d.index[i], "side": "SELL", "price": float(o)}
+                )
+                shares = 0
+                position = 0
 
-            total_asset = cash + (shares * close_price)
-            asset_history.append(total_asset)
+        eq = cash + shares * (cl if pd.notna(cl) else 0)
+        equity.append(eq)
+        pending = sig
 
-            pending_signal = today_signal
-
-        df["Total_Asset"] = asset_history
-        return df, trades
+    out = d.copy()
+    out["Equity"] = equity
+    return out, trades

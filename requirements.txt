@@ -7,3 +7,5 @@ numpy
 pyyaml
 tabulate
 matplotlib
+customtkinter>=5.2.0
+watchdog>=4.0.0
