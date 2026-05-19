@@ -20,11 +20,16 @@ from src.metrics import BacktestResult, run_backtest_detailed
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
 
-# --- [유저 조정] 좌우 패널 가로 비율 (왼쪽 : 오른쪽) ---
-COL_WEIGHT_LEFT = 1
-COL_WEIGHT_RIGHT = 2
+# ==========================================
+# [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
+# ==========================================
+FIXED_PANEL_H = 780   # 좌/우 패널의 고정 세로 높이
 
-CHART_INNER_PAD = 16
+FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
+FIXED_RIGHT_W = 1050  # 오른쪽 결과 패널의 고정 가로 폭
+
+FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
+FIXED_CHART_H = 520   # 실제 캔들 차트 이미지의 고정 세로 높이
 
 
 def _gui_summary_five_lines(res: BacktestResult) -> str:
@@ -132,12 +137,17 @@ class BacktestGUI(ctk.CTk):
         self._last_chart_path: str | None = None
         self._chart_resize_after_id: str | None = None
 
-        self.grid_columnconfigure(0, weight=COL_WEIGHT_LEFT)
-        self.grid_columnconfigure(1, weight=COL_WEIGHT_RIGHT)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=0)
+        self.grid_rowconfigure(0, weight=0)
 
-        left = ctk.CTkFrame(self, corner_radius=10)
-        left.grid(row=0, column=0, sticky="nsew", padx=(12, 6), pady=(12, 6))
+        left = ctk.CTkFrame(
+            self, corner_radius=10, width=FIXED_LEFT_W, height=FIXED_PANEL_H
+        )  # 🎯 가로 320, 세로 780 고정
+        left.grid(
+            row=0, column=0, sticky="nw", padx=(12, 6), pady=(12, 6)
+        )  # sticky에서 nsew를 빼고 nw(좌측상단 정렬)로 변경
+        left.grid_propagate(False)  # 중요: 내부 컴포넌트 때문에 프레임 크기가 변하는 걸 막음
 
         ctk.CTkLabel(
             left, text="입력", font=ctk.CTkFont(size=18, weight="bold")
@@ -261,13 +271,19 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
         self.text_summary.configure(state="disabled")
 
-        right = ctk.CTkFrame(self, corner_radius=10)
-        right.grid(row=0, column=1, sticky="nsew", padx=(6, 12), pady=(12, 6))
+        right = ctk.CTkFrame(self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_PANEL_H)
+        right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
+        right.grid_propagate(False)
         right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        self.chart_frame = ctk.CTkFrame(right, fg_color=("gray95", "gray17"))
-        self.chart_frame.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
+        self.chart_frame = ctk.CTkFrame(
+            right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
+        )  # 🎯 가로 1020, 세로 520 고정
+        self.chart_frame.grid(
+            row=3, column=0, sticky="nw", padx=14, pady=(0, 14)
+        )  # sticky를 nw로 변경
+        self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
 
@@ -337,24 +353,18 @@ class BacktestGUI(ctk.CTk):
         self._last_chart_path = image_path
         try:
             self.chart_frame.update_idletasks()
-            fw = self.chart_frame.winfo_width() - CHART_INNER_PAD
-            fh = self.chart_frame.winfo_height() - CHART_INNER_PAD
-            if fw < 80:
-                fw = 800
-            if fh < 80:
-                fh = 500
+            # 💡 실시간 계산 식을 모두 지우고, 최상단 전역 변수 값으로 강제 고정합니다.
+            fw = FIXED_CHART_W
+            fh = FIXED_CHART_H
 
             pil_img = Image.open(image_path)
-            iw, ih = pil_img.size
-            scale = min(fw / max(iw, 1), fh / max(ih, 1))
-            nw = max(1, int(iw * scale))
-            nh = max(1, int(ih * scale))
-            resized = pil_img.resize((nw, nh), Image.Resampling.LANCZOS)
+
+            resized = pil_img.resize((fw, fh), Image.Resampling.LANCZOS)
 
             self._img_ref = ctk.CTkImage(
                 light_image=resized,
                 dark_image=resized,
-                size=(nw, nh),
+                size=(fw, fh),
             )
             self.lbl_chart.configure(image=self._img_ref, text="")
         except Exception as e:

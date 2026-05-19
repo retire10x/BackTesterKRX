@@ -1,11 +1,12 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v2.5: mplfinance 캔들+거래량+이평·시가 타점+수익률 → matplotlib Figure.)
+(GUI/Tkinter 비의존. v2.6: 차트 저장 시 tight bbox/pad + mplfinance tight_layout·scale_padding으로 도화지 여백 압축.)
 """
 from __future__ import annotations
 
 import datetime
 import os
+import warnings
 from dataclasses import dataclass
 
 import matplotlib
@@ -94,6 +95,34 @@ def _korean_font_rc() -> dict:
     return {"axes.unicode_minus": False}
 
 
+def _chart_rc_params() -> dict:
+    """mplfinance·matplotlib 공통: 한글 + 축 데이터 여백 최소화(캔들이 좌우로 붙도록)."""
+    return {
+        **_korean_font_rc(),
+        "axes.xmargin": 0.02,
+        "axes.ymargin": 0.02,
+    }
+
+
+def _save_report_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
+    """보고서 PNG: 저장 직전 tight_layout + bbox/pad로 상단·사방 흰 여백 최소화."""
+    dn = os.path.dirname(out_path)
+    if dn:
+        os.makedirs(dn, exist_ok=True)
+    # mplfinance 축은 수동 배치라 tight_layout 호환 경고가 날 수 있음 → 무시하고 시도
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=".*not compatible with tight_layout.*",
+            category=UserWarning,
+        )
+        try:
+            fig.tight_layout()
+        except Exception:
+            pass
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+
+
 def _trade_price_series_at_open(
     trades: list[dict], index: pd.DatetimeIndex
 ) -> pd.Series:
@@ -124,8 +153,8 @@ def make_backtest_figure(
     import matplotlib.pyplot as plt
     import mplfinance as mpf
 
-    font_rc = _korean_font_rc()
-    plt.rcParams.update(font_rc)
+    chart_rc = _chart_rc_params()
+    plt.rcParams.update(chart_rc)
     buys = [t for t in trades if t["side"] == "BUY"]
     sells = [t for t in trades if t["side"] == "SELL"]
 
@@ -212,7 +241,7 @@ def make_backtest_figure(
         marketcolors=mc,
         gridstyle="--",
         gridcolor="#cfcfcf",
-        rc=font_rc,
+        rc=chart_rc,
     )
 
     trend_note = ""
@@ -235,11 +264,9 @@ def make_backtest_figure(
         returnfig=True,
         figsize=(12, 10),
         title=title,
+        tight_layout=True,
+        scale_padding=0.88,
     )
-    try:
-        fig.tight_layout()
-    except Exception:
-        pass
     return fig
 
 
@@ -256,10 +283,7 @@ def save_backtest_report_png(
     fig = make_backtest_figure(
         sim, trades, name, bar_label, ma_n, ret_series, trend_ma=trend_ma
     )
-    dn = os.path.dirname(out_path)
-    if dn:
-        os.makedirs(dn, exist_ok=True)
-    fig.savefig(out_path, dpi=300)
+    _save_report_png(fig, out_path)
 
 
 def run_backtest_detailed(
@@ -386,10 +410,7 @@ def run_backtest_detailed(
     fig = make_backtest_figure(
         sim, trades, name, bar_label, ma_n, ret_series, trend_ma=trend_plot
     )
-    dn = os.path.dirname(out_png)
-    if dn:
-        os.makedirs(dn, exist_ok=True)
-    fig.savefig(out_png, dpi=300)
+    _save_report_png(fig, out_png)
 
     replay_chart: dict | None = None
     if embed_figure:
