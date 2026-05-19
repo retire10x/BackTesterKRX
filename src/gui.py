@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (v2.7: 차트 지표 캔들·거래량·수익률 체크 토글).
+차트: output/backtest_report.png → CTkImage (v2.9: 차트 높이 확장·매매 이평 라디오·추세선 6종).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -15,7 +15,12 @@ import customtkinter as ctk
 from PIL import Image
 
 from src.data_loader import fetch_filtered_universe, load_config
-from src.metrics import BacktestResult, run_backtest_detailed
+from src.metrics import (
+    BacktestResult,
+    TREND_MA_PERIODS,
+    run_backtest_detailed,
+    trend_overlay_flags_from_strategy,
+)
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
@@ -29,7 +34,7 @@ FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
-FIXED_CHART_H = 520   # 실제 캔들 차트 이미지의 고정 세로 높이
+FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
 
 
 def _gui_summary_five_lines(res: BacktestResult) -> str:
@@ -70,11 +75,11 @@ def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
     if st.get("interval"):
         ui.var_interval.set(str(st["interval"]).lower())
     if st.get("ma_period") is not None:
-        ui.var_ma.set(str(int(st["ma_period"])))
-    if "show_ma120" in st:
-        ui.var_show_ma120.set(bool(st["show_ma120"]))
-    if "show_ma200" in st:
-        ui.var_show_ma200.set(bool(st["show_ma200"]))
+        mp = int(st["ma_period"])
+        ui.var_ma_period.set(str(mp) if mp in (5, 10, 20) else "20")
+    tf = trend_overlay_flags_from_strategy(st)
+    for p in TREND_MA_PERIODS:
+        ui._trend_vars[p].set(tf[p])
     if "show_chart_candle" in st:
         ui.var_show_candle.set(bool(st["show_chart_candle"]))
     if "show_chart_volume" in st:
@@ -104,10 +109,13 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
     interval = ui.var_interval.get()
     cfg.setdefault("strategy", {})["interval"] = interval
     try:
-        cfg.setdefault("strategy", {})["ma_period"] = int(ui.var_ma.get())
+        ma_n = int(ui.var_ma_period.get())
     except ValueError:
-        messagebox.showerror("오류", "이평선 N 은 정수여야 합니다.")
+        ma_n = 20
+    if ma_n not in (5, 10, 20):
+        messagebox.showerror("오류", "매매 기준 이평은 5·10·20일선 중 하나여야 합니다.")
         return None
+    cfg.setdefault("strategy", {})["ma_period"] = ma_n
 
     start = ui.var_start.get().strip()
     end = ui.var_end.get().strip()
@@ -126,8 +134,11 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
         return None
     cfg.setdefault("portfolio", {})["initial_cash"] = cash
 
-    cfg.setdefault("strategy", {})["show_ma120"] = bool(ui.var_show_ma120.get())
-    cfg.setdefault("strategy", {})["show_ma200"] = bool(ui.var_show_ma200.get())
+    for p in TREND_MA_PERIODS:
+        cfg.setdefault("strategy", {})[f"show_trend_ma{p}"] = bool(ui._trend_vars[p].get())
+    for legacy in ("show_ma120", "show_ma200"):
+        cfg.get("strategy", {}).pop(legacy, None)
+
     cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
     cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
     cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
@@ -138,7 +149,7 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v2.7")
+        self.title("BackTesterKRX v2.9")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -236,31 +247,46 @@ class BacktestGUI(ctk.CTk):
             fill="x", padx=14, pady=(0, 6)
         )
 
+        self._trend_vars: dict[int, ctk.BooleanVar] = {
+            p: ctk.BooleanVar(value=False) for p in TREND_MA_PERIODS
+        }
+
         row_ma = ctk.CTkFrame(left, fg_color="transparent")
         row_ma.pack(fill="x", padx=14, pady=(0, 6))
-        row_ma.grid_columnconfigure(0, weight=0)
-        row_ma.grid_columnconfigure(1, weight=1)
-        ma_cell = ctk.CTkFrame(row_ma, fg_color="transparent")
-        ma_cell.grid(row=0, column=0, sticky="nw", padx=(0, 8))
-        ctk.CTkLabel(ma_cell, text="이평선 N").pack(anchor="w")
-        self.var_ma = ctk.StringVar(value="20")
-        ctk.CTkEntry(ma_cell, width=72, textvariable=self.var_ma).pack(
-            anchor="w", pady=(2, 0)
-        )
-        trend_cell = ctk.CTkFrame(row_ma, fg_color="transparent")
-        trend_cell.grid(row=0, column=1, sticky="e")
-        self.var_show_ma120 = ctk.BooleanVar(value=False)
-        self.var_show_ma200 = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(
-            trend_cell,
-            text="120일선",
-            variable=self.var_show_ma120,
-        ).pack(side="left", padx=(0, 10))
-        ctk.CTkCheckBox(
-            trend_cell,
-            text="200일선",
-            variable=self.var_show_ma200,
-        ).pack(side="left")
+        ctk.CTkLabel(row_ma, text="매매 기준 이평선").pack(anchor="w")
+        rf_ma = ctk.CTkFrame(row_ma, fg_color="transparent")
+        rf_ma.pack(fill="x", pady=(4, 0))
+        self.var_ma_period = ctk.StringVar(value="20")
+        for val in ("5", "10", "20"):
+            ctk.CTkRadioButton(
+                rf_ma,
+                text=f"{val}일선",
+                variable=self.var_ma_period,
+                value=val,
+            ).pack(side="left", padx=(0, 14))
+
+        ctk.CTkLabel(
+            left,
+            text="추세선 표시 (차트 오버레이)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(4, 2))
+        trend_grid = ctk.CTkFrame(left, fg_color="transparent")
+        trend_grid.pack(fill="x", padx=14, pady=(0, 6))
+        trend_grid.grid_columnconfigure((0, 1, 2), weight=1)
+        trend_positions = [
+            (5, 0, 0),
+            (10, 0, 1),
+            (20, 0, 2),
+            (60, 1, 0),
+            (120, 1, 1),
+            (200, 1, 2),
+        ]
+        for p, r, c in trend_positions:
+            ctk.CTkCheckBox(
+                trend_grid,
+                text=f"{p}일선",
+                variable=self._trend_vars[p],
+            ).grid(row=r, column=c, sticky="w", padx=4, pady=2)
 
         ctk.CTkLabel(
             left,
@@ -314,7 +340,7 @@ class BacktestGUI(ctk.CTk):
 
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
-        )  # 🎯 가로 1020, 세로 520 고정
+        )  # 가로 1020 × 세로 FIXED_CHART_H
         self.chart_frame.grid(
             row=0, column=0, sticky="nw", padx=14, pady=(14, 14)
         )

@@ -13,7 +13,7 @@
 BackTesterKRX/
 ├── src/
 │   ├── __init__.py
-│   ├── gui.py          # 창·입력·성적표·차트·지표 체크(v2.7)
+│   ├── gui.py          # 창·입력·차트(v2.9: 높이730·이평 라디오·추세 6종)
 │   ├── data_loader.py  # 종목·OHLCV·주봉 집계·YAML 로드
 │   ├── strategy.py     # 골든/데드크로스 시그널
 │   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
@@ -49,8 +49,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면 로직은 `src/gui.py` **v2.7** — 차트 지표 **캔들·거래량·수익률** 체크 토글, 우측 차트 `CTkImage`, 좌측 실행 버튼 아래 5줄 성과 요약.)  
-검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·N·(선택) 장기 추세선·**차트 지표** → **백테스트 실행**.
+(화면 로직은 `src/gui.py` **v2.9** — 우측 차트 세로 **730px**, 매매 이평 **5·10·20 라디오**, 추세선 오버레이 **6종**, 캔들·거래량·수익률 체크.)  
+검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·**매매 이평(5/10/20)**·**(선택) 추세선 6종**·차트 지표 → **백테스트 실행**.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (watchdog)
 
@@ -79,11 +79,13 @@ python main.py --list
 python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword 삼성 --code 005930 --ma 20 --ma120 --ma200
 ```
 
-**그래프:** `output/backtest_report.png` — **`mplfinance`** 로 가격(**캔들** 또는 **종가선**)·**(선택) 거래량**·**(선택) 누적 수익률** 패널을 조합(비율: 전체 **5:2:3**, 거래량 끔 **6:4**, 수익률 끔 **7:3**, 가격만 **단일 패널**) + **N·(선택) 120·200 이평** + **시가 타점(▲/▼)**.
+(`--ma120` / `--ma200` 은 YAML 의 `show_trend_ma120` / `show_trend_ma200` 을 켭니다.)
+
+**그래프:** `output/backtest_report.png` — **`mplfinance`** 로 가격(**캔들** 또는 **종가선**)·**(선택) 거래량**·**(선택) 누적 수익률** 패널을 조합(비율: 전체 **5:2:3**, 거래량 끔 **6:4**, 수익률 끔 **7:3**, 가격만 **단일 패널**) + **매매 기준 이평** + **(선택) 추세 이평 오버레이** + **매매 타점(▲ 저가 아래 / ▼ 고가 위)**.
 
 ## 설정
 
-`config/settings.yaml` — `period`, `universe`, `strategy.interval`, `strategy.ma_period`, **`strategy.show_ma120` / `strategy.show_ma200`** (차트 장기선), 비용, `portfolio.initial_cash`.
+`config/settings.yaml` — `period`, `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이), 차트 패널 토글, 비용, `portfolio.initial_cash`.
 
 ## 소스 역할 (파일별)
 

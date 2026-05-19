@@ -1,6 +1,6 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v2.7: 캔들·거래량·수익률 토글 및 동적 panel_ratios; v2.6: PNG 저장 여백 압축.)
+(GUI/Tkinter 비의존. v2.9: 타점 저가/고가 오프셋·패널 간격·추세선 6종·ymargin; v2.7·v2.6 유지.)
 """
 from __future__ import annotations
 
@@ -30,9 +30,21 @@ from .strategy import add_signals
 WARMUP_DAYS_DAILY = 120
 WARMUP_DAYS_FOR_WEEKLY = 800
 
-# 차트 v2.5: 캔들 타점 마커 크기
-MARKER_SIZE = 60
+# 차트 표시용 추세 이평 기간 → 선색 (매매 기준 이평과 겹치면 해당 추세선 스킵)
+TREND_MA_PERIODS = (5, 10, 20, 60, 120, 200)
+TREND_MA_COLORS: dict[int, str] = {
+    5: "#5d4037",
+    10: "#00695c",
+    20: "#558b2f",
+    60: "#f9a825",
+    120: "#ff6f00",
+    200: "#6a1b9a",
+}
+
+# 타점 마커 (캔들과 분리)
+MARKER_SIZE = 20
 MARKER_LINEWIDTH = 0.35
+MARKER_PAD_FRAC = 0.70  # 봉 고저폭 대비 저가 아래·고가 위 오프셋 비율
 
 
 @dataclass
@@ -96,11 +108,11 @@ def _korean_font_rc() -> dict:
 
 
 def _chart_rc_params() -> dict:
-    """mplfinance·matplotlib 공통: 한글 + 축 데이터 여백 최소화(캔들이 좌우로 붙도록)."""
+    """mplfinance·matplotlib 공통: 한글 + 축·세로 여유(지표 간 답답함 완화)."""
     return {
         **_korean_font_rc(),
         "axes.xmargin": 0.02,
-        "axes.ymargin": 0.02,
+        "axes.ymargin": 0.15,
     }
 
 
@@ -123,21 +135,84 @@ def _save_report_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.05)
 
 
-def _trade_price_series_at_open(
-    trades: list[dict], index: pd.DatetimeIndex
+def _trade_marker_y_buy_below_low(
+    buys: list[dict], odata: pd.DataFrame, frac: float = MARKER_PAD_FRAC
 ) -> pd.Series:
-    """체결 봉 인덱스에 익봉 시가(y) — 캔들 시가 위치와 일치."""
-    s = pd.Series(np.nan, index=index, dtype=float)
-    for t in trades:
+    """매수 ▲: 해당 봉 저가 아래로 오프셋."""
+    idx = odata.index
+    low = odata["Low"].astype(float)
+    high = odata["High"].astype(float)
+    rng = (high - low).replace(0.0, np.nan)
+    pad = (rng * frac).fillna(low * 0.003).clip(lower=low * 0.0015)
+    s = pd.Series(np.nan, index=idx, dtype=float)
+    for t in buys:
         ts = pd.Timestamp(t["date"])
         if ts not in s.index:
-            pos = index.get_indexer([ts], method="nearest")
+            pos = idx.get_indexer([ts], method="nearest")
             if pos.size and pos[0] >= 0:
-                ts = index[int(pos[0])]
+                ts = idx[int(pos[0])]
             else:
                 continue
-        s.loc[ts] = float(t["price"])
+        s.loc[ts] = float(low.loc[ts]) - float(pad.loc[ts])
     return s
+
+
+def _trade_marker_y_sell_above_high(
+    sells: list[dict], odata: pd.DataFrame, frac: float = MARKER_PAD_FRAC
+) -> pd.Series:
+    """매도 ▼: 해당 봉 고가 위로 오프셋."""
+    idx = odata.index
+    low = odata["Low"].astype(float)
+    high = odata["High"].astype(float)
+    rng = (high - low).replace(0.0, np.nan)
+    pad = (rng * frac).fillna(high * 0.003).clip(lower=high * 0.0015)
+    s = pd.Series(np.nan, index=idx, dtype=float)
+    for t in sells:
+        ts = pd.Timestamp(t["date"])
+        if ts not in s.index:
+            pos = idx.get_indexer([ts], method="nearest")
+            if pos.size and pos[0] >= 0:
+                ts = idx[int(pos[0])]
+            else:
+                continue
+        s.loc[ts] = float(high.loc[ts]) + float(pad.loc[ts])
+    return s
+
+
+def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> None:
+    """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보."""
+    axes_all = fig.axes
+    n_pairs = len(axes_all) // 2
+    if n_pairs < 2:
+        return
+    pairs: list[tuple] = []
+    for i in range(n_pairs):
+        pri = axes_all[2 * i]
+        twin = axes_all[2 * i + 1] if 2 * i + 1 < len(axes_all) else None
+        pairs.append((pri, twin))
+    meta = []
+    for pri, twin in pairs:
+        pos = pri.get_position()
+        meta.append({"pri": pri, "twin": twin, "pos": pos})
+    meta.sort(key=lambda d: d["pos"].y0)
+    for i in range(len(meta) - 1):
+        lower = meta[i]
+        upper = meta[i + 1]
+        lp = lower["pos"]
+        up = upper["pos"]
+        new_lo_h = lp.height - gap_each
+        new_up_y0 = up.y0 + gap_each
+        new_up_h = up.height - gap_each
+        if new_lo_h <= 0.04 or new_up_h <= 0.04:
+            continue
+        lower["pri"].set_position([lp.x0, lp.y0, lp.width, new_lo_h])
+        if lower["twin"] is not None:
+            lower["twin"].set_position([lp.x0, lp.y0, lp.width, new_lo_h])
+        upper["pri"].set_position([up.x0, new_up_y0, up.width, new_up_h])
+        if upper["twin"] is not None:
+            upper["twin"].set_position([up.x0, new_up_y0, up.width, new_up_h])
+        lower["pos"] = lower["pri"].get_position()
+        upper["pos"] = upper["pri"].get_position()
 
 
 def _chart_panel_ratios_and_return_panel(
@@ -151,6 +226,77 @@ def _chart_panel_ratios_and_return_panel(
     if not show_volume and show_return:
         return (6, 4), 1
     return (1,), None
+
+
+def _draw_trend_ma_lines_on_price_panel(
+    fig: Figure,
+    idx: pd.DatetimeIndex,
+    trend_ma: dict[int, pd.Series] | None,
+    ma_n: int,
+) -> None:
+    """mplfinance 다중 line addplot 버그 회피: 추세 이평은 가격 패널 axes에 직접 겹침."""
+    if not trend_ma:
+        return
+    ax_main = fig.axes[0]
+    x = np.arange(len(idx))
+    for period in sorted(trend_ma.keys()):
+        if period == ma_n:
+            continue
+        ser = trend_ma[period].reindex(idx).astype(float)
+        if not ser.notna().any():
+            continue
+        color = TREND_MA_COLORS.get(period, "#546e7a")
+        ax_main.plot(
+            x,
+            ser.to_numpy(),
+            color=color,
+            linewidth=0.95,
+            solid_capstyle="round",
+            zorder=4,
+        )
+
+
+def _draw_ma_primary_line_on_price_panel(
+    ax, idx: pd.DatetimeIndex, ma_primary: pd.Series
+) -> None:
+    """매매 기준 이평선 — mplfinance addplot 대신 직접 겹침(베타 mplfinance 다중 line 회피)."""
+    x = np.arange(len(idx))
+    y = ma_primary.reindex(idx).astype(float).bfill().ffill().to_numpy(dtype=float)
+    ax.plot(x, y, color="#263238", linewidth=1.05, zorder=3, solid_capstyle="round")
+
+
+def _draw_trade_markers_matplotlib(
+    ax,
+    buy_y: pd.Series,
+    sell_y: pd.Series,
+    ms: float,
+) -> None:
+    """매수▲·매도▼ 타점 — mplfinance scatter addplot 대신 matplotlib scatter."""
+    x = np.arange(len(buy_y.index))
+    bm = buy_y.notna().to_numpy()
+    if bm.any():
+        ax.scatter(
+            x[bm],
+            buy_y.to_numpy(dtype=float)[bm],
+            marker="^",
+            s=float(ms) ** 2 * 1.8,
+            color="#2e7d32",
+            edgecolors="#1b5e20",
+            linewidths=MARKER_LINEWIDTH,
+            zorder=6,
+        )
+    sm = sell_y.notna().to_numpy()
+    if sm.any():
+        ax.scatter(
+            x[sm],
+            sell_y.to_numpy(dtype=float)[sm],
+            marker="v",
+            s=float(ms) ** 2 * 1.8,
+            color="#039be5",
+            edgecolors="#01579b",
+            linewidths=MARKER_LINEWIDTH,
+            zorder=6,
+        )
 
 
 def make_backtest_figure(
@@ -188,53 +334,17 @@ def make_backtest_figure(
     else:
         ma_primary = odata["Close"].rolling(ma_n, min_periods=1).mean()
 
-    addplots: list = [
-        mpf.make_addplot(ma_primary, panel=0, color="#263238", width=1.05),
-    ]
-    if trend_ma:
-        for period, color in ((120, "#ff6f00"), (200, "#6a1b9a")):
-            if period not in trend_ma:
-                continue
-            ser = trend_ma[period].reindex(idx).astype(float)
-            if not ser.notna().any():
-                continue
-            addplots.append(
-                mpf.make_addplot(ser, panel=0, color=color, width=0.95),
-            )
-
-    buy_y = _trade_price_series_at_open(buys, idx)
-    sell_y = _trade_price_series_at_open(sells, idx)
+    buy_y = _trade_marker_y_buy_below_low(buys, odata)
+    sell_y = _trade_marker_y_sell_above_high(sells, odata)
     ms = max(8.0, min(22.0, MARKER_SIZE / 2.5))
-    if buys and buy_y.notna().any():
-        addplots.append(
-            mpf.make_addplot(
-                buy_y,
-                type="scatter",
-                marker="^",
-                markersize=ms,
-                color="#c62828",
-                edgecolors="#3e2723",
-                linewidths=MARKER_LINEWIDTH,
-                panel=0,
-            )
-        )
-    if sells and sell_y.notna().any():
-        addplots.append(
-            mpf.make_addplot(
-                sell_y,
-                type="scatter",
-                marker="v",
-                markersize=ms,
-                color="#0d47a1",
-                edgecolors="#01579b",
-                linewidths=MARKER_LINEWIDTH,
-                panel=0,
-            )
-        )
 
     panel_ratios, ret_panel = _chart_panel_ratios_and_return_panel(
         show_volume, show_return
     )
+
+    addplots: list = []
+    # mplfinance 0.12.10b: 가격 패널에 line/scatter addplot 을 여러 개 두면 하위 패널 처리 시 빈 y 배열 오류가 남.
+    # 수익률만 make_addplot 으로 두고, 이평·타점은 matplotlib 로 상단 패널에 직접 그린다.
     if ret_panel is not None:
         ret_aligned = ret_series.reindex(idx).astype(float)
         if not ret_aligned.notna().any():
@@ -267,7 +377,9 @@ def make_backtest_figure(
     trend_note = ""
     if trend_ma:
         unit = "봉" if "주" in bar_label else "일"
-        trend_note = " · " + "·".join(f"{p}{unit}" for p in sorted(trend_ma))
+        extras = [p for p in sorted(trend_ma.keys()) if p != ma_n]
+        if extras:
+            trend_note = " · " + "·".join(f"{p}{unit}" for p in extras)
     unit_ma = "봉" if "주" in bar_label else "일"
 
     price_label = "캔들" if show_candle else "종가"
@@ -288,7 +400,7 @@ def make_backtest_figure(
         odata,
         type=plot_type,
         style=style,
-        addplot=addplots,
+        addplot=addplots if addplots else [],
         volume=show_volume,
         panel_ratios=panel_ratios,
         returnfig=True,
@@ -297,6 +409,11 @@ def make_backtest_figure(
         tight_layout=True,
         scale_padding=0.88,
     )
+    _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
+    ax_price = fig.axes[0]
+    _draw_ma_primary_line_on_price_panel(ax_price, idx, ma_primary)
+    _draw_trade_markers_matplotlib(ax_price, buy_y, sell_y, ms)
+    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, ma_n)
     return fig
 
 
@@ -329,6 +446,28 @@ def save_backtest_report_png(
     _save_report_png(fig, out_path)
 
 
+def trend_overlay_flags_from_strategy(st: dict) -> dict[int, bool]:
+    """차트 추세선 6종 표시 여부. 신규 키 show_trend_ma{기간} 우선, 없으면 구 show_ma120/200."""
+    flags: dict[int, bool] = {}
+    for p in TREND_MA_PERIODS:
+        k = f"show_trend_ma{p}"
+        if k in st:
+            flags[p] = bool(st[k])
+        elif p == 120:
+            flags[p] = bool(st.get("show_ma120", False))
+        elif p == 200:
+            flags[p] = bool(st.get("show_ma200", False))
+        else:
+            flags[p] = False
+    return flags
+
+
+def rolling_trend_ma_series(close: pd.Series, period: int) -> pd.Series:
+    """추세 오버레이용 이평 (짧은 기간은 min_periods 완화)."""
+    min_periods = 2 if period <= 10 else min(20, period)
+    return close.rolling(period, min_periods=min_periods).mean()
+
+
 def run_backtest_detailed(
     cfg: dict,
     override_code: str | None = None,
@@ -347,8 +486,7 @@ def run_backtest_detailed(
     st = cfg.get("strategy", {})
     ma_n = int(st.get("ma_period", 20))
     interval = normalize_interval(str(st.get("interval", "daily")))
-    show_ma120 = bool(st.get("show_ma120", False))
-    show_ma200 = bool(st.get("show_ma200", False))
+    trend_flags = trend_overlay_flags_from_strategy(st)
     show_chart_candle = bool(st.get("show_chart_candle", True))
     show_chart_volume = bool(st.get("show_chart_volume", True))
     show_chart_return = bool(st.get("show_chart_return", True))
@@ -386,14 +524,12 @@ def run_backtest_detailed(
     lines.append(
         f"[시작] {start} ~ {end} | {name} ({selected}) | {bar_label} | 이평 {ma_n} | 초기 {initial:,.0f}원 전액"
     )
-    if show_ma120 or show_ma200:
-        parts: list[str] = []
-        if show_ma120:
-            parts.append("120")
-        if show_ma200:
-            parts.append("200")
+    overlay_on = [p for p in TREND_MA_PERIODS if trend_flags[p]]
+    if overlay_on:
         unit = "봉(주봉)" if bar_label == "주봉" else "일"
-        lines.append(f"[차트] 장기 추세선 표시: {', '.join(parts)}{unit} 이평")
+        lines.append(
+            f"[차트] 추세선 오버레이: {', '.join(str(p) for p in overlay_on)}{unit} 이평"
+        )
 
     start_dt = datetime.datetime.strptime(str(start), "%Y-%m-%d")
     warm_days = WARMUP_DAYS_FOR_WEEKLY if interval == "weekly" else WARMUP_DAYS_DAILY
@@ -428,10 +564,12 @@ def run_backtest_detailed(
 
     full_close = sig_df["Close"].astype(float)
     trend_ma: dict[int, pd.Series] = {}
-    if show_ma120:
-        trend_ma[120] = full_close.rolling(120, min_periods=20).mean()
-    if show_ma200:
-        trend_ma[200] = full_close.rolling(200, min_periods=20).mean()
+    for p in TREND_MA_PERIODS:
+        if not trend_flags.get(p):
+            continue
+        if p == ma_n:
+            continue
+        trend_ma[p] = rolling_trend_ma_series(full_close, p)
     trend_plot = (
         {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
     )

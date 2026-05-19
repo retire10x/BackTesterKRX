@@ -43,9 +43,9 @@ def merge_cli_into_config(cfg: dict, args: argparse.Namespace) -> dict:
     if args.interval:
         out.setdefault("strategy", {})["interval"] = args.interval
     if args.ma120:
-        out.setdefault("strategy", {})["show_ma120"] = True
+        out.setdefault("strategy", {})["show_trend_ma120"] = True
     if args.ma200:
-        out.setdefault("strategy", {})["show_ma200"] = True
+        out.setdefault("strategy", {})["show_trend_ma200"] = True
     return out
 
 
@@ -92,12 +92,12 @@ def cli_main() -> None:
     ap.add_argument(
         "--ma120",
         action="store_true",
-        help="PNG 차트에 120일/120봉 장기 이평선 표시",
+        help="PNG 차트에 120일/120봉 추세 이평 오버레이 (show_trend_ma120)",
     )
     ap.add_argument(
         "--ma200",
         action="store_true",
-        help="PNG 차트에 200일/200봉 장기 이평선 표시",
+        help="PNG 차트에 200일/200봉 추세 이평 오버레이 (show_trend_ma200)",
     )
     ap.epilog = (
         "GUI 는 인자 없이: python main.py\n"

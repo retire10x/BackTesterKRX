@@ -12,11 +12,15 @@ universe:
 # 전략
 strategy:
   interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
-  ma_period: 20
-  # 장기 추세선 (차트 PNG에 겹침, v2.2) — 주봉일 때는 120·200「봉」이평
-  show_ma120: false
-  show_ma200: false
-  # 차트 패널 표시 (GUI 체크박스·YAML 공통, 기본 모두 true)
+  ma_period: 20          # 매매 시그널 이평: 5, 10, 20 중 권장 (GUI 라디오와 동일)
+  # 추세선 오버레이 (차트 PNG, v2.9) — 체크한 기간만 표시 (매매 기준 이평과 동일 기간은 중복 생략)
+  show_trend_ma5: false
+  show_trend_ma10: false
+  show_trend_ma20: false
+  show_trend_ma60: false
+  show_trend_ma120: false
+  show_trend_ma200: false
+  # 차트 패널 표시 (GUI·YAML 공통, 기본 모두 true)
   show_chart_candle: true
   show_chart_volume: true
   show_chart_return: true
