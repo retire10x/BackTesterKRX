@@ -16,6 +16,10 @@ strategy:
   # 장기 추세선 (차트 PNG에 겹침, v2.2) — 주봉일 때는 120·200「봉」이평
   show_ma120: false
   show_ma200: false
+  # 차트 패널 표시 (GUI 체크박스·YAML 공통, 기본 모두 true)
+  show_chart_candle: true
+  show_chart_volume: true
+  show_chart_return: true
 
 # 매매 비용
 trading_costs:

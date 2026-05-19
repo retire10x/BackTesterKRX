@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (v2.6: 우측 전체 차트 전용, 성과 요약은 좌측 하단).
+차트: output/backtest_report.png → CTkImage (v2.7: 차트 지표 캔들·거래량·수익률 체크 토글).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -75,6 +75,12 @@ def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_show_ma120.set(bool(st["show_ma120"]))
     if "show_ma200" in st:
         ui.var_show_ma200.set(bool(st["show_ma200"]))
+    if "show_chart_candle" in st:
+        ui.var_show_candle.set(bool(st["show_chart_candle"]))
+    if "show_chart_volume" in st:
+        ui.var_show_volume.set(bool(st["show_chart_volume"]))
+    if "show_chart_return" in st:
+        ui.var_show_revenue.set(bool(st["show_chart_return"]))
     port = cfg.get("portfolio", {})
     if port.get("initial_cash") is not None:
         ui.var_cash.set(str(int(port["initial_cash"])))
@@ -122,6 +128,9 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
 
     cfg.setdefault("strategy", {})["show_ma120"] = bool(ui.var_show_ma120.get())
     cfg.setdefault("strategy", {})["show_ma200"] = bool(ui.var_show_ma200.get())
+    cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
+    cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
+    cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
 
     return cfg
 
@@ -129,7 +138,7 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v2.6")
+        self.title("BackTesterKRX v2.7")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -251,6 +260,32 @@ class BacktestGUI(ctk.CTk):
             trend_cell,
             text="200일선",
             variable=self.var_show_ma200,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            left,
+            text="차트 표시 지표 선택 (중복 가능)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=14, pady=(4, 4))
+        row_ind = ctk.CTkFrame(left, fg_color="transparent")
+        row_ind.pack(fill="x", padx=14, pady=(0, 4))
+        self.var_show_candle = ctk.BooleanVar(value=True)
+        self.var_show_volume = ctk.BooleanVar(value=True)
+        self.var_show_revenue = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            row_ind,
+            text="캔들 차트",
+            variable=self.var_show_candle,
+        ).pack(side="left", padx=(0, 10))
+        ctk.CTkCheckBox(
+            row_ind,
+            text="거래량",
+            variable=self.var_show_volume,
+        ).pack(side="left", padx=(0, 10))
+        ctk.CTkCheckBox(
+            row_ind,
+            text="수익률",
+            variable=self.var_show_revenue,
         ).pack(side="left")
 
         self.btn_run = ctk.CTkButton(

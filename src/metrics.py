@@ -1,6 +1,6 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v2.6: 차트 저장 시 tight bbox/pad + mplfinance tight_layout·scale_padding으로 도화지 여백 압축.)
+(GUI/Tkinter 비의존. v2.7: 캔들·거래량·수익률 토글 및 동적 panel_ratios; v2.6: PNG 저장 여백 압축.)
 """
 from __future__ import annotations
 
@@ -140,6 +140,19 @@ def _trade_price_series_at_open(
     return s
 
 
+def _chart_panel_ratios_and_return_panel(
+    show_volume: bool, show_return: bool
+) -> tuple[tuple[int, ...], int | None]:
+    """거래량·수익률 표시 여부에 따른 mplfinance panel_ratios 및 누적수익률 패널 인덱스."""
+    if show_volume and show_return:
+        return (5, 2, 3), 2
+    if show_volume and not show_return:
+        return (7, 3), None
+    if not show_volume and show_return:
+        return (6, 4), 1
+    return (1,), None
+
+
 def make_backtest_figure(
     sim: pd.DataFrame,
     trades: list[dict],
@@ -148,8 +161,12 @@ def make_backtest_figure(
     ma_n: int,
     ret_series: pd.Series,
     trend_ma: dict[int, pd.Series] | None = None,
+    *,
+    show_candle: bool = True,
+    show_volume: bool = True,
+    show_return: bool = True,
 ) -> Figure:
-    """캔들(OHLC)+거래량+전략·장기 이평+시가 타점+누적 수익률 (mplfinance)."""
+    """가격(OHLC)·거래량·누적 수익률을 지표 토글에 맞춰 mplfinance 멀티패널로 렌더."""
     import matplotlib.pyplot as plt
     import mplfinance as mpf
 
@@ -188,7 +205,6 @@ def make_backtest_figure(
     buy_y = _trade_price_series_at_open(buys, idx)
     sell_y = _trade_price_series_at_open(sells, idx)
     ms = max(8.0, min(22.0, MARKER_SIZE / 2.5))
-    # mplfinance: y가 전부 NaN이면 내부 yd가 빈 배열이 되어 nanmax에서 실패함 → 거래 있을 때만 산점도 추가
     if buys and buy_y.notna().any():
         addplots.append(
             mpf.make_addplot(
@@ -216,18 +232,22 @@ def make_backtest_figure(
             )
         )
 
-    ret_aligned = ret_series.reindex(idx).astype(float)
-    if not ret_aligned.notna().any():
-        ret_aligned = pd.Series(0.0, index=idx)
-    addplots.append(
-        mpf.make_addplot(
-            ret_aligned,
-            panel=2,
-            color="royalblue",
-            width=1.6,
-            ylabel="누적 수익률 (%)",
-        )
+    panel_ratios, ret_panel = _chart_panel_ratios_and_return_panel(
+        show_volume, show_return
     )
+    if ret_panel is not None:
+        ret_aligned = ret_series.reindex(idx).astype(float)
+        if not ret_aligned.notna().any():
+            ret_aligned = pd.Series(0.0, index=idx)
+        addplots.append(
+            mpf.make_addplot(
+                ret_aligned,
+                panel=ret_panel,
+                color="royalblue",
+                width=1.6,
+                ylabel="누적 수익률 (%)",
+            )
+        )
 
     mc = mpf.make_marketcolors(
         up="#e53935",
@@ -249,18 +269,28 @@ def make_backtest_figure(
         unit = "봉" if "주" in bar_label else "일"
         trend_note = " · " + "·".join(f"{p}{unit}" for p in sorted(trend_ma))
     unit_ma = "봉" if "주" in bar_label else "일"
+
+    price_label = "캔들" if show_candle else "종가"
+    shown: list[str] = [price_label]
+    if show_volume:
+        shown.append("거래량")
+    if show_return:
+        shown.append("수익률")
+    chart_bits = "+".join(shown)
     title = (
-        f"{name} · {bar_label} · 캔들+거래량+수익률 · "
+        f"{name} · {bar_label} · {chart_bits} · "
         f"{ma_n}{unit_ma} 이평{trend_note}"
     )
 
+    plot_type = "candle" if show_candle else "line"
+
     fig, _axlist = mpf.plot(
         odata,
-        type="candle",
+        type=plot_type,
         style=style,
         addplot=addplots,
-        volume=True,
-        panel_ratios=(7, 3, 3),
+        volume=show_volume,
+        panel_ratios=panel_ratios,
         returnfig=True,
         figsize=(12, 10),
         title=title,
@@ -279,9 +309,22 @@ def save_backtest_report_png(
     ret_series: pd.Series,
     out_path: str,
     trend_ma: dict[int, pd.Series] | None = None,
+    *,
+    show_candle: bool = True,
+    show_volume: bool = True,
+    show_return: bool = True,
 ) -> None:
     fig = make_backtest_figure(
-        sim, trades, name, bar_label, ma_n, ret_series, trend_ma=trend_ma
+        sim,
+        trades,
+        name,
+        bar_label,
+        ma_n,
+        ret_series,
+        trend_ma=trend_ma,
+        show_candle=show_candle,
+        show_volume=show_volume,
+        show_return=show_return,
     )
     _save_report_png(fig, out_path)
 
@@ -306,6 +349,9 @@ def run_backtest_detailed(
     interval = normalize_interval(str(st.get("interval", "daily")))
     show_ma120 = bool(st.get("show_ma120", False))
     show_ma200 = bool(st.get("show_ma200", False))
+    show_chart_candle = bool(st.get("show_chart_candle", True))
+    show_chart_volume = bool(st.get("show_chart_volume", True))
+    show_chart_return = bool(st.get("show_chart_return", True))
 
     costs = cfg.get("trading_costs", {})
     buy_c = float(costs.get("buy_cost", 0.00015))
@@ -408,7 +454,16 @@ def run_backtest_detailed(
 
     out_png = os.path.join("output", "backtest_report.png")
     fig = make_backtest_figure(
-        sim, trades, name, bar_label, ma_n, ret_series, trend_ma=trend_plot
+        sim,
+        trades,
+        name,
+        bar_label,
+        ma_n,
+        ret_series,
+        trend_ma=trend_plot,
+        show_candle=show_chart_candle,
+        show_volume=show_chart_volume,
+        show_return=show_chart_return,
     )
     _save_report_png(fig, out_png)
 
@@ -422,6 +477,9 @@ def run_backtest_detailed(
             "ma_n": ma_n,
             "ret_series": ret_series,
             "trend_ma": trend_plot,
+            "show_chart_candle": show_chart_candle,
+            "show_chart_volume": show_chart_volume,
+            "show_chart_return": show_chart_return,
         }
 
     n_buy = sum(1 for t in trades if t["side"] == "BUY")
