@@ -5,6 +5,7 @@
 v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
 v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
+v4.5: 활성 추세 이평 범례를 가격 패널 `matplotlib` `Axes.legend`(좌상·반투명)·GUI 외부 범례 제거(backtest_chart);
 v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.
 """
 from __future__ import annotations

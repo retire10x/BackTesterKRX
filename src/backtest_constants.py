@@ -16,6 +16,9 @@ TREND_MA_COLORS: dict[int, str] = {
     200: "#6a1b9a",
 }
 
+# 차트 추세선 선 굵기 — Legend 라인 샘플과 실제 플롯을 1:1로 맞춤(v4.5)
+TREND_MA_LINEWIDTH = 0.95
+
 # 타점 마커 — 데이터 앵커(저가/고가) + offset points 고정 간격(v3.3·v3.4 매칭)
 TRADE_MARKER_OFFSET_PT = 15.0
 MARKER_BUY_COLOR = "#2e7d32"

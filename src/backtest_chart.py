@@ -1,6 +1,7 @@
 """
 정적 백테스트 리포트 차트 (matplotlib Agg · mplfinance 멀티패널).
 GUI 비의존. metrics.run_backtest_detailed 가 조립한 인자로 Figure·PNG 를 만든다.
+v4.5: 활성 추세 이평은 가격 패널 좌상단 matplotlib ax.legend 로 표시(외부 범례 없음).
 """
 from __future__ import annotations
 
@@ -27,6 +28,7 @@ from .backtest_constants import (
     MARKER_TRAIL_STOP_COLOR,
     MARKER_TRAIL_STOP_OUTLINE,
     TREND_MA_COLORS,
+    TREND_MA_LINEWIDTH,
     TRADE_MARKER_OFFSET_PT,
 )
 
@@ -323,16 +325,18 @@ def _autoscale_price_panel_y_with_trends(
     ax_price.set_ylim(ymin - pad, ymax + pad)
 
 
-def _draw_trend_ma_lines_on_price_panel(
+def _draw_trend_ma_lines_and_legend(
     ax_price,
     idx: pd.DatetimeIndex,
     trend_ma: dict[int, pd.Series] | None,
-    bar_label: str,
+    _bar_label: str,
 ) -> None:
-    """추세 이평 오버레이(체크한 기간만). 매매 기준 N과 무관하게 모두 그린다."""
+    """추세 이평 오버레이(체크한 기간만) + 좌측 상단 순정 Legend(v4.5)."""
+    mw = float(TREND_MA_LINEWIDTH)
     if not trend_ma:
         return
     x = np.arange(len(idx))
+    n_visible = 0
     for period in sorted(trend_ma.keys()):
         ser = trend_ma[period].reindex(idx).astype(float)
         if not ser.notna().any():
@@ -342,10 +346,27 @@ def _draw_trend_ma_lines_on_price_panel(
             x,
             ser.to_numpy(),
             color=color,
-            linewidth=0.95,
+            linewidth=mw,
             solid_capstyle="round",
             zorder=4,
+            label=f"{period}일선",
         )
+        n_visible += 1
+    if n_visible == 0:
+        return
+    ncol = 2 if n_visible > 3 else 1
+    ax_price.legend(
+        loc="upper left",
+        fontsize=8.5,
+        framealpha=0.55,
+        fancybox=True,
+        edgecolor="0.65",
+        facecolor="white",
+        ncol=ncol,
+        handlelength=2.2,
+        labelspacing=0.35,
+        borderpad=0.45,
+    )
 
 
 def make_backtest_figure(
@@ -412,10 +433,6 @@ def make_backtest_figure(
         rc=chart_rc,
     )
 
-    trend_note = ""
-    if trend_ma:
-        unit = "봉" if "주" in bar_label else "일"
-        trend_note = " · " + "·".join(f"{p}{unit}" for p in sorted(trend_ma.keys()))
     unit_ma = "봉" if "주" in bar_label else "일"
 
     price_label = "캔들" if show_candle else "종가"
@@ -425,10 +442,8 @@ def make_backtest_figure(
     if show_return:
         shown.append("수익률")
     chart_bits = "+".join(shown)
-    title = (
-        f"{name} · {bar_label} · {chart_bits} · "
-        f"매매기준 {ma_n}{unit_ma}{trend_note}"
-    )
+    # v4.5: 추세 이평 이름·색상은 가격 패널 ax.legend 로 표시(제목에 중복 나열 안 함).
+    title = f"{name} · {bar_label} · {chart_bits} · 매매기준 {ma_n}{unit_ma}"
 
     plot_type = "candle" if show_candle else "line"
 
@@ -451,7 +466,7 @@ def make_backtest_figure(
     _apply_hts_style_xaxis(fig, idx)
     n_skip_tm = _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
-    _draw_trend_ma_lines_on_price_panel(ax_price, idx, trend_ma, bar_label)
+    _draw_trend_ma_lines_and_legend(ax_price, idx, trend_ma, bar_label)
     _autoscale_price_panel_y_with_trends(ax_price, odata, trend_ma, idx)
     # sharex 시 상단 패널 라벨이 숨겨지는 경우가 있어 동일 날짜가 보이게 강제
     for ax in fig.axes:

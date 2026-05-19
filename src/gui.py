@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (범례·매매 규칙 패널 + 차트).
+차트: output/backtest_report.png → CTkImage (매매 규칙 패널 + 차트; 추세 이평 범례는 PNG 내장).
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 """
 from __future__ import annotations
@@ -27,7 +27,7 @@ from src.gui_helpers import (
     trading_rules_static_text,
     try_build_config,
 )
-from src.backtest_constants import TREND_MA_COLORS, TREND_MA_PERIODS
+from src.backtest_constants import TREND_MA_PERIODS
 from src.metrics import BacktestResult, run_backtest_detailed
 
 ctk.set_appearance_mode("system")
@@ -37,7 +37,7 @@ ctk.set_default_color_theme("blue")
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
 FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 1170  # 우측: 범례 + 매매 규칙 섹션 + 차트·설명
+FIXED_RIGHT_PANEL_H = 1090  # 우측: 매매 규칙 섹션 + 차트·설명 (추세 범례는 PNG 내장 v4.5)
 
 FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
@@ -56,7 +56,7 @@ DATE_CLAMP_MIN = date(1990, 1, 1)
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v4.4")
+        self.title("BackTesterKRX v4.5")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -296,39 +296,10 @@ class BacktestGUI(ctk.CTk):
         )
         right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
         right.grid_propagate(False)
-        right.grid_rowconfigure(0, weight=0)  # 이평 범례
-        right.grid_rowconfigure(1, weight=0)  # 매매 규칙(전략 옵션)
-        right.grid_rowconfigure(2, weight=0)  # 차트
-        right.grid_rowconfigure(3, weight=0)  # 설명 텍스트
+        right.grid_rowconfigure(0, weight=0)  # 매매 규칙(전략 옵션)
+        right.grid_rowconfigure(1, weight=0)  # 차트
+        right.grid_rowconfigure(2, weight=0)  # 설명 텍스트
         right.grid_columnconfigure(0, weight=1)
-
-        # ── 차트 위: 추세 이평 범례만 (한 줄·차트 폭 활용)
-        legend_bar = ctk.CTkFrame(right, fg_color="transparent")
-        legend_bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 6))
-        ctk.CTkLabel(
-            legend_bar,
-            text="차트 범례 · 추세 이평",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            anchor="w",
-        ).pack(anchor="w", pady=(0, 4))
-        legend_row = ctk.CTkFrame(legend_bar, fg_color="transparent")
-        legend_row.pack(fill="x", anchor="w")
-        for p in TREND_MA_PERIODS:
-            cell = ctk.CTkFrame(legend_row, fg_color="transparent")
-            cell.pack(side="left", padx=(0, 14), pady=2)
-            ctk.CTkLabel(
-                cell,
-                text="",
-                width=18,
-                height=5,
-                fg_color=TREND_MA_COLORS[p],
-                corner_radius=2,
-            ).pack(side="left", padx=(0, 6))
-            ctk.CTkLabel(
-                cell,
-                text=f"{p}일선",
-                font=ctk.CTkFont(size=11),
-            ).pack(side="left")
 
         tt_trend = (
             "당일 종가가 120일선 위에 있고, 최근 5거래일간 120일선의 선형 회귀 기울기(Slope)가 "
@@ -351,7 +322,7 @@ class BacktestGUI(ctk.CTk):
             border_color=("gray65", "gray45"),
             fg_color=("gray92", "gray18"),
         )
-        rules_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        rules_panel.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 8))
 
         rules_head = ctk.CTkFrame(rules_panel, fg_color="transparent")
         rules_head.pack(fill="x", padx=10, pady=(10, 6))
@@ -560,7 +531,7 @@ class BacktestGUI(ctk.CTk):
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )
-        self.chart_frame.grid(row=2, column=0, sticky="nw", padx=14, pady=(0, 8))
+        self.chart_frame.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 8))
 
         self.text_trading_rules = ctk.CTkTextbox(
             right,
@@ -568,7 +539,7 @@ class BacktestGUI(ctk.CTk):
             font=ctk.CTkFont(size=13),
             wrap="word",
         )
-        self.text_trading_rules.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 14))
+        self.text_trading_rules.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
