@@ -13,7 +13,10 @@
 BackTesterKRX/
 ├── src/
 │   ├── __init__.py
-│   ├── gui.py          # 창·입력·차트(v2.9: 높이730·이평 라디오·추세 6종)
+│   ├── gui.py          # 창·레이아웃·차트 패널(v4.1 시간축 등)
+│   ├── gui_helpers.py  # YAML 반영·설정 dict·툴팁 (엔진과 분리)
+│   ├── backtest_constants.py  # 추세 이평 상수·마커 색 (순환 참조 방지)
+│   ├── backtest_chart.py # mplfinance 정적 PNG (`make_backtest_figure`)
 │   ├── data_loader.py  # 종목·OHLCV·주봉 집계·YAML 로드
 │   ├── strategy.py     # 골든/데드크로스 시그널
 │   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
@@ -86,15 +89,18 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 비우면 로드 시 **6개월 전~오늘** 자동), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(`filter_trend_slope`, `slope_threshold`, `filter_breakout_strength`, `filter_time_buffer`), 차트 패널 토글, 비용, `portfolio.initial_cash`.
+`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(`filter_trend_slope`, `slope_threshold`, `filter_breakout_strength`, `filter_time_buffer`), 차트 패널 토글, 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일 이동·차트 위 마우스 휠은 **7일** 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
 
 ## 소스 역할 (파일별)
 
 | 경로 | 역할 |
 |------|------|
 | `main.py` | 인자 없음 → GUI; `--watch` → GUI+코드 변경 시 재시작; 그 외 → CLI |
-| `src/gui.py` | CustomTkinter UI (`tkcalendar` 날짜 선택 포함) |
-| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘) |
+| `src/gui.py` | CustomTkinter 창·레이아웃; `gui_helpers` 에 설정 조립 위임 |
+| `src/gui_helpers.py` | YAML→위젯·`try_build_config`·툴팁 |
+| `src/backtest_constants.py` | `TREND_MA_PERIODS` 등 차트·GUI 공유 상수 |
+| `src/backtest_chart.py` | mplfinance 멀티패널·타점·PNG 저장 |
+| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘)·`ohlcv_warm_start_date` |
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 |
-| `src/metrics.py` | 누적·CAGR·MDD, PNG, `run_backtest_detailed` |
+| `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) |

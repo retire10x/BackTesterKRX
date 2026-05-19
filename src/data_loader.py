@@ -30,6 +30,27 @@ def default_backtest_period_range() -> tuple[date, date]:
     return months_before(today, 6), today
 
 
+# 일봉: 사용자 시작일 이전 최소 이 거래일만큼 OHLCV 를 당겨와 MA120·v4.0 기울기 필터 워밍업
+OHLCV_EXTRA_TRADING_BARS_DAILY = 130
+# 주봉: 일봉 원천을 충분히 길게 로드한 뒤 주간 리샘플 (약 130주 + 여유)
+OHLCV_WEEKLY_FETCH_CALENDAR_DAYS = 980
+
+
+def ohlcv_warm_start_date(user_start: str, *, interval: str) -> str:
+    """
+    차트·시뮬에 쓰는 사용자 시작일은 그대로 두되, OHLCV 로드 시작일만 더 과거로 당김.
+    일봉: 거래일 기준 OHLCV_EXTRA_TRADING_BARS_DAILY 만큼 이전부터.
+    주봉: 일봉 시계열을 넉넉히 가져온 뒤 주봉으로 집계하므로 캘린더 일 단위로 과거 확장.
+    """
+    iv = str(interval).strip().lower()
+    ts = pd.Timestamp(str(user_start).strip()[:10])
+    if iv == "weekly":
+        warm_ts = ts - pd.Timedelta(days=OHLCV_WEEKLY_FETCH_CALENDAR_DAYS)
+    else:
+        warm_ts = ts - pd.offsets.BDay(OHLCV_EXTRA_TRADING_BARS_DAILY)
+    return warm_ts.strftime("%Y-%m-%d")
+
+
 def load_config(path: str | None = None) -> dict:
     """config/settings.yaml 로드. 기간이 비어 있으면 6개월 전~오늘로 채움."""
     cfg_path = path or os.path.join("config", "settings.yaml")

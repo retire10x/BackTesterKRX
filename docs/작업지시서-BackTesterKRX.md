@@ -141,7 +141,7 @@
 - **3패널:** **누적 수익률(%)** 곡선.
 - **매매 타점:** 익봉 **시가** = 체결 가격과 동일하게 **해당 봉의 시가 세로 위치**에 **매수 ▲(`^`) / 매도 ▼(`v`)** 산점도.
 
-**패널 세로 비율(가이드):** 주가 **7** : 거래량 **3** : 수익률 **3**. 구현: `src/metrics.py` 의 `make_backtest_figure`.
+**패널 세로 비율(가이드):** 주가 **7** : 거래량 **3** : 수익률 **3**. 구현: `src/backtest_chart.py` 의 `make_backtest_figure`.
 
 ---
 
@@ -183,7 +183,7 @@ pip install -r requirements.txt
 - **오른쪽:** `output/backtest_report.png` 를 **`CTkImage`** 로 **패널 전면** 표시(**v2.6**). 창·패널 크기 변경 시 이미지는 **비율 유지**로 다시 맞춘다. (엔진 PNG 전체 구간, 툴바·축 줌 없음.)
 
 ### 10.4 기술
-- **엔진:** `src/metrics.py` 의 `run_backtest_detailed()` 가 **파이프라인(지표·PNG 포함)** 을 조립하고, `src/data_loader.py`, `strategy.py`, `simulator.py` 와 함께 시그널·체결·비용·성과·PNG 규칙을 수행한다. (GUI 위젯 비의존.)
+- **엔진:** `src/metrics.py` 의 `run_backtest_detailed()` 가 데이터 로드·시그널·시뮬·성과를 조립하고, 정적 PNG 차트는 **`src/backtest_chart.py`** 가 담당한다. `src/data_loader.py`, `strategy.py`, `simulator.py` 와 함께 시그널·체결·비용·성과 규칙을 수행한다. (GUI 위젯 비의존.)
 - **GUI:** **CustomTkinter** — 화면 코드는 **`src/gui.py`**. 차트는 PNG 파일만 표시(필요 시 `PIL`·`CTkImage`). 실행은 루트 **`main.py`** 인자 없음. 의존성: `requirements.txt` 의 `customtkinter`, **`mplfinance`**, `matplotlib` 등.
 - **CLI:** 루트 **`main.py`** 에 `--list` 등 인자가 있으면 argparse·표 출력으로 같은 엔진을 호출한다.
 - **응답성:** 백테스트는 **백그라운드 스레드**, 완료 후 UI 갱신(창 멈춤 방지).
@@ -198,10 +198,11 @@ python main.py
 
 ### 10.6 [중요] 소스코드 모듈화 고도화 지침
 
+- **연관 문서:** 아래 지침과 맞물리는 내용(파일이 길어질 때 역할 단위 분리, 분리 후 README·작업지시서 등 폴더·역할 설명 갱신, UI·엔진 경계 유지)은 [문서화-원칙.md](문서화-원칙.md)의 **「코드가 길어질 때 (모듈화)」** 에도 적혀 있다.
 - **금지:** 모든 코드를 `main.py` 한 파일에 몰아 넣지 않는다.
-- **분리:** UI 관련 코드는 **`src/gui.py`** 에 둔다. 백테스트 핵심 계산은 **`src/data_loader.py`**, **`src/strategy.py`**, **`src/simulator.py`**, **`src/metrics.py`** 로 **파일 단위**로 나눈다. (`metrics.py` 에 성과·정적 PNG·`run_backtest_detailed` 조립 포함.)
+- **분리:** UI 창·레이아웃은 **`src/gui.py`**, YAML 반영·설정 dict 조립 등 GUI 헬퍼는 **`src/gui_helpers.py`** 에 둔다. 백테스트 핵심 계산은 **`src/data_loader.py`**, **`src/strategy.py`**, **`src/simulator.py`**, **`src/metrics.py`** 로 **파일 단위**로 나누고, 차트·공유 상수는 **`src/backtest_chart.py`**, **`src/backtest_constants.py`** 로 구분한다. (`metrics.py` 에 성과 지표·`run_backtest_detailed` 파이프라인 조립; PNG 렌더는 `backtest_chart.py`.)
 - **UI 역할:** 사용자 입력(종목·기간·N·주기 등)을 **설정 dict** 로 엔진에 넘기고, 돌려받은 **텍스트 성과·이미지 경로**만 화면에 그린다.
-- **향후 고도화:** `src/metrics.py` 에 지표·PNG·`run_backtest_detailed` 가 함께 모여 있으므로, GUI·엔진 안정화 이후 **파이프라인 조립**과 **차트 출력**을 모듈 단위로 다시 나누는 리팩터링을 검토할 수 있다.
+- **향후 고도화:** `metrics.py` 안의 파이프라인 단계(예: 성과 전용 모듈)를 더 잘게 나누는 리팩터링은 필요 시 검토할 수 있다.
 
 ---
 

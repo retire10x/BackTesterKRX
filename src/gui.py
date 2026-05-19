@@ -1,15 +1,14 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (우측 매매 규칙·v4.0 진입 필터 + 차트).
-엔진: src.metrics.run_backtest_detailed
+차트: output/backtest_report.png → CTkImage (우측 매매 규칙·진입 필터 + 차트).
+YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 """
 from __future__ import annotations
 
-import copy
 import os
 import threading
 import tkinter as tk
-from datetime import date, datetime
+from datetime import date, timedelta
 from tkinter import messagebox
 
 import customtkinter as ctk
@@ -19,14 +18,17 @@ from tkcalendar import DateEntry
 from src.data_loader import (
     default_backtest_period_range,
     fetch_filtered_universe,
-    load_config,
 )
-from src.metrics import (
-    BacktestResult,
-    TREND_MA_PERIODS,
-    run_backtest_detailed,
-    trend_overlay_flags_from_strategy,
+from src.gui_helpers import (
+    HoverTooltip,
+    apply_yaml_to_widgets,
+    date_entry_theme_kw,
+    gui_summary_five_lines,
+    trading_rules_static_text,
+    try_build_config,
 )
+from src.backtest_constants import TREND_MA_COLORS, TREND_MA_PERIODS
+from src.metrics import BacktestResult, run_backtest_detailed
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
@@ -45,270 +47,23 @@ FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
 
-
-def _date_entry_theme_kw() -> dict[str, str]:
-    """tkcalendar DateEntry 색상을 CTk 라이트/다크에 맞춤(System 은 라이트 계열)."""
-    dark = ctk.get_appearance_mode() == "Dark"
-    if dark:
-        return {
-            "background": "#2b2b2b",
-            "foreground": "#dce4ee",
-            "bordercolor": "#565b5e",
-            "headersbackground": "#1f538d",
-            "headersforeground": "#ffffff",
-            "selectbackground": "#144870",
-            "selectforeground": "#ffffff",
-            "weekendbackground": "#252526",
-            "weekendforeground": "#9fa5ab",
-        }
-    return {
-        "background": "#ffffff",
-        "foreground": "#1a1a1a",
-        "bordercolor": "#979da2",
-        "headersbackground": "#36719f",
-        "headersforeground": "#ffffff",
-        "selectbackground": "#36719f",
-        "selectforeground": "#ffffff",
-        "weekendbackground": "#ebebeb",
-        "weekendforeground": "#636363",
-    }
-
-
-class _HoverTooltip:
-    """체크박스·입력칸 등에 마우스를 올렸을 때 잠시 후 노란 설명 팝업."""
-
-    def __init__(self, widget: tk.Misc, text: str, delay_ms: int = 420) -> None:
-        self._widget = widget
-        self._text = text
-        self._delay_ms = delay_ms
-        self._tip: tk.Toplevel | None = None
-        self._after_id: str | None = None
-        widget.bind("<Enter>", self._on_enter)
-        widget.bind("<Leave>", self._on_leave)
-
-    def _cancel_scheduled(self) -> None:
-        if self._after_id is not None:
-            self._widget.after_cancel(self._after_id)
-            self._after_id = None
-
-    def _on_enter(self, _event: tk.Event | None = None) -> None:
-        self._cancel_scheduled()
-        self._after_id = self._widget.after(self._delay_ms, self._show_tip)
-
-    def _on_leave(self, _event: tk.Event | None = None) -> None:
-        self._cancel_scheduled()
-        self._hide_tip()
-
-    def _show_tip(self) -> None:
-        self._after_id = None
-        if self._tip is not None:
-            return
-        x = int(self._widget.winfo_rootx() + 14)
-        y = int(self._widget.winfo_rooty() + self._widget.winfo_height() + 6)
-        self._tip = tk.Toplevel(self._widget)
-        self._tip.wm_overrideredirect(True)
-        try:
-            self._tip.attributes("-topmost", True)
-        except tk.TclError:
-            pass
-        self._tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(
-            self._tip,
-            text=self._text,
-            justify="left",
-            background="#fffacd",
-            relief="solid",
-            borderwidth=1,
-            font=("Segoe UI", 10),
-            wraplength=440,
-        )
-        lbl.pack(ipadx=8, ipady=6)
-
-    def _hide_tip(self) -> None:
-        self._cancel_scheduled()
-        if self._tip is not None:
-            self._tip.destroy()
-            self._tip = None
-
-
-def _parse_yaml_date(s: str) -> date | None:
-    try:
-        return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
-    except ValueError:
-        return None
-
-
-def _trading_rules_static_text(ma_n: int, interval: str) -> str:
-    """우측 매매 규칙 패널용 안내 문구(엔진 strategy.add_signals 와 동일 전제)."""
-    bar_kw = "주간 봉" if interval.strip().lower() == "weekly" else "일간 봉"
-    return (
-        "※ 아래 체크 필터는 매수 진입에만 적용(매도 신호는 동일).\n\n"
-        f"매매 기준 : 종가 기준 {ma_n}기간 단순 이동평균 ({bar_kw})\n\n"
-        "1. 매매 기준 이평선 골든크로스 매수, 데드크로스 매도.\n"
-        "   → 종가가 위 이평선을 상향 돌파하면 매수 신호, 하향 돌파하면 매도 신호 "
-        "(전일·당일 종가와 당일 이평으로 판단).\n\n"
-        "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다.\n\n"
-        "[v4.0] 활성화한 필터는 엔진에서 AND 로 결합됩니다."
-    )
-
-
-def _gui_summary_five_lines(res: BacktestResult) -> str:
-    """성공 시 좌측 패널 전용 5줄 성과 요약(지시서 v2.6)."""
-    d = {row[0]: row[1] for row in res.summary_rows}
-    final = d.get("최종 평가액", "-")
-    tot = d.get("누적 수익률", "-")
-    cagr = d.get("연평균 수익률", "-")
-    mdd = d.get("최대 손실 낙폭", "-")
-    return "\n".join(
-        [
-            f"■ 매매 횟수 : 매수 {res.n_buy}회 / 매도 {res.n_sell}회",
-            f"■ 최종 평가액 : {final}",
-            f"■ 누적 수익률 : {tot}",
-            f"■ 연평균 수익률 : {cagr}",
-            f"■ 최대 손실 낙폭 : {mdd}",
-        ]
-    )
-
-
-def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
-    """config/settings.yaml 값으로 입력 기본값 채움."""
-    try:
-        cfg = load_config()
-    except OSError:
-        return
-    per = cfg.get("period", {})
-    if per.get("start_date"):
-        d0 = _parse_yaml_date(str(per["start_date"]))
-        if d0 is not None:
-            ui._date_start.set_date(d0)
-    if per.get("end_date"):
-        d1 = _parse_yaml_date(str(per["end_date"]))
-        if d1 is not None:
-            ui._date_end.set_date(d1)
-    uni = cfg.get("universe", {})
-    if uni.get("market"):
-        ui.var_market.set(str(uni["market"]).upper())
-    if uni.get("search_keyword") is not None:
-        ui.var_keyword.set(str(uni["search_keyword"]))
-    st = cfg.get("strategy", {})
-    if st.get("interval"):
-        ui.var_interval.set(str(st["interval"]).lower())
-    if st.get("ma_period") is not None:
-        mp = int(st["ma_period"])
-        ui.var_ma_period.set(str(mp) if mp in (5, 10, 20) else "20")
-    tf = trend_overlay_flags_from_strategy(st)
-    for p in TREND_MA_PERIODS:
-        ui._trend_vars[p].set(tf[p])
-    if "show_chart_candle" in st:
-        ui.var_show_candle.set(bool(st["show_chart_candle"]))
-    if "show_chart_volume" in st:
-        ui.var_show_volume.set(bool(st["show_chart_volume"]))
-    if "show_chart_return" in st:
-        ui.var_show_revenue.set(bool(st["show_chart_return"]))
-    if "filter_trend_slope" in st:
-        ui.var_filter_trend.set(bool(st["filter_trend_slope"]))
-    if "filter_breakout_strength" in st:
-        ui.var_filter_breakout.set(bool(st["filter_breakout_strength"]))
-    if "filter_time_buffer" in st:
-        ui.var_filter_timebuf.set(bool(st["filter_time_buffer"]))
-    if st.get("slope_threshold") is not None:
-        ui.var_slope_threshold.set(str(st["slope_threshold"]))
-    port = cfg.get("portfolio", {})
-    if port.get("initial_cash") is not None:
-        ui.var_cash.set(str(int(port["initial_cash"])))
-
-
-def _try_build_config(ui: "BacktestGUI") -> dict | None:
-    base = load_config()
-    cfg = copy.deepcopy(base)
-    kw = ui.var_keyword.get().strip()
-    cfg.setdefault("universe", {})["market"] = ui.var_market.get().strip() or "KOSPI"
-    cfg["universe"]["search_keyword"] = kw
-
-    sel = ui.list_codes.curselection()
-    if not sel:
-        messagebox.showwarning("알림", "종목 검색 후 리스트에서 종목 1개를 클릭해 선택하세요.")
-        return None
-    line = ui.list_codes.get(sel[0])
-    code = line.split()[0].strip()
-    cfg["universe"]["selected_code"] = code
-
-    interval = ui.var_interval.get()
-    cfg.setdefault("strategy", {})["interval"] = interval
-    try:
-        ma_n = int(ui.var_ma_period.get())
-    except ValueError:
-        ma_n = 20
-    if ma_n not in (5, 10, 20):
-        messagebox.showerror("오류", "매매 기준 이평은 5·10·20일선 중 하나여야 합니다.")
-        return None
-    cfg.setdefault("strategy", {})["ma_period"] = ma_n
-
-    try:
-        sd = ui._date_start.get_date()
-        ed = ui._date_end.get_date()
-    except (ValueError, tk.TclError):
-        messagebox.showerror(
-            "오류",
-            "시작일·종료일을 캘린더에서 올바르게 선택했는지 확인하세요.",
-        )
-        return None
-    start = sd.strftime("%Y-%m-%d")
-    end = ed.strftime("%Y-%m-%d")
-    try:
-        if datetime.strptime(start, "%Y-%m-%d").date() > datetime.strptime(
-            end, "%Y-%m-%d"
-        ).date():
-            messagebox.showerror("오류", "시작일이 종료일보다 늦을 수 없습니다.")
-            return None
-    except ValueError:
-        messagebox.showerror("오류", "시작일·종료일이 올바르지 않습니다.")
-        return None
-    cfg.setdefault("period", {})["start_date"] = start
-    cfg.setdefault("period", {})["end_date"] = end
-
-    try:
-        cash = float(str(ui.var_cash.get()).replace(",", "").strip())
-        if cash <= 0:
-            raise ValueError
-    except ValueError:
-        messagebox.showerror("오류", "가상 원금은 0보다 큰 숫자여야 합니다.")
-        return None
-    cfg.setdefault("portfolio", {})["initial_cash"] = cash
-
-    for p in TREND_MA_PERIODS:
-        cfg.setdefault("strategy", {})[f"show_trend_ma{p}"] = bool(ui._trend_vars[p].get())
-    for legacy in ("show_ma120", "show_ma200"):
-        cfg.get("strategy", {}).pop(legacy, None)
-
-    cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
-    cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
-    cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
-
-    try:
-        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
-    except ValueError:
-        slope_thr = 0.01
-    cfg.setdefault("strategy", {})["slope_threshold"] = slope_thr
-    cfg.setdefault("strategy", {})["filter_trend_slope"] = bool(ui.var_filter_trend.get())
-    cfg.setdefault("strategy", {})["filter_breakout_strength"] = bool(
-        ui.var_filter_breakout.get()
-    )
-    cfg.setdefault("strategy", {})["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
-
-    return cfg
+# 시간축 버튼: ±30일 · 차트 휠만 7일 스텝
+TIME_AXIS_SHIFT_DAYS = 30
+TIME_AXIS_WHEEL_DAYS = 7
+DATE_CLAMP_MIN = date(1990, 1, 1)
 
 
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v4.0")
+        self.title("BackTesterKRX v4.1")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
         self._img_ref: ctk.CTkImage | None = None
         self._last_chart_path: str | None = None
         self._chart_resize_after_id: str | None = None
+        self._shift_auto_run_after_id: str | None = None
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=0)
@@ -400,7 +155,7 @@ class BacktestGUI(ctk.CTk):
             d0,
             width=10,
             date_pattern="yyyy-mm-dd",
-            **_date_entry_theme_kw(),
+            **date_entry_theme_kw(),
         )
         _ds, _de = default_backtest_period_range()
         self._date_start.set_date(_ds)
@@ -410,7 +165,7 @@ class BacktestGUI(ctk.CTk):
             d1,
             width=10,
             date_pattern="yyyy-mm-dd",
-            **_date_entry_theme_kw(),
+            **date_entry_theme_kw(),
         )
         self._date_end.set_date(_de)
         self._date_end.pack(fill="x", pady=(2, 0))
@@ -419,6 +174,25 @@ class BacktestGUI(ctk.CTk):
         ctk.CTkEntry(d2, textvariable=self.var_cash, height=28).pack(
             fill="x", pady=(2, 0)
         )
+
+        row_axis = ctk.CTkFrame(left, fg_color="transparent")
+        row_axis.pack(fill="x", padx=14, pady=(0, 8))
+        row_axis.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkLabel(row_axis, text="시간축 이동 (±30일)", font=ctk.CTkFont(size=12)).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
+        )
+        ctk.CTkButton(
+            row_axis,
+            text="◀ 1달 전",
+            height=30,
+            command=lambda: self._on_shift_period_days(-TIME_AXIS_SHIFT_DAYS),
+        ).grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkButton(
+            row_axis,
+            text="1달 후 ▶",
+            height=30,
+            command=lambda: self._on_shift_period_days(TIME_AXIS_SHIFT_DAYS),
+        ).grid(row=1, column=1, sticky="ew", padx=(6, 0))
 
         self._trend_vars: dict[int, ctk.BooleanVar] = {
             p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
@@ -519,15 +293,32 @@ class BacktestGUI(ctk.CTk):
         right.grid_propagate(False)
         right.grid_rowconfigure(0, weight=0)
         right.grid_rowconfigure(1, weight=0)
+        right.grid_rowconfigure(2, weight=0)
         right.grid_columnconfigure(0, weight=1)
 
-        rules_wrap = ctk.CTkFrame(right, fg_color="transparent")
-        rules_wrap.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
-        ctk.CTkLabel(
-            rules_wrap,
-            text="매매 규칙 · 진입 필터 (v4.0)",
-            font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(anchor="w", pady=(0, 6))
+        # 차트 바로 위: 이평 범례 + 「매매 규칙」(전부 1행 높이에 가깝게)
+        chart_bar = ctk.CTkFrame(right, fg_color="transparent")
+        chart_bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 2))
+        chart_bar.grid_columnconfigure(1, weight=1)
+
+        legend_wrap = ctk.CTkFrame(chart_bar, fg_color="transparent")
+        legend_wrap.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+        for p in TREND_MA_PERIODS:
+            cell = ctk.CTkFrame(legend_wrap, fg_color="transparent")
+            cell.pack(side="left", padx=(0, 10))
+            ctk.CTkLabel(
+                cell,
+                text="",
+                width=16,
+                height=4,
+                fg_color=TREND_MA_COLORS[p],
+                corner_radius=2,
+            ).pack(side="left", padx=(0, 4))
+            ctk.CTkLabel(
+                cell,
+                text=f"{p}일선",
+                font=ctk.CTkFont(size=10),
+            ).pack(side="left")
 
         tt_trend = (
             "당일 종가가 120일선 위에 있고, 최근 5거래일간 120일선의 선형 회귀 기울기(Slope)가 "
@@ -540,64 +331,118 @@ class BacktestGUI(ctk.CTk):
             "돌파 당일(i) 바로 진입하지 말고, i+1, i+2 봉의 종가까지 20일선 위에 안착 확인 후 진입"
         )
         tt_slope = (
-            "120일선 선형회귀 기울기(최근 5봉·OLS β₁) 최소값. 클수록 더 가파른 상승 추세에서만 매수합니다."
+            "대세 상승 필터 전용: 120일선 선형회귀 기울기(최근 5봉·OLS β₁) 최소값."
         )
 
-        row_ft = ctk.CTkFrame(rules_wrap, fg_color="transparent")
-        row_ft.pack(fill="x", pady=(0, 4))
+        rules_group = ctk.CTkFrame(
+            chart_bar,
+            corner_radius=6,
+            border_width=1,
+            border_color=("gray65", "gray45"),
+            fg_color=("gray92", "gray18"),
+        )
+        rules_group.grid(row=0, column=1, sticky="nsew")
+
+        rules_row = ctk.CTkFrame(rules_group, fg_color="transparent")
+        rules_row.pack(fill="x", padx=6, pady=3)
+
+        ctk.CTkLabel(
+            rules_row,
+            text="매매 규칙",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            anchor="w",
+        ).pack(side="left", padx=(0, 10))
+
         cb_trend = ctk.CTkCheckBox(
-            row_ft,
+            rules_row,
             text="대세 상승 필터",
             variable=self.var_filter_trend,
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=11),
+            checkbox_width=18,
+            checkbox_height=18,
         )
         cb_trend.pack(side="left")
-        ctk.CTkLabel(row_ft, text="기울기≥", font=ctk.CTkFont(size=12)).pack(
-            side="left", padx=(10, 2)
-        )
-        self.entry_slope_threshold = ctk.CTkEntry(
-            row_ft, width=76, height=26, textvariable=self.var_slope_threshold
-        )
-        self.entry_slope_threshold.pack(side="left")
-        _HoverTooltip(cb_trend, tt_trend)
-        _HoverTooltip(self.entry_slope_threshold, tt_slope)
-
-        row_fb = ctk.CTkFrame(rules_wrap, fg_color="transparent")
-        row_fb.pack(fill="x", pady=(0, 4))
         cb_breakout = ctk.CTkCheckBox(
-            row_fb,
+            rules_row,
             text="돌파 강도 필터",
             variable=self.var_filter_breakout,
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=11),
+            checkbox_width=18,
+            checkbox_height=18,
         )
-        cb_breakout.pack(side="left")
-        _HoverTooltip(cb_breakout, tt_breakout)
-
-        row_tb = ctk.CTkFrame(rules_wrap, fg_color="transparent")
-        row_tb.pack(fill="x", pady=(0, 6))
+        cb_breakout.pack(side="left", padx=(8, 0))
         cb_timebuf = ctk.CTkCheckBox(
-            row_tb,
+            rules_row,
             text="시간 버퍼 필터",
             variable=self.var_filter_timebuf,
-            font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=11),
+            checkbox_width=18,
+            checkbox_height=18,
         )
-        cb_timebuf.pack(side="left")
-        _HoverTooltip(cb_timebuf, tt_timebuf)
+        cb_timebuf.pack(side="left", padx=(8, 0))
+
+        ctk.CTkLabel(
+            rules_row,
+            text="임계값 (Slope Threshold):",
+            font=ctk.CTkFont(size=11),
+        ).pack(side="left", padx=(12, 3))
+
+        def _bump_slope(delta: float) -> None:
+            try:
+                v = float(str(self.var_slope_threshold.get()).replace(",", "").strip())
+            except ValueError:
+                v = 0.01
+            v = max(0.0001, min(1.0, v + delta))
+            s = f"{v:.4f}".rstrip("0").rstrip(".")
+            self.var_slope_threshold.set(s or "0")
+
+        slope_spin = ctk.CTkFrame(rules_row, fg_color="transparent")
+        slope_spin.pack(side="left")
+        ctk.CTkButton(
+            slope_spin,
+            text="▴",
+            width=22,
+            height=22,
+            font=ctk.CTkFont(size=10),
+            corner_radius=3,
+            command=lambda: _bump_slope(0.01),
+        ).pack(side="left", padx=(0, 2))
+        self.entry_slope_threshold = ctk.CTkEntry(
+            slope_spin,
+            width=52,
+            height=22,
+            font=ctk.CTkFont(size=11),
+            textvariable=self.var_slope_threshold,
+        )
+        self.entry_slope_threshold.pack(side="left")
+        ctk.CTkButton(
+            slope_spin,
+            text="▾",
+            width=22,
+            height=22,
+            font=ctk.CTkFont(size=10),
+            corner_radius=3,
+            command=lambda: _bump_slope(-0.01),
+        ).pack(side="left", padx=(2, 0))
+
+        HoverTooltip(cb_trend, tt_trend)
+        HoverTooltip(self.entry_slope_threshold, tt_slope)
+        HoverTooltip(cb_breakout, tt_breakout)
+        HoverTooltip(cb_timebuf, tt_timebuf)
+
+        self.chart_frame = ctk.CTkFrame(
+            right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
+        )
+        self.chart_frame.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 8))
 
         self.text_trading_rules = ctk.CTkTextbox(
-            rules_wrap,
+            right,
             height=FIXED_RULES_TEXT_H,
             font=ctk.CTkFont(size=13),
             wrap="word",
         )
-        self.text_trading_rules.pack(fill="x")
+        self.text_trading_rules.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
 
-        self.chart_frame = ctk.CTkFrame(
-            right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
-        )  # 가로 1020 × 세로 FIXED_CHART_H
-        self.chart_frame.grid(
-            row=1, column=0, sticky="nw", padx=14, pady=(0, 14)
-        )
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
@@ -610,8 +455,9 @@ class BacktestGUI(ctk.CTk):
         self.lbl_chart.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
+        self._bind_chart_mousewheel()
 
-        _apply_yaml_to_widgets(self)
+        apply_yaml_to_widgets(self)
         self._refresh_trading_rules_display()
         self.var_ma_period.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_interval.trace_add("write", lambda *_: self._refresh_trading_rules_display())
@@ -650,7 +496,7 @@ class BacktestGUI(ctk.CTk):
         if ma_n not in (5, 10, 20):
             ma_n = 20
         interval = (self.var_interval.get() or "daily").strip().lower()
-        body = _trading_rules_static_text(ma_n, interval)
+        body = trading_rules_static_text(ma_n, interval)
         tb = self.text_trading_rules
         tb.configure(state="normal")
         tb.delete("1.0", "end")
@@ -715,6 +561,87 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.insert("1.0", text)
         self.text_summary.configure(state="disabled")
 
+    def _shift_period_calendar_days(self, delta_days: int) -> None:
+        """시작·종료를 같은 일수만큼 평행 이동. 종료가 오늘을 넘으면 창 길이 유지하며 오늘에 맞춤."""
+        try:
+            sd = self._date_start.get_date()
+            ed = self._date_end.get_date()
+        except (ValueError, tk.TclError):
+            return
+        span = max(0, (ed - sd).days)
+        today = date.today()
+        ns = sd + timedelta(days=delta_days)
+        ne = ed + timedelta(days=delta_days)
+        if ne > today:
+            ne = today
+            ns = ne - timedelta(days=span)
+        if ns < DATE_CLAMP_MIN:
+            ns = DATE_CLAMP_MIN
+            ne = min(ns + timedelta(days=span), today)
+        if ns > ne:
+            ns = ne
+        self._date_start.set_date(ns)
+        self._date_end.set_date(ne)
+
+    def _on_shift_period_days(self, delta_days: int) -> None:
+        self._shift_period_calendar_days(delta_days)
+        self._schedule_auto_run_after_shift()
+
+    def _schedule_auto_run_after_shift(self) -> None:
+        if self._shift_auto_run_after_id is not None:
+            self.after_cancel(self._shift_auto_run_after_id)
+        self._shift_auto_run_after_id = self.after(400, self._flush_auto_run_after_shift)
+
+    def _flush_auto_run_after_shift(self) -> None:
+        self._shift_auto_run_after_id = None
+        if self._busy:
+            self._shift_auto_run_after_id = self.after(
+                280, self._flush_auto_run_after_shift
+            )
+            return
+        cfg = try_build_config(self, silent=True)
+        if cfg is None:
+            self.lbl_status.configure(
+                text="시간축 이동됨 · 종목을 선택한 뒤 갱신됩니다."
+            )
+            return
+        self._run_backtest(cfg)
+
+    def _on_chart_mousewheel(self, event: tk.Event) -> None:
+        """차트 영역 휠: 위=과거, 아래=미래 (PNG 차트이므로 mpl scroll_event 대신 Tk 바인딩)."""
+        delta_days: int
+        if getattr(event, "delta", 0):
+            steps = max(1, abs(int(event.delta)) // 120)
+            chunk = TIME_AXIS_WHEEL_DAYS * steps
+            delta_days = -chunk if int(event.delta) > 0 else chunk
+        elif getattr(event, "num", None) == 4:
+            delta_days = -TIME_AXIS_WHEEL_DAYS
+        elif getattr(event, "num", None) == 5:
+            delta_days = TIME_AXIS_WHEEL_DAYS
+        else:
+            return
+        self._shift_period_calendar_days(delta_days)
+        self._schedule_auto_run_after_shift()
+
+    def _bind_chart_mousewheel(self) -> None:
+        for w in (self.chart_frame, self.lbl_chart):
+            w.bind("<MouseWheel>", self._on_chart_mousewheel)
+            w.bind("<Button-4>", self._on_chart_mousewheel)
+            w.bind("<Button-5>", self._on_chart_mousewheel)
+
+    def _run_backtest(self, cfg: dict | None) -> None:
+        if cfg is None or self._busy:
+            return
+        self._busy = True
+        self.btn_run.configure(state="disabled", text="계산 중…")
+        self.lbl_status.configure(text="백테스트 계산 중…")
+
+        def work():
+            res = run_backtest_detailed(cfg)
+            self.after(0, lambda: self._finish_run(res))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _on_search(self) -> None:
         m = self.var_market.get().strip() or "KOSPI"
         kw = self.var_keyword.get().strip()
@@ -729,20 +656,7 @@ class BacktestGUI(ctk.CTk):
             self.list_codes.insert(tk.END, f"{code}  {name}")
 
     def _on_run(self):
-        if self._busy:
-            return
-        cfg = _try_build_config(self)
-        if cfg is None:
-            return
-        self._busy = True
-        self.btn_run.configure(state="disabled", text="계산 중…")
-        self.lbl_status.configure(text="백테스트 계산 중…")
-
-        def work():
-            res = run_backtest_detailed(cfg)
-            self.after(0, lambda: self._finish_run(res))
-
-        threading.Thread(target=work, daemon=True).start()
+        self._run_backtest(try_build_config(self, silent=False))
 
     def _finish_run(self, res):
         self._busy = False
@@ -756,7 +670,7 @@ class BacktestGUI(ctk.CTk):
             messagebox.showerror("백테스트 실패", res.error or "알 수 없는 오류")
             return
 
-        self._set_summary(_gui_summary_five_lines(res))
+        self._set_summary(gui_summary_five_lines(res))
 
         self.update_idletasks()
         self._update_chart_image(res.report_path)
