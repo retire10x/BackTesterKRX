@@ -1,7 +1,7 @@
-# 백테스트 기간
+# 백테스트 기간 (비우면 로드 시점 기준 6개월 전 ~ 오늘로 자동 설정)
 period:
-  start_date: "2021-01-01"
-  end_date: "2025-12-31"
+  start_date: ""
+  end_date: ""
 
 # 싱글 종목: 키워드로 후보를 좁힌 뒤 selected_code 1개만 매매
 universe:
@@ -16,9 +16,9 @@ strategy:
   # 추세선 오버레이 (차트 PNG, v2.9) — 체크한 기간만 표시 (매매 기준 이평과 동일 기간은 중복 생략)
   show_trend_ma5: false
   show_trend_ma10: false
-  show_trend_ma20: false
+  show_trend_ma20: true
   show_trend_ma60: false
-  show_trend_ma120: false
+  show_trend_ma120: true
   show_trend_ma200: false
   # 차트 패널 표시 (GUI·YAML 공통, 기본 모두 true)
   show_chart_candle: true

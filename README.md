@@ -49,8 +49,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면 로직은 `src/gui.py` **v2.9** — 우측 차트 세로 **730px**, 매매 이평 **5·10·20 라디오**, 추세선 오버레이 **6종**, 캔들·거래량·수익률 체크.)  
-검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·**매매 이평(5/10/20)**·**(선택) 추세선 6종**·차트 지표 → **백테스트 실행**.
+(화면: **시장·종목·검색** 한 줄, 기간 기본 **6개월 전~오늘**, 추세선 기본 **20·120일**, 가상 원금은 **백테스트 실행** 버튼 왼쪽 한 줄. 우측 차트 **730px**, 매매 이평 **5·10·20**, 캘린더로 기간 선택.)  
+검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·**매매 이평(5/10/20)**·추세선·차트 지표 → **백테스트 실행**.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (`watchdog`, Node 불필요)
 
@@ -86,15 +86,15 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 ## 설정
 
-`config/settings.yaml` — `period`, `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이), 차트 패널 토글, 비용, `portfolio.initial_cash`.
+`config/settings.yaml` — `period`(시작·종료 비우면 로드 시 **6개월 전~오늘** 자동), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), 차트 패널 토글, 비용, `portfolio.initial_cash`.
 
 ## 소스 역할 (파일별)
 
 | 경로 | 역할 |
 |------|------|
 | `main.py` | 인자 없음 → GUI; `--watch` → GUI+코드 변경 시 재시작; 그 외 → CLI |
-| `src/gui.py` | CustomTkinter UI만 |
-| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config` |
+| `src/gui.py` | CustomTkinter UI (`tkcalendar` 날짜 선택 포함) |
+| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘) |
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 |
 | `src/metrics.py` | 누적·CAGR·MDD, PNG, `run_backtest_detailed` |

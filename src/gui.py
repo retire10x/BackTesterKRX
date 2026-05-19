@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (v3.0: 종목 선택 유지·날짜 하이픈 마스크·v2.9 차트).
+차트: output/backtest_report.png → CTkImage (v3.0+: 시작·종료일 캘린더·종목 선택 유지 등).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -9,12 +9,18 @@ import copy
 import os
 import threading
 import tkinter as tk
+from datetime import date, datetime
 from tkinter import messagebox
 
 import customtkinter as ctk
 from PIL import Image
+from tkcalendar import DateEntry
 
-from src.data_loader import fetch_filtered_universe, load_config
+from src.data_loader import (
+    default_backtest_period_range,
+    fetch_filtered_universe,
+    load_config,
+)
 from src.metrics import (
     BacktestResult,
     TREND_MA_PERIODS,
@@ -37,37 +43,39 @@ FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
 
 
-def _format_partial_iso_date_digits(digits: str) -> str:
-    """숫자만 최대 8자리 → YYYY-MM-DD 진행 형태(미완성 허용)."""
-    digits = digits[:8]
-    if not digits:
-        return ""
-    if len(digits) <= 4:
-        return digits
-    if len(digits) <= 6:
-        return f"{digits[:4]}-{digits[4:]}"
-    return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+def _date_entry_theme_kw() -> dict[str, str]:
+    """tkcalendar DateEntry 색상을 CTk 라이트/다크에 맞춤(System 은 라이트 계열)."""
+    dark = ctk.get_appearance_mode() == "Dark"
+    if dark:
+        return {
+            "background": "#2b2b2b",
+            "foreground": "#dce4ee",
+            "bordercolor": "#565b5e",
+            "headersbackground": "#1f538d",
+            "headersforeground": "#ffffff",
+            "selectbackground": "#144870",
+            "selectforeground": "#ffffff",
+            "weekendbackground": "#252526",
+            "weekendforeground": "#9fa5ab",
+        }
+    return {
+        "background": "#ffffff",
+        "foreground": "#1a1a1a",
+        "bordercolor": "#979da2",
+        "headersbackground": "#36719f",
+        "headersforeground": "#ffffff",
+        "selectbackground": "#36719f",
+        "selectforeground": "#ffffff",
+        "weekendbackground": "#ebebeb",
+        "weekendforeground": "#636363",
+    }
 
 
-def _bind_iso_date_mask(var: tk.StringVar) -> None:
-    """시작·종료일: 숫자만 입력해도 하이픈 자동 삽입."""
-
-    guard: dict[str, bool] = {"busy": False}
-
-    def _normalize(*_: object) -> None:
-        if guard["busy"]:
-            return
-        raw = var.get()
-        digits = "".join(c for c in raw if c.isdigit())[:8]
-        formatted = _format_partial_iso_date_digits(digits)
-        if formatted != raw:
-            guard["busy"] = True
-            try:
-                var.set(formatted)
-            finally:
-                guard["busy"] = False
-
-    var.trace_add("write", lambda *_: _normalize())
+def _parse_yaml_date(s: str) -> date | None:
+    try:
+        return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
 
 
 def _gui_summary_five_lines(res: BacktestResult) -> str:
@@ -96,9 +104,13 @@ def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         return
     per = cfg.get("period", {})
     if per.get("start_date"):
-        ui.var_start.set(str(per["start_date"]))
+        d0 = _parse_yaml_date(str(per["start_date"]))
+        if d0 is not None:
+            ui._date_start.set_date(d0)
     if per.get("end_date"):
-        ui.var_end.set(str(per["end_date"]))
+        d1 = _parse_yaml_date(str(per["end_date"]))
+        if d1 is not None:
+            ui._date_end.set_date(d1)
     uni = cfg.get("universe", {})
     if uni.get("market"):
         ui.var_market.set(str(uni["market"]).upper())
@@ -150,10 +162,25 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
         return None
     cfg.setdefault("strategy", {})["ma_period"] = ma_n
 
-    start = ui.var_start.get().strip()
-    end = ui.var_end.get().strip()
-    if len(start) != 10 or len(end) != 10:
-        messagebox.showerror("오류", "시작일·종료일은 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        sd = ui._date_start.get_date()
+        ed = ui._date_end.get_date()
+    except (ValueError, tk.TclError):
+        messagebox.showerror(
+            "오류",
+            "시작일·종료일을 캘린더에서 올바르게 선택했는지 확인하세요.",
+        )
+        return None
+    start = sd.strftime("%Y-%m-%d")
+    end = ed.strftime("%Y-%m-%d")
+    try:
+        if datetime.strptime(start, "%Y-%m-%d").date() > datetime.strptime(
+            end, "%Y-%m-%d"
+        ).date():
+            messagebox.showerror("오류", "시작일이 종료일보다 늦을 수 없습니다.")
+            return None
+    except ValueError:
+        messagebox.showerror("오류", "시작일·종료일이 올바르지 않습니다.")
         return None
     cfg.setdefault("period", {})["start_date"] = start
     cfg.setdefault("period", {})["end_date"] = end
@@ -206,30 +233,36 @@ class BacktestGUI(ctk.CTk):
             left, text="입력", font=ctk.CTkFont(size=18, weight="bold")
         ).pack(anchor="w", padx=14, pady=(12, 6))
 
-        row_mk = ctk.CTkFrame(left, fg_color="transparent")
-        row_mk.pack(fill="x", padx=14, pady=(0, 6))
-        row_mk.grid_columnconfigure(0, weight=1, uniform="mk")
-        row_mk.grid_columnconfigure(1, weight=1, uniform="mk")
-        mk_l = ctk.CTkFrame(row_mk, fg_color="transparent")
-        mk_l.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        mk_r = ctk.CTkFrame(row_mk, fg_color="transparent")
-        mk_r.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(mk_l, text="시장").pack(anchor="w")
+        row_search = ctk.CTkFrame(left, fg_color="transparent")
+        row_search.pack(fill="x", padx=14, pady=(0, 6))
+        row_search.grid_columnconfigure(1, weight=1)
+
+        sf_market = ctk.CTkFrame(row_search, fg_color="transparent")
+        sf_market.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(sf_market, text="시장").pack(side="left", padx=(0, 4))
         self.var_market = ctk.StringVar(value="KOSPI")
         ctk.CTkOptionMenu(
-            mk_l,
+            sf_market,
             values=["KOSPI", "KOSDAQ"],
             variable=self.var_market,
-        ).pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(mk_r, text="종목명 키워드").pack(anchor="w")
+            width=92,
+        ).pack(side="left")
+
+        sf_kw = ctk.CTkFrame(row_search, fg_color="transparent")
+        sf_kw.grid(row=0, column=1, sticky="ew", padx=(8, 8))
+        ctk.CTkLabel(sf_kw, text="종목").pack(side="left", padx=(0, 4))
         self.var_keyword = ctk.StringVar(value="삼성")
-        ctk.CTkEntry(mk_r, textvariable=self.var_keyword).pack(
-            fill="x", pady=(2, 0)
+        ctk.CTkEntry(sf_kw, textvariable=self.var_keyword, height=28).pack(
+            side="left", fill="x", expand=True
         )
 
-        ctk.CTkButton(left, text="종목 검색", command=self._on_search).pack(
-            fill="x", padx=14, pady=(0, 6)
-        )
+        ctk.CTkButton(
+            row_search,
+            text="검색",
+            width=72,
+            height=28,
+            command=self._on_search,
+        ).grid(row=0, column=2, sticky="e")
 
         ctk.CTkLabel(left, text="검색 결과 (1개만 선택)").pack(anchor="w", padx=14)
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
@@ -268,23 +301,28 @@ class BacktestGUI(ctk.CTk):
         d0.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
         d1.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(d0, text="시작일 (YYYY-MM-DD)").pack(anchor="w")
-        self.var_start = tk.StringVar(value="2021-01-01")
-        ctk.CTkEntry(d0, textvariable=self.var_start).pack(fill="x", pady=(2, 0))
-        _bind_iso_date_mask(self.var_start)
-        ctk.CTkLabel(d1, text="종료일 (YYYY-MM-DD)").pack(anchor="w")
-        self.var_end = tk.StringVar(value="2025-12-31")
-        ctk.CTkEntry(d1, textvariable=self.var_end).pack(fill="x", pady=(2, 0))
-        _bind_iso_date_mask(self.var_end)
-
-        ctk.CTkLabel(left, text="가상 원금 (원)").pack(anchor="w", padx=14)
-        self.var_cash = ctk.StringVar(value="5000000")
-        ctk.CTkEntry(left, textvariable=self.var_cash).pack(
-            fill="x", padx=14, pady=(0, 6)
+        ctk.CTkLabel(d0, text="시작일").pack(anchor="w")
+        self._date_start = DateEntry(
+            d0,
+            width=11,
+            date_pattern="yyyy-mm-dd",
+            **_date_entry_theme_kw(),
         )
+        _ds, _de = default_backtest_period_range()
+        self._date_start.set_date(_ds)
+        self._date_start.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(d1, text="종료일").pack(anchor="w")
+        self._date_end = DateEntry(
+            d1,
+            width=11,
+            date_pattern="yyyy-mm-dd",
+            **_date_entry_theme_kw(),
+        )
+        self._date_end.set_date(_de)
+        self._date_end.pack(fill="x", pady=(2, 0))
 
         self._trend_vars: dict[int, ctk.BooleanVar] = {
-            p: ctk.BooleanVar(value=False) for p in TREND_MA_PERIODS
+            p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
         }
 
         row_ma = ctk.CTkFrame(left, fg_color="transparent")
@@ -350,14 +388,24 @@ class BacktestGUI(ctk.CTk):
             variable=self.var_show_revenue,
         ).pack(side="left")
 
+        row_run = ctk.CTkFrame(left, fg_color="transparent")
+        row_run.pack(fill="x", padx=14, pady=(8, 8))
+        row_run.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(row_run, text="가상 원금(원)").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
+        self.var_cash = ctk.StringVar(value="5000000")
+        ctk.CTkEntry(row_run, textvariable=self.var_cash, width=120, height=36).grid(
+            row=0, column=1, sticky="w"
+        )
         self.btn_run = ctk.CTkButton(
-            left,
+            row_run,
             text="백테스트 실행",
             height=40,
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._on_run,
         )
-        self.btn_run.pack(fill="x", padx=14, pady=(8, 8))
+        self.btn_run.grid(row=0, column=2, sticky="e", padx=(12, 0))
 
         self.text_summary = ctk.CTkTextbox(
             left,

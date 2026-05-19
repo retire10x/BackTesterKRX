@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import ticker as mticker
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from .data_loader import (
     ensure_datetime_index,
@@ -42,11 +43,12 @@ TREND_MA_COLORS: dict[int, str] = {
     120: "#ff6f00",
     200: "#6a1b9a",
 }
+MA_PRIMARY_LINE_COLOR = "#263238"  # 매매 기준 이평선 (추세와 동일 기간은 이 색만 사용)
 
 # 타점 마커 (캔들과 분리)
-MARKER_SIZE = 20
-MARKER_LINEWIDTH = 0.35
-MARKER_PAD_FRAC = 0.70  # 봉 고저폭 대비 저가 아래·고가 위 오프셋 비율
+MARKER_SIZE = 14
+MARKER_LINEWIDTH = 0.15
+MARKER_PAD_FRAC = 1  # 봉 고저폭 대비 저가 아래·고가 위 오프셋 비율
 
 
 @dataclass
@@ -281,6 +283,40 @@ def _chart_panel_ratios_and_return_panel(
     return (1,), None
 
 
+def _trend_legend_color(period: int, ma_n: int) -> str:
+    """차트에 실제로 대응하는 색: 매매 기준과 같은 기간은 매매 이평색, 나머지는 추세 팔레트."""
+    if period == ma_n:
+        return MA_PRIMARY_LINE_COLOR
+    return TREND_MA_COLORS.get(period, "#546e7a")
+
+
+def _draw_static_trend_ma_legend(ax, bar_label: str, ma_n: int) -> None:
+    """추세 이평 6종 명칭 고정 표시. 매매 이평과 동일 기간은 차트의 매매선 색과 맞춘다."""
+    unit = "봉" if "주" in bar_label else "일"
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            color=_trend_legend_color(p, ma_n),
+            linewidth=2.4,
+            solid_capstyle="round",
+            label=f"{p}{unit}선",
+        )
+        for p in TREND_MA_PERIODS
+    ]
+    ax.legend(
+        handles=handles,
+        loc="upper left",
+        fontsize=8,
+        framealpha=0.92,
+        fancybox=False,
+        edgecolor="#bdbdbd",
+        ncol=2,
+        columnspacing=0.9,
+        handlelength=2.2,
+    )
+
+
 def _draw_trend_ma_lines_on_price_panel(
     fig: Figure,
     idx: pd.DatetimeIndex,
@@ -288,13 +324,11 @@ def _draw_trend_ma_lines_on_price_panel(
     ma_n: int,
     bar_label: str,
 ) -> None:
-    """추세 이평을 가격 패널에 겹침 + 켜진 기간만 동적 범례."""
+    """추세 이평은 선택된 기간만 겹침. 범례는 별도 정적 6종 호출."""
     if not trend_ma:
         return
     ax_main = fig.axes[0]
     x = np.arange(len(idx))
-    unit = "봉" if "주" in bar_label else "일"
-    handles: list = []
     for period in sorted(trend_ma.keys()):
         if period == ma_n:
             continue
@@ -302,24 +336,13 @@ def _draw_trend_ma_lines_on_price_panel(
         if not ser.notna().any():
             continue
         color = TREND_MA_COLORS.get(period, "#546e7a")
-        (ln,) = ax_main.plot(
+        ax_main.plot(
             x,
             ser.to_numpy(),
             color=color,
             linewidth=0.95,
             solid_capstyle="round",
             zorder=4,
-            label=f"{period}{unit}선",
-        )
-        handles.append(ln)
-    if handles:
-        ax_main.legend(
-            handles=handles,
-            loc="upper left",
-            fontsize=8.5,
-            framealpha=0.92,
-            fancybox=False,
-            edgecolor="#bdbdbd",
         )
 
 
@@ -329,7 +352,7 @@ def _draw_ma_primary_line_on_price_panel(
     """매매 기준 이평선 — mplfinance addplot 대신 직접 겹침(베타 mplfinance 다중 line 회피)."""
     x = np.arange(len(idx))
     y = ma_primary.reindex(idx).astype(float).bfill().ffill().to_numpy(dtype=float)
-    ax.plot(x, y, color="#263238", linewidth=1.05, zorder=3, solid_capstyle="round")
+    ax.plot(x, y, color=MA_PRIMARY_LINE_COLOR, linewidth=1.05, zorder=3, solid_capstyle="round")
 
 
 def _draw_trade_markers_matplotlib(
@@ -482,6 +505,7 @@ def make_backtest_figure(
     _draw_ma_primary_line_on_price_panel(ax_price, idx, ma_primary)
     _draw_trade_markers_matplotlib(ax_price, buy_y, sell_y, ms)
     _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, ma_n, bar_label)
+    _draw_static_trend_ma_legend(ax_price, bar_label, ma_n)
     return fig
 
 
