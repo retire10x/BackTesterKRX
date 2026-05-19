@@ -18,3 +18,11 @@ def add_signals(df: pd.DataFrame, ma_period: int) -> pd.DataFrame:
     df.loc[buy, "Signal"] = 1
     df.loc[sell, "Signal"] = -1
     return df
+
+
+def add_entry_filter_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """매수 진입 필터용 MA120·MA20 (선형회귀 기울기·안착 확인 등). GUI 비의존."""
+    out = df.copy()
+    out["MA120"] = out["Close"].rolling(window=120, min_periods=120).mean()
+    out["MA20"] = out["Close"].rolling(window=20, min_periods=20).mean()
+    return out

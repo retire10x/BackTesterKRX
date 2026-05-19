@@ -86,7 +86,7 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 비우면 로드 시 **6개월 전~오늘** 자동), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), 차트 패널 토글, 비용, `portfolio.initial_cash`.
+`config/settings.yaml` — `period`(시작·종료 비우면 로드 시 **6개월 전~오늘** 자동), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(`filter_trend_slope`, `slope_threshold`, `filter_breakout_strength`, `filter_time_buffer`), 차트 패널 토글, 비용, `portfolio.initial_cash`.
 
 ## 소스 역할 (파일별)
 

@@ -1,7 +1,7 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v3.5: 타점 인덱스 불일치 시 CRITICAL 로그·GUI 경고;
- v3.4 날짜 엄격 매칭·축 바인딩·v3.3 타점 스타일.)
+(GUI/Tkinter 비의존. v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
+ v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.)
 """
 from __future__ import annotations
 
@@ -29,10 +29,23 @@ from .data_loader import (
     resample_weekly_ohlcv,
 )
 from .simulator import simulate_single
-from .strategy import add_signals
+from .strategy import add_entry_filter_columns, add_signals
 
 WARMUP_DAYS_DAILY = 120
 WARMUP_DAYS_FOR_WEEKLY = 800
+
+# v4.0 매수 필터 사용 시 MA120·회귀 창 등 최소 봉 수 가드
+MIN_BARS_FOR_ENTRY_FILTERS = 130
+
+
+def strategy_entry_filters_from_cfg(st: dict) -> dict[str, bool | float]:
+    """GUI/YAML strategy 블록 → simulate_single entry_filters."""
+    return {
+        "filter_trend_slope": bool(st.get("filter_trend_slope", False)),
+        "slope_threshold": float(st.get("slope_threshold", 0.01)),
+        "filter_breakout_strength": bool(st.get("filter_breakout_strength", False)),
+        "filter_time_buffer": bool(st.get("filter_time_buffer", False)),
+    }
 
 # 차트 표시용 추세 이평 기간 → 선색 (매매 기준 이평과 겹치면 해당 추세선 스킵)
 TREND_MA_PERIODS = (5, 10, 20, 60, 120, 200)
@@ -236,6 +249,8 @@ def _draw_trade_markers_matplotlib(
         warnings.warn(error_msg, RuntimeWarning, stacklevel=2)
 
     return skipped_count
+
+
 def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> None:
     """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보."""
     axes_all = fig.axes
@@ -642,8 +657,37 @@ def run_backtest_detailed(
             lines,
         )
 
-    sig_df = add_signals(bars, ma_n)
-    res = simulate_single(sig_df, str(start), initial, buy_c, sell_c)
+    entry_ef = strategy_entry_filters_from_cfg(st)
+    any_entry_filter = any(
+        (
+            entry_ef["filter_trend_slope"],
+            entry_ef["filter_breakout_strength"],
+            entry_ef["filter_time_buffer"],
+        )
+    )
+    if any_entry_filter and len(bars) < MIN_BARS_FOR_ENTRY_FILTERS:
+        return BacktestResult(
+            False,
+            f"매수 진입 필터 사용 시 데이터가 부족합니다(권장 최소 {MIN_BARS_FOR_ENTRY_FILTERS}봉 이상). 기간을 넓히세요.",
+            [],
+            None,
+            lines,
+        )
+
+    if any_entry_filter:
+        parts: list[str] = []
+        if entry_ef["filter_trend_slope"]:
+            parts.append(f"대세기울기≥{entry_ef['slope_threshold']}")
+        if entry_ef["filter_breakout_strength"]:
+            parts.append("돌파강도")
+        if entry_ef["filter_time_buffer"]:
+            parts.append("시간버퍼")
+        lines.append("[전략 v4.0] 매수 진입 필터: " + ", ".join(parts))
+
+    sig_df = add_entry_filter_columns(add_signals(bars, ma_n))
+    res = simulate_single(
+        sig_df, str(start), initial, buy_c, sell_c, entry_filters=entry_ef
+    )
     if res is None:
         return BacktestResult(False, "시뮬 구간이 너무 짧습니다.", [], None, lines)
     sim, trades = res

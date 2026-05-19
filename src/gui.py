@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (우측 상단 매매 규칙 참조 패널 + 차트).
+차트: output/backtest_report.png → CTkImage (우측 매매 규칙·v4.0 진입 필터 + 차트).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -35,12 +35,12 @@ ctk.set_default_color_theme("blue")
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
 FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 912  # 우측: 매매 규칙 + 차트 (좌측과 동일 시각 무게를 위해 여유 포함)
+FIXED_RIGHT_PANEL_H = 1020  # 우측: 매매 규칙·필터 + 차트
 
 FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 
-FIXED_RULES_H = 120   # 우측 상단 매매 규칙(읽기 전용) 영역 높이
+FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
@@ -74,6 +74,63 @@ def _date_entry_theme_kw() -> dict[str, str]:
     }
 
 
+class _HoverTooltip:
+    """체크박스·입력칸 등에 마우스를 올렸을 때 잠시 후 노란 설명 팝업."""
+
+    def __init__(self, widget: tk.Misc, text: str, delay_ms: int = 420) -> None:
+        self._widget = widget
+        self._text = text
+        self._delay_ms = delay_ms
+        self._tip: tk.Toplevel | None = None
+        self._after_id: str | None = None
+        widget.bind("<Enter>", self._on_enter)
+        widget.bind("<Leave>", self._on_leave)
+
+    def _cancel_scheduled(self) -> None:
+        if self._after_id is not None:
+            self._widget.after_cancel(self._after_id)
+            self._after_id = None
+
+    def _on_enter(self, _event: tk.Event | None = None) -> None:
+        self._cancel_scheduled()
+        self._after_id = self._widget.after(self._delay_ms, self._show_tip)
+
+    def _on_leave(self, _event: tk.Event | None = None) -> None:
+        self._cancel_scheduled()
+        self._hide_tip()
+
+    def _show_tip(self) -> None:
+        self._after_id = None
+        if self._tip is not None:
+            return
+        x = int(self._widget.winfo_rootx() + 14)
+        y = int(self._widget.winfo_rooty() + self._widget.winfo_height() + 6)
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        try:
+            self._tip.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(
+            self._tip,
+            text=self._text,
+            justify="left",
+            background="#fffacd",
+            relief="solid",
+            borderwidth=1,
+            font=("Segoe UI", 10),
+            wraplength=440,
+        )
+        lbl.pack(ipadx=8, ipady=6)
+
+    def _hide_tip(self) -> None:
+        self._cancel_scheduled()
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+
+
 def _parse_yaml_date(s: str) -> date | None:
     try:
         return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
@@ -85,12 +142,13 @@ def _trading_rules_static_text(ma_n: int, interval: str) -> str:
     """우측 매매 규칙 패널용 안내 문구(엔진 strategy.add_signals 와 동일 전제)."""
     bar_kw = "주간 봉" if interval.strip().lower() == "weekly" else "일간 봉"
     return (
-        "※ 편집 불가 · 참고용\n\n"
+        "※ 아래 체크 필터는 매수 진입에만 적용(매도 신호는 동일).\n\n"
         f"매매 기준 : 종가 기준 {ma_n}기간 단순 이동평균 ({bar_kw})\n\n"
         "1. 매매 기준 이평선 골든크로스 매수, 데드크로스 매도.\n"
         "   → 종가가 위 이평선을 상향 돌파하면 매수 신호, 하향 돌파하면 매도 신호 "
         "(전일·당일 종가와 당일 이평으로 판단).\n\n"
-        "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다."
+        "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다.\n\n"
+        "[v4.0] 활성화한 필터는 엔진에서 AND 로 결합됩니다."
     )
 
 
@@ -147,6 +205,14 @@ def _apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_show_volume.set(bool(st["show_chart_volume"]))
     if "show_chart_return" in st:
         ui.var_show_revenue.set(bool(st["show_chart_return"]))
+    if "filter_trend_slope" in st:
+        ui.var_filter_trend.set(bool(st["filter_trend_slope"]))
+    if "filter_breakout_strength" in st:
+        ui.var_filter_breakout.set(bool(st["filter_breakout_strength"]))
+    if "filter_time_buffer" in st:
+        ui.var_filter_timebuf.set(bool(st["filter_time_buffer"]))
+    if st.get("slope_threshold") is not None:
+        ui.var_slope_threshold.set(str(st["slope_threshold"]))
     port = cfg.get("portfolio", {})
     if port.get("initial_cash") is not None:
         ui.var_cash.set(str(int(port["initial_cash"])))
@@ -219,13 +285,24 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
     cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
     cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
 
+    try:
+        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
+    except ValueError:
+        slope_thr = 0.01
+    cfg.setdefault("strategy", {})["slope_threshold"] = slope_thr
+    cfg.setdefault("strategy", {})["filter_trend_slope"] = bool(ui.var_filter_trend.get())
+    cfg.setdefault("strategy", {})["filter_breakout_strength"] = bool(
+        ui.var_filter_breakout.get()
+    )
+    cfg.setdefault("strategy", {})["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
+
     return cfg
 
 
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v3.0")
+        self.title("BackTesterKRX v4.0")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -430,6 +507,11 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
         self.text_summary.configure(state="disabled")
 
+        self.var_filter_trend = ctk.BooleanVar(value=False)
+        self.var_slope_threshold = ctk.StringVar(value="0.01")
+        self.var_filter_breakout = ctk.BooleanVar(value=False)
+        self.var_filter_timebuf = ctk.BooleanVar(value=False)
+
         right = ctk.CTkFrame(
             self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_RIGHT_PANEL_H
         )
@@ -443,12 +525,68 @@ class BacktestGUI(ctk.CTk):
         rules_wrap.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
         ctk.CTkLabel(
             rules_wrap,
-            text="매매 규칙",
+            text="매매 규칙 · 진입 필터 (v4.0)",
             font=ctk.CTkFont(size=14, weight="bold"),
-        ).pack(anchor="w", pady=(0, 4))
+        ).pack(anchor="w", pady=(0, 6))
+
+        tt_trend = (
+            "당일 종가가 120일선 위에 있고, 최근 5거래일간 120일선의 선형 회귀 기울기(Slope)가 "
+            "설정된 임계값(Threshold) 이상인 양수(+)일 때만 매수 진입"
+        )
+        tt_breakout = (
+            "당일 거래량 > 직전 5봉 평균 거래량 × 1.5 또는 종가 > 당일 20일선 × 1.02"
+        )
+        tt_timebuf = (
+            "돌파 당일(i) 바로 진입하지 말고, i+1, i+2 봉의 종가까지 20일선 위에 안착 확인 후 진입"
+        )
+        tt_slope = (
+            "120일선 선형회귀 기울기(최근 5봉·OLS β₁) 최소값. 클수록 더 가파른 상승 추세에서만 매수합니다."
+        )
+
+        row_ft = ctk.CTkFrame(rules_wrap, fg_color="transparent")
+        row_ft.pack(fill="x", pady=(0, 4))
+        cb_trend = ctk.CTkCheckBox(
+            row_ft,
+            text="대세 상승 필터",
+            variable=self.var_filter_trend,
+            font=ctk.CTkFont(size=13),
+        )
+        cb_trend.pack(side="left")
+        ctk.CTkLabel(row_ft, text="기울기≥", font=ctk.CTkFont(size=12)).pack(
+            side="left", padx=(10, 2)
+        )
+        self.entry_slope_threshold = ctk.CTkEntry(
+            row_ft, width=76, height=26, textvariable=self.var_slope_threshold
+        )
+        self.entry_slope_threshold.pack(side="left")
+        _HoverTooltip(cb_trend, tt_trend)
+        _HoverTooltip(self.entry_slope_threshold, tt_slope)
+
+        row_fb = ctk.CTkFrame(rules_wrap, fg_color="transparent")
+        row_fb.pack(fill="x", pady=(0, 4))
+        cb_breakout = ctk.CTkCheckBox(
+            row_fb,
+            text="돌파 강도 필터",
+            variable=self.var_filter_breakout,
+            font=ctk.CTkFont(size=13),
+        )
+        cb_breakout.pack(side="left")
+        _HoverTooltip(cb_breakout, tt_breakout)
+
+        row_tb = ctk.CTkFrame(rules_wrap, fg_color="transparent")
+        row_tb.pack(fill="x", pady=(0, 6))
+        cb_timebuf = ctk.CTkCheckBox(
+            row_tb,
+            text="시간 버퍼 필터",
+            variable=self.var_filter_timebuf,
+            font=ctk.CTkFont(size=13),
+        )
+        cb_timebuf.pack(side="left")
+        _HoverTooltip(cb_timebuf, tt_timebuf)
+
         self.text_trading_rules = ctk.CTkTextbox(
             rules_wrap,
-            height=FIXED_RULES_H,
+            height=FIXED_RULES_TEXT_H,
             font=ctk.CTkFont(size=13),
             wrap="word",
         )
@@ -477,6 +615,10 @@ class BacktestGUI(ctk.CTk):
         self._refresh_trading_rules_display()
         self.var_ma_period.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_interval.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_filter_trend.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_filter_breakout.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_filter_timebuf.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_slope_threshold.trace_add("write", lambda *_: self._refresh_trading_rules_display())
 
         self.lbl_status = ctk.CTkLabel(
             self,
