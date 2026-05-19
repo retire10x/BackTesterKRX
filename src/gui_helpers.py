@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import tkinter as tk
+from collections.abc import Callable
 from datetime import date, datetime
 from tkinter import messagebox
 
@@ -14,6 +15,8 @@ import customtkinter as ctk
 from src.backtest_constants import TREND_MA_PERIODS
 from src.data_loader import default_backtest_period_range, load_config
 from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
+
+TooltipTextFn = str | Callable[[], str]
 
 
 def date_entry_theme_kw() -> dict[str, str]:
@@ -47,7 +50,9 @@ def date_entry_theme_kw() -> dict[str, str]:
 class HoverTooltip:
     """체크박스·입력칸 등에 마우스를 올렸을 때 잠시 후 노란 설명 팝업."""
 
-    def __init__(self, widget: tk.Misc, text: str, delay_ms: int = 420) -> None:
+    def __init__(
+        self, widget: tk.Misc, text: TooltipTextFn, delay_ms: int = 420
+    ) -> None:
         self._widget = widget
         self._text = text
         self._delay_ms = delay_ms
@@ -82,9 +87,10 @@ class HoverTooltip:
         except tk.TclError:
             pass
         self._tip.wm_geometry(f"+{x}+{y}")
+        body = self._text() if callable(self._text) else self._text
         lbl = tk.Label(
             self._tip,
-            text=self._text,
+            text=body,
             justify="left",
             background="#fffacd",
             relief="solid",
@@ -108,10 +114,18 @@ def parse_yaml_date(s: str) -> date | None:
         return None
 
 
-def trading_rules_static_text(ma_n: int, interval: str) -> str:
+def trading_rules_static_text(
+    ma_n: int,
+    interval: str,
+    *,
+    trailing_stop_enabled: bool = False,
+    trailing_hinge_pct: float = 10.0,
+    trailing_below_drop_pct: float = 3.0,
+    trailing_above_drop_pct: float = 5.0,
+) -> str:
     """우측 매매 규칙 패널용 안내 문구(엔진 strategy.add_signals 와 동일 전제)."""
     bar_kw = "주간 봉" if interval.strip().lower() == "weekly" else "일간 봉"
-    return (
+    body = (
         "※ 아래 체크 필터는 매수 진입에만 적용(매도 신호는 동일).\n\n"
         f"매매 기준 : 종가 기준 {ma_n}기간 단순 이동평균 ({bar_kw})\n\n"
         "1. 매매 기준 이평선 골든크로스 매수, 데드크로스 매도.\n"
@@ -120,6 +134,20 @@ def trading_rules_static_text(ma_n: int, interval: str) -> str:
         "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다.\n\n"
         "[v4.0] 활성화한 필터는 엔진에서 AND 로 결합됩니다."
     )
+    if not trailing_stop_enabled:
+        return body
+    hinge = trailing_hinge_pct
+    bd = trailing_below_drop_pct
+    ad = trailing_above_drop_pct
+    body += (
+        "\n\n"
+        "[v4.4] 가변 낙폭 매도: 보유 중 매수 체결가 대비 장중 최고가(워터마크) 기준 피크 "
+        "수익률이 "
+        f"기준 {hinge:g}% 미만이면 고점 대비 {bd:g}% 하락 종가 확정 시(다음 봉 시가 청산), "
+        f"피크가 한 번이라도 기준 {hinge:g}% 이상이면 고점 대비 {ad:g}% 하락 시 청산합니다. "
+        "이 조건은 데드크로스 전에도 우선 적용되며 차트 타점은 밝은 노란색 ▼ 로 표시됩니다."
+    )
+    return body
 
 
 def gui_summary_five_lines(res: BacktestResult) -> str:
@@ -188,6 +216,14 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_filter_timebuf.set(bool(st["filter_time_buffer"]))
     if st.get("slope_threshold") is not None:
         ui.var_slope_threshold.set(str(st["slope_threshold"]))
+    if "trailing_stop_enabled" in st:
+        ui.var_trailing_stop.set(bool(st["trailing_stop_enabled"]))
+    if st.get("trailing_reference_pct") is not None:
+        ui.var_trailing_reference_pct.set(str(st["trailing_reference_pct"]))
+    if st.get("trailing_drop_below_pct") is not None:
+        ui.var_trailing_drop_below_pct.set(str(st["trailing_drop_below_pct"]))
+    if st.get("trailing_drop_above_pct") is not None:
+        ui.var_trailing_drop_above_pct.set(str(st["trailing_drop_above_pct"]))
     port = cfg.get("portfolio", {})
     if port.get("initial_cash") is not None:
         ui.var_cash.set(str(int(port["initial_cash"])))
@@ -273,5 +309,34 @@ def try_build_config(ui: "BacktestGUI", *, silent: bool = False) -> dict | None:
         ui.var_filter_breakout.get()
     )
     cfg.setdefault("strategy", {})["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
+
+    try:
+        t_ref = float(
+            str(ui.var_trailing_reference_pct.get()).replace(",", "").strip()
+        )
+        t_below = float(
+            str(ui.var_trailing_drop_below_pct.get()).replace(",", "").strip()
+        )
+        t_above = float(
+            str(ui.var_trailing_drop_above_pct.get()).replace(",", "").strip()
+        )
+    except ValueError:
+        messagebox.showerror(
+            "오류",
+            "가변 낙폭 매도 수치(기준·미달·돌파 %)는 숫자로 입력하세요.",
+        )
+        return None
+    if t_ref <= 0 or t_below <= 0 or t_above <= 0:
+        messagebox.showerror(
+            "오류",
+            "가변 낙폭 매도 기준 및 낙폭 값은 모두 양수여야 합니다.",
+        )
+        return None
+    cfg.setdefault("strategy", {})["trailing_stop_enabled"] = bool(
+        ui.var_trailing_stop.get()
+    )
+    cfg.setdefault("strategy", {})["trailing_reference_pct"] = t_ref
+    cfg.setdefault("strategy", {})["trailing_drop_below_pct"] = t_below
+    cfg.setdefault("strategy", {})["trailing_drop_above_pct"] = t_above
 
     return cfg

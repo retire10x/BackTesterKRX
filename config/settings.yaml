@@ -29,6 +29,11 @@ strategy:
   slope_threshold: 0.01
   filter_breakout_strength: false
   filter_time_buffer: false
+  # v4.4 가변 고점 대비 낙폭 매도 (보유 중, 다음 봉 시가 청산)
+  trailing_stop_enabled: false
+  trailing_reference_pct: 10.0      # 피크 수익률 기준 %
+  trailing_drop_below_pct: 3.0     # 미만 구간 적용 고점 대비 하락 %
+  trailing_drop_above_pct: 5.0     # 기준 도달 후 적용 고점 대비 하락 %
 
 # 매매 비용
 trading_costs:

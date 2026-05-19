@@ -89,7 +89,7 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(`filter_trend_slope`, `slope_threshold`, `filter_breakout_strength`, `filter_time_buffer`), 차트 패널 토글, 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일 이동·차트 위 마우스 휠은 **7일** 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
+`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(`filter_trend_slope`, `slope_threshold`, `filter_breakout_strength`, `filter_time_buffer`), **v4.4 가변 낙폭 매도**(`trailing_stop_enabled`, `trailing_reference_pct`, `trailing_drop_below_pct`, `trailing_drop_above_pct`), 차트 패널 토글, 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일 이동·차트 위 마우스 휠은 **7일** 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
 
 ## 소스 역할 (파일별)
 

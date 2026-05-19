@@ -24,6 +24,8 @@ from .backtest_constants import (
     MARKER_BUY_OUTLINE,
     MARKER_SELL_COLOR,
     MARKER_SELL_OUTLINE,
+    MARKER_TRAIL_STOP_COLOR,
+    MARKER_TRAIL_STOP_OUTLINE,
     TREND_MA_COLORS,
     TRADE_MARKER_OFFSET_PT,
 )
@@ -111,8 +113,11 @@ def _draw_trade_markers_matplotlib(
     buy_fx = [
         pe.withStroke(linewidth=1.25, foreground=MARKER_BUY_OUTLINE),
     ]
-    sell_fx = [
+    sell_fx_ma = [
         pe.withStroke(linewidth=1.35, foreground=MARKER_SELL_OUTLINE),
+    ]
+    sell_fx_trail = [
+        pe.withStroke(linewidth=1.35, foreground=MARKER_TRAIL_STOP_OUTLINE),
     ]
 
     for t in buys:
@@ -138,18 +143,24 @@ def _draw_trade_markers_matplotlib(
         if bi is None:
             skipped_count += 1
             continue
+        if str((t.get("reason") or "")).strip().lower() == "trail_stop":
+            scolor = MARKER_TRAIL_STOP_COLOR
+            sfx = sell_fx_trail
+        else:
+            scolor = MARKER_SELL_COLOR
+            sfx = sell_fx_ma
         ann = ax.annotate(
             "▼",
             xy=(xnums[bi], float(high.iloc[bi])),
             xytext=(0.0, TRADE_MARKER_OFFSET_PT),
             textcoords="offset points",
             fontsize=MARKER_ANNOT_SIZE,
-            color=MARKER_SELL_COLOR,
+            color=scolor,
             ha="center",
             va="center",
             zorder=6,
         )
-        ann.set_path_effects(sell_fx)
+        ann.set_path_effects(sfx)
 
     if skipped_count > 0:
         error_msg = (

@@ -4,6 +4,7 @@
 
 v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
 v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
+v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
 v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.
 """
 from __future__ import annotations
@@ -42,6 +43,16 @@ def strategy_entry_filters_from_cfg(st: dict) -> dict[str, bool | float]:
         "slope_threshold": float(st.get("slope_threshold", 0.01)),
         "filter_breakout_strength": bool(st.get("filter_breakout_strength", False)),
         "filter_time_buffer": bool(st.get("filter_time_buffer", False)),
+    }
+
+
+def strategy_trailing_stop_from_cfg(st: dict) -> dict[str, bool | float]:
+    """strategy 블록 → simulate_single trailing_stop kwargs."""
+    return {
+        "enabled": bool(st.get("trailing_stop_enabled", False)),
+        "trailing_reference_pct": float(st.get("trailing_reference_pct", 10.0)),
+        "trailing_drop_below_pct": float(st.get("trailing_drop_below_pct", 3.0)),
+        "trailing_drop_above_pct": float(st.get("trailing_drop_above_pct", 5.0)),
     }
 
 
@@ -233,9 +244,24 @@ def run_backtest_detailed(
             parts.append("시간버퍼")
         lines.append("[전략 v4.0] 매수 진입 필터: " + ", ".join(parts))
 
+    trail_cfg = strategy_trailing_stop_from_cfg(st)
+    if trail_cfg["enabled"]:
+        lines.append(
+            "[전략 v4.4] 가변 낙폭 매도: "
+            f"기준 {trail_cfg['trailing_reference_pct']}% 미만 피크 → "
+            f"고점 대비 {trail_cfg['trailing_drop_below_pct']}%, "
+            f"이상 도달 시 고점 대비 {trail_cfg['trailing_drop_above_pct']}%"
+        )
+
     sig_df = add_entry_filter_columns(add_signals(bars, ma_n))
     res = simulate_single(
-        sig_df, str(start), initial, buy_c, sell_c, entry_filters=entry_ef
+        sig_df,
+        str(start),
+        initial,
+        buy_c,
+        sell_c,
+        entry_filters=entry_ef,
+        trailing_stop=trail_cfg,
     )
     if res is None:
         return BacktestResult(False, "시뮬 구간이 너무 짧습니다.", [], None, lines)
@@ -334,5 +360,6 @@ __all__ = [
     "save_backtest_report_png",
     "save_figure_as_png",
     "strategy_entry_filters_from_cfg",
+    "strategy_trailing_stop_from_cfg",
     "trend_overlay_flags_from_strategy",
 ]

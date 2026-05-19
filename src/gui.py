@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (우측 매매 규칙·진입 필터 + 차트).
+차트: output/backtest_report.png → CTkImage (범례·매매 규칙 패널 + 차트).
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 """
 from __future__ import annotations
@@ -37,7 +37,7 @@ ctk.set_default_color_theme("blue")
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
 FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 1020  # 우측: 매매 규칙·필터 + 차트
+FIXED_RIGHT_PANEL_H = 1170  # 우측: 범례 + 매매 규칙 섹션 + 차트·설명
 
 FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
@@ -56,7 +56,7 @@ DATE_CLAMP_MIN = date(1990, 1, 1)
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v4.1")
+        self.title("BackTesterKRX v4.4")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -286,38 +286,48 @@ class BacktestGUI(ctk.CTk):
         self.var_filter_breakout = ctk.BooleanVar(value=False)
         self.var_filter_timebuf = ctk.BooleanVar(value=False)
 
+        self.var_trailing_stop = ctk.BooleanVar(value=False)
+        self.var_trailing_reference_pct = ctk.StringVar(value="10")
+        self.var_trailing_drop_below_pct = ctk.StringVar(value="3.0")
+        self.var_trailing_drop_above_pct = ctk.StringVar(value="5.0")
+
         right = ctk.CTkFrame(
             self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_RIGHT_PANEL_H
         )
         right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
         right.grid_propagate(False)
-        right.grid_rowconfigure(0, weight=0)
-        right.grid_rowconfigure(1, weight=0)
-        right.grid_rowconfigure(2, weight=0)
+        right.grid_rowconfigure(0, weight=0)  # 이평 범례
+        right.grid_rowconfigure(1, weight=0)  # 매매 규칙(전략 옵션)
+        right.grid_rowconfigure(2, weight=0)  # 차트
+        right.grid_rowconfigure(3, weight=0)  # 설명 텍스트
         right.grid_columnconfigure(0, weight=1)
 
-        # 차트 바로 위: 이평 범례 + 「매매 규칙」(전부 1행 높이에 가깝게)
-        chart_bar = ctk.CTkFrame(right, fg_color="transparent")
-        chart_bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 2))
-        chart_bar.grid_columnconfigure(1, weight=1)
-
-        legend_wrap = ctk.CTkFrame(chart_bar, fg_color="transparent")
-        legend_wrap.grid(row=0, column=0, sticky="nsw", padx=(0, 8))
+        # ── 차트 위: 추세 이평 범례만 (한 줄·차트 폭 활용)
+        legend_bar = ctk.CTkFrame(right, fg_color="transparent")
+        legend_bar.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 6))
+        ctk.CTkLabel(
+            legend_bar,
+            text="차트 범례 · 추세 이평",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        ).pack(anchor="w", pady=(0, 4))
+        legend_row = ctk.CTkFrame(legend_bar, fg_color="transparent")
+        legend_row.pack(fill="x", anchor="w")
         for p in TREND_MA_PERIODS:
-            cell = ctk.CTkFrame(legend_wrap, fg_color="transparent")
-            cell.pack(side="left", padx=(0, 10))
+            cell = ctk.CTkFrame(legend_row, fg_color="transparent")
+            cell.pack(side="left", padx=(0, 14), pady=2)
             ctk.CTkLabel(
                 cell,
                 text="",
-                width=16,
-                height=4,
+                width=18,
+                height=5,
                 fg_color=TREND_MA_COLORS[p],
                 corner_radius=2,
-            ).pack(side="left", padx=(0, 4))
+            ).pack(side="left", padx=(0, 6))
             ctk.CTkLabel(
                 cell,
                 text=f"{p}일선",
-                font=ctk.CTkFont(size=10),
+                font=ctk.CTkFont(size=11),
             ).pack(side="left")
 
         tt_trend = (
@@ -334,27 +344,45 @@ class BacktestGUI(ctk.CTk):
             "대세 상승 필터 전용: 120일선 선형회귀 기울기(최근 5봉·OLS β₁) 최소값."
         )
 
-        rules_group = ctk.CTkFrame(
-            chart_bar,
-            corner_radius=6,
+        rules_panel = ctk.CTkFrame(
+            right,
+            corner_radius=8,
             border_width=1,
             border_color=("gray65", "gray45"),
             fg_color=("gray92", "gray18"),
         )
-        rules_group.grid(row=0, column=1, sticky="nsew")
+        rules_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
 
-        rules_row = ctk.CTkFrame(rules_group, fg_color="transparent")
-        rules_row.pack(fill="x", padx=6, pady=3)
-
+        rules_head = ctk.CTkFrame(rules_panel, fg_color="transparent")
+        rules_head.pack(fill="x", padx=10, pady=(10, 6))
         ctk.CTkLabel(
-            rules_row,
-            text="매매 규칙",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            rules_head,
+            text="매매 규칙 · 전략 옵션",
+            font=ctk.CTkFont(size=13, weight="bold"),
             anchor="w",
-        ).pack(side="left", padx=(0, 10))
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            rules_head,
+            text="아래 설정은 YAML·CLI와 동기화되며, 규칙 추가 시 이 영역을 확장하면 됩니다.",
+            font=ctk.CTkFont(size=11),
+            text_color=("gray35", "gray60"),
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        row_entry_filters = ctk.CTkFrame(rules_panel, fg_color="transparent")
+        row_entry_filters.pack(fill="x", padx=10, pady=(4, 6))
+        ctk.CTkLabel(
+            row_entry_filters,
+            text="매수 진입 필터",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            width=118,
+            anchor="w",
+        ).pack(side="left", padx=(0, 14))
+        rf_inner = ctk.CTkFrame(row_entry_filters, fg_color="transparent")
+        rf_inner.pack(side="left", fill="x", expand=True)
 
         cb_trend = ctk.CTkCheckBox(
-            rules_row,
+            rf_inner,
             text="대세 상승 필터",
             variable=self.var_filter_trend,
             font=ctk.CTkFont(size=11),
@@ -363,29 +391,29 @@ class BacktestGUI(ctk.CTk):
         )
         cb_trend.pack(side="left")
         cb_breakout = ctk.CTkCheckBox(
-            rules_row,
+            rf_inner,
             text="돌파 강도 필터",
             variable=self.var_filter_breakout,
             font=ctk.CTkFont(size=11),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_breakout.pack(side="left", padx=(8, 0))
+        cb_breakout.pack(side="left", padx=(12, 0))
         cb_timebuf = ctk.CTkCheckBox(
-            rules_row,
+            rf_inner,
             text="시간 버퍼 필터",
             variable=self.var_filter_timebuf,
             font=ctk.CTkFont(size=11),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_timebuf.pack(side="left", padx=(8, 0))
+        cb_timebuf.pack(side="left", padx=(12, 0))
 
         ctk.CTkLabel(
-            rules_row,
-            text="임계값 (Slope Threshold):",
+            rf_inner,
+            text="Slope 임계값:",
             font=ctk.CTkFont(size=11),
-        ).pack(side="left", padx=(12, 3))
+        ).pack(side="left", padx=(18, 4))
 
         def _bump_slope(delta: float) -> None:
             try:
@@ -396,21 +424,21 @@ class BacktestGUI(ctk.CTk):
             s = f"{v:.4f}".rstrip("0").rstrip(".")
             self.var_slope_threshold.set(s or "0")
 
-        slope_spin = ctk.CTkFrame(rules_row, fg_color="transparent")
+        slope_spin = ctk.CTkFrame(rf_inner, fg_color="transparent")
         slope_spin.pack(side="left")
         ctk.CTkButton(
             slope_spin,
             text="▴",
             width=22,
-            height=22,
+            height=24,
             font=ctk.CTkFont(size=10),
             corner_radius=3,
             command=lambda: _bump_slope(0.01),
         ).pack(side="left", padx=(0, 2))
         self.entry_slope_threshold = ctk.CTkEntry(
             slope_spin,
-            width=52,
-            height=22,
+            width=56,
+            height=24,
             font=ctk.CTkFont(size=11),
             textvariable=self.var_slope_threshold,
         )
@@ -419,21 +447,120 @@ class BacktestGUI(ctk.CTk):
             slope_spin,
             text="▾",
             width=22,
-            height=22,
+            height=24,
             font=ctk.CTkFont(size=10),
             corner_radius=3,
             command=lambda: _bump_slope(-0.01),
         ).pack(side="left", padx=(2, 0))
 
+        row_exit_rules = ctk.CTkFrame(rules_panel, fg_color="transparent")
+        row_exit_rules.pack(fill="x", padx=10, pady=(6, 10))
+        ctk.CTkLabel(
+            row_exit_rules,
+            text="청산 보조",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            width=118,
+            anchor="w",
+        ).pack(side="left", padx=(0, 14), anchor="n", pady=(2, 0))
+        trailing_inner = ctk.CTkFrame(row_exit_rules, fg_color="transparent")
+        trailing_inner.pack(side="left", fill="x", expand=True)
+
+        trailing_line1 = ctk.CTkFrame(trailing_inner, fg_color="transparent")
+        trailing_line1.pack(fill="x")
+        cb_trailing = ctk.CTkCheckBox(
+            trailing_line1,
+            text="가변 낙폭 매도 (v4.4 고점 대비 트레일)",
+            variable=self.var_trailing_stop,
+            font=ctk.CTkFont(size=11),
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        cb_trailing.pack(side="left")
+        trailing_line2 = ctk.CTkFrame(trailing_inner, fg_color="transparent")
+        trailing_line2.pack(fill="x", pady=(8, 0))
+        indent = ctk.CTkFrame(trailing_line2, fg_color="transparent")
+        indent.pack(fill="x", padx=(22, 0))
+        ctk.CTkLabel(indent, text="기준", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=(0, 4)
+        )
+        self.entry_trailing_ref = ctk.CTkEntry(
+            indent,
+            width=48,
+            height=26,
+            font=ctk.CTkFont(size=11),
+            textvariable=self.var_trailing_reference_pct,
+        )
+        self.entry_trailing_ref.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(indent, text="% 피크 수익률", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=(0, 16)
+        )
+        ctk.CTkLabel(indent, text="미달 시 고점 대비", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=(0, 4)
+        )
+        self.entry_trailing_below = ctk.CTkEntry(
+            indent,
+            width=48,
+            height=26,
+            font=ctk.CTkFont(size=11),
+            textvariable=self.var_trailing_drop_below_pct,
+        )
+        self.entry_trailing_below.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(indent, text="% 하락 청산", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=(0, 16)
+        )
+        ctk.CTkLabel(indent, text="돌파 시 고점 대비", font=ctk.CTkFont(size=11)).pack(
+            side="left", padx=(0, 4)
+        )
+        self.entry_trailing_above = ctk.CTkEntry(
+            indent,
+            width=48,
+            height=26,
+            font=ctk.CTkFont(size=11),
+            textvariable=self.var_trailing_drop_above_pct,
+        )
+        self.entry_trailing_above.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(indent, text="% 하락 청산", font=ctk.CTkFont(size=11)).pack(
+            side="left"
+        )
+
+        def _trailing_tooltip_body() -> str:
+            try:
+                g = float(
+                    str(self.var_trailing_reference_pct.get())
+                    .replace(",", "")
+                    .strip()
+                )
+                b = float(
+                    str(self.var_trailing_drop_below_pct.get())
+                    .replace(",", "")
+                    .strip()
+                )
+                a = float(
+                    str(self.var_trailing_drop_above_pct.get())
+                    .replace(",", "")
+                    .strip()
+                )
+                g_s, b_s, a_s = f"{g:g}", f"{b:g}", f"{a:g}"
+            except ValueError:
+                g_s, b_s, a_s = "?", "?", "?"
+            return (
+                f"매수 이후 최고가 기준 수익률이 {g_s}% 미만일 때는 최고가 대비 {b_s}% 하락 시 조기 청산, "
+                f"{g_s}% 이상 도달했었을 때는 {a_s}% 하락 시 청산하여 대시세 수익을 보존함."
+            )
+
         HoverTooltip(cb_trend, tt_trend)
         HoverTooltip(self.entry_slope_threshold, tt_slope)
         HoverTooltip(cb_breakout, tt_breakout)
         HoverTooltip(cb_timebuf, tt_timebuf)
+        HoverTooltip(cb_trailing, _trailing_tooltip_body)
+        HoverTooltip(self.entry_trailing_ref, _trailing_tooltip_body)
+        HoverTooltip(self.entry_trailing_below, _trailing_tooltip_body)
+        HoverTooltip(self.entry_trailing_above, _trailing_tooltip_body)
 
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )
-        self.chart_frame.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 8))
+        self.chart_frame.grid(row=2, column=0, sticky="nw", padx=14, pady=(0, 8))
 
         self.text_trading_rules = ctk.CTkTextbox(
             right,
@@ -441,7 +568,7 @@ class BacktestGUI(ctk.CTk):
             font=ctk.CTkFont(size=13),
             wrap="word",
         )
-        self.text_trading_rules.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
+        self.text_trading_rules.grid(row=3, column=0, sticky="ew", padx=14, pady=(0, 14))
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
@@ -465,6 +592,18 @@ class BacktestGUI(ctk.CTk):
         self.var_filter_breakout.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_filter_timebuf.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_slope_threshold.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_trailing_stop.trace_add(
+            "write", lambda *_: self._refresh_trading_rules_display()
+        )
+        self.var_trailing_reference_pct.trace_add(
+            "write", lambda *_: self._refresh_trading_rules_display()
+        )
+        self.var_trailing_drop_below_pct.trace_add(
+            "write", lambda *_: self._refresh_trading_rules_display()
+        )
+        self.var_trailing_drop_above_pct.trace_add(
+            "write", lambda *_: self._refresh_trading_rules_display()
+        )
 
         self.lbl_status = ctk.CTkLabel(
             self,
@@ -496,7 +635,27 @@ class BacktestGUI(ctk.CTk):
         if ma_n not in (5, 10, 20):
             ma_n = 20
         interval = (self.var_interval.get() or "daily").strip().lower()
-        body = trading_rules_static_text(ma_n, interval)
+        ts_en = bool(self.var_trailing_stop.get())
+        try:
+            t_ref = float(
+                str(self.var_trailing_reference_pct.get()).replace(",", "").strip()
+            )
+            t_bel = float(
+                str(self.var_trailing_drop_below_pct.get()).replace(",", "").strip()
+            )
+            t_abv = float(
+                str(self.var_trailing_drop_above_pct.get()).replace(",", "").strip()
+            )
+        except ValueError:
+            t_ref, t_bel, t_abv = 10.0, 3.0, 5.0
+        body = trading_rules_static_text(
+            ma_n,
+            interval,
+            trailing_stop_enabled=ts_en,
+            trailing_hinge_pct=t_ref,
+            trailing_below_drop_pct=t_bel,
+            trailing_above_drop_pct=t_abv,
+        )
         tb = self.text_trading_rules
         tb.configure(state="normal")
         tb.delete("1.0", "end")
