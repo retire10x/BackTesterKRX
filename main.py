@@ -67,6 +67,11 @@ def run_backtest_cli(cfg: dict, override_code: str | None = None) -> bool:
     if not r.ok:
         print(f"[오류] {r.error}")
         return False
+    if r.trade_markers_skipped > 0:
+        print(
+            f"[경고] 차트 타점 {r.trade_markers_skipped}건이 날짜 매칭 실패로 생략되었습니다. 로그의 [CRITICAL] 줄을 확인하세요.",
+            file=sys.stderr,
+        )
     print("\n" + "=" * 52)
     print(" 백테스트 성과 (싱글 종목)")
     print("=" * 52)

@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (v3.0+: 시작·종료일 캘린더·종목 선택 유지 등).
+차트: output/backtest_report.png → CTkImage (우측 상단 매매 규칙 참조 패널 + 차트).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -34,10 +34,13 @@ ctk.set_default_color_theme("blue")
 # ==========================================
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
-FIXED_PANEL_H = 780   # 좌/우 패널의 고정 세로 높이
+FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
+FIXED_RIGHT_PANEL_H = 912  # 우측: 매매 규칙 + 차트 (좌측과 동일 시각 무게를 위해 여유 포함)
 
 FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
+
+FIXED_RULES_H = 120   # 우측 상단 매매 규칙(읽기 전용) 영역 높이
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
@@ -76,6 +79,19 @@ def _parse_yaml_date(s: str) -> date | None:
         return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
+
+
+def _trading_rules_static_text(ma_n: int, interval: str) -> str:
+    """우측 매매 규칙 패널용 안내 문구(엔진 strategy.add_signals 와 동일 전제)."""
+    bar_kw = "주간 봉" if interval.strip().lower() == "weekly" else "일간 봉"
+    return (
+        "※ 편집 불가 · 참고용\n\n"
+        f"매매 기준 : 종가 기준 {ma_n}기간 단순 이동평균 ({bar_kw})\n\n"
+        "1. 매매 기준 이평선 골든크로스 매수, 데드크로스 매도.\n"
+        "   → 종가가 위 이평선을 상향 돌파하면 매수 신호, 하향 돌파하면 매도 신호 "
+        "(전일·당일 종가와 당일 이평으로 판단).\n\n"
+        "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다."
+    )
 
 
 def _gui_summary_five_lines(res: BacktestResult) -> str:
@@ -414,17 +430,35 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
         self.text_summary.configure(state="disabled")
 
-        right = ctk.CTkFrame(self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_PANEL_H)
+        right = ctk.CTkFrame(
+            self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_RIGHT_PANEL_H
+        )
         right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
         right.grid_propagate(False)
-        right.grid_rowconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=0)
+        right.grid_rowconfigure(1, weight=0)
         right.grid_columnconfigure(0, weight=1)
+
+        rules_wrap = ctk.CTkFrame(right, fg_color="transparent")
+        rules_wrap.grid(row=0, column=0, sticky="ew", padx=14, pady=(14, 8))
+        ctk.CTkLabel(
+            rules_wrap,
+            text="매매 규칙",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        self.text_trading_rules = ctk.CTkTextbox(
+            rules_wrap,
+            height=FIXED_RULES_H,
+            font=ctk.CTkFont(size=13),
+            wrap="word",
+        )
+        self.text_trading_rules.pack(fill="x")
 
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )  # 가로 1020 × 세로 FIXED_CHART_H
         self.chart_frame.grid(
-            row=0, column=0, sticky="nw", padx=14, pady=(14, 14)
+            row=1, column=0, sticky="nw", padx=14, pady=(0, 14)
         )
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
@@ -440,6 +474,9 @@ class BacktestGUI(ctk.CTk):
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
 
         _apply_yaml_to_widgets(self)
+        self._refresh_trading_rules_display()
+        self.var_ma_period.trace_add("write", lambda *_: self._refresh_trading_rules_display())
+        self.var_interval.trace_add("write", lambda *_: self._refresh_trading_rules_display())
 
         self.lbl_status = ctk.CTkLabel(
             self,
@@ -461,6 +498,22 @@ class BacktestGUI(ctk.CTk):
             "「백테스트 실행」 후 이곳에 성과 요약(5줄)이 표시됩니다."
         )
         self._apply_maximized_geometry()
+
+    def _refresh_trading_rules_display(self, *_args: object) -> None:
+        """우측 매매 규칙 패널(읽기 전용 텍스트). 매매 이평·조회 주기 변경 시 갱신."""
+        try:
+            ma_n = int(self.var_ma_period.get())
+        except ValueError:
+            ma_n = 20
+        if ma_n not in (5, 10, 20):
+            ma_n = 20
+        interval = (self.var_interval.get() or "daily").strip().lower()
+        body = _trading_rules_static_text(ma_n, interval)
+        tb = self.text_trading_rules
+        tb.configure(state="normal")
+        tb.delete("1.0", "end")
+        tb.insert("1.0", body)
+        tb.configure(state="disabled")
 
     def _apply_maximized_geometry(self) -> None:
         try:
@@ -565,7 +618,17 @@ class BacktestGUI(ctk.CTk):
 
         self.update_idletasks()
         self._update_chart_image(res.report_path)
-        self.lbl_status.configure(text="완료")
+        if res.trade_markers_skipped > 0:
+            self.lbl_status.configure(
+                text=f"완료 · 매칭 실패 오류 발생 — 차트 타점 {res.trade_markers_skipped}건 누락"
+            )
+            messagebox.showwarning(
+                "차트 타점 누락",
+                f"{res.trade_markers_skipped}건의 매매가 차트 날짜 인덱스와 일치하지 않아 표시하지 못했습니다.\n"
+                "요약 로그의 [CRITICAL] 항목과 터미널 메시지를 확인하고 데이터를 점검하세요.",
+            )
+        else:
+            self.lbl_status.configure(text="완료")
 
 
 def main():

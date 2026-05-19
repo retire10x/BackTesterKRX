@@ -1,12 +1,13 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v3.3: 타점 매도색 노랑·offset points 15pt 고정;
- v3.2 차트 클린화·v3.0 HTS형 축·격자 유지.)
+(GUI/Tkinter 비의존. v3.5: 타점 인덱스 불일치 시 CRITICAL 로그·GUI 경고;
+ v3.4 날짜 엄격 매칭·축 바인딩·v3.3 타점 스타일.)
 """
 from __future__ import annotations
 
 import datetime
 import os
+import sys
 import warnings
 from dataclasses import dataclass
 
@@ -44,13 +45,16 @@ TREND_MA_COLORS: dict[int, str] = {
     200: "#6a1b9a",
 }
 
-# 타점 마커 — 데이터 앵커(저가/고가) + offset points 고정 간격(v3.3)
+# 타점 마커 — 데이터 앵커(저가/고가) + offset points 고정 간격(v3.3·v3.4 매칭)
 TRADE_MARKER_OFFSET_PT = 15.0
 MARKER_BUY_COLOR = "#2e7d32"
 MARKER_BUY_OUTLINE = "#1b5e20"
 MARKER_SELL_COLOR = "#fdd835"
 MARKER_SELL_OUTLINE = "#b45309"
 MARKER_ANNOT_SIZE = 11
+
+# make_backtest_figure 가 생성한 Figure 에 부착: 차트에서 스킵된 매매 타점 건수(v3.5)
+FIG_ATTR_TRADE_MARKERS_SKIPPED = "_trade_markers_skipped"
 
 
 @dataclass
@@ -63,6 +67,7 @@ class BacktestResult:
     replay_chart: dict | None = None
     n_buy: int = 0
     n_sell: int = 0
+    trade_markers_skipped: int = 0
 
 
 def normalize_interval(s: str) -> str:
@@ -142,18 +147,24 @@ def _save_report_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
 
 
 def _trade_resolve_bar_index(t: dict, idx: pd.DatetimeIndex) -> int | None:
-    """거래일 → 시뮬 인덱스 내 봉 번호(실패 시 None)."""
-    ts = pd.Timestamp(t["date"])
-    if ts not in idx:
-        pos = idx.get_indexer([ts], method="nearest")
-        if pos.size and pos[0] >= 0:
-            ts = idx[int(pos[0])]
-        else:
-            return None
-    loc = idx.get_indexer([ts])
-    if loc.size == 0 or loc[0] < 0:
+    """거래일 → 시뮬 인덱스 내 봉 번호. 자정 기준 일자 normalize 후 정확히 일치할 때만(nearest 금지)."""
+    trade_ts = pd.Timestamp(t["date"])
+    idx_tz = getattr(idx, "tz", None)
+    if idx_tz is not None:
+        trade_ts = (
+            trade_ts.tz_localize(idx_tz, ambiguous="infer", nonexistent="shift_forward")
+            if trade_ts.tzinfo is None
+            else trade_ts.tz_convert(idx_tz)
+        )
+    elif trade_ts.tzinfo is not None:
+        trade_ts = trade_ts.tz_convert(None)
+
+    target = trade_ts.normalize()
+    idx_norm = idx.normalize()
+    pos = idx_norm.get_indexer([target], method=None)
+    if pos.size == 0 or int(pos[0]) < 0:
         return None
-    return int(loc[0])
+    return int(pos[0])
 
 
 def _draw_trade_markers_matplotlib(
@@ -161,14 +172,16 @@ def _draw_trade_markers_matplotlib(
     buys: list[dict],
     sells: list[dict],
     odata: pd.DataFrame,
-) -> None:
-    """매수▲·매도▼ — 저가/고가에 데이터 앵커 후 offset points 로 고정 pt 간격."""
+) -> int:
+    """매수▲·매도▼ — 저가/고가 앵커 + offset points. 매칭 실패 건수를 반환(v3.5)."""
     import matplotlib.patheffects as pe
 
     idx = odata.index
     low = odata["Low"].astype(float)
     high = odata["High"].astype(float)
     xnums = np.arange(len(idx), dtype=float)
+
+    skipped_count = 0
 
     buy_fx = [
         pe.withStroke(linewidth=1.25, foreground=MARKER_BUY_OUTLINE),
@@ -180,6 +193,7 @@ def _draw_trade_markers_matplotlib(
     for t in buys:
         bi = _trade_resolve_bar_index(t, idx)
         if bi is None:
+            skipped_count += 1
             continue
         ann = ax.annotate(
             "▲",
@@ -197,6 +211,7 @@ def _draw_trade_markers_matplotlib(
     for t in sells:
         bi = _trade_resolve_bar_index(t, idx)
         if bi is None:
+            skipped_count += 1
             continue
         ann = ax.annotate(
             "▼",
@@ -211,7 +226,16 @@ def _draw_trade_markers_matplotlib(
         )
         ann.set_path_effects(sell_fx)
 
+    if skipped_count > 0:
+        error_msg = (
+            f"[CRITICAL ERROR] 총 {skipped_count}건의 매매 타점이 차트 OHLCV 날짜 인덱스와 "
+            "매칭되지 않아 렌더링에서 제외되었습니다. "
+            "시뮬 체결일과 차트 데이터의 날짜·타임존·정규화(normalize) 상태를 즉시 재점검하세요."
+        )
+        print(error_msg, file=sys.stderr)
+        warnings.warn(error_msg, RuntimeWarning, stacklevel=2)
 
+    return skipped_count
 def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> None:
     """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보."""
     axes_all = fig.axes
@@ -302,13 +326,19 @@ def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
 def _chart_panel_ratios_and_return_panel(
     show_volume: bool, show_return: bool
 ) -> tuple[tuple[int, ...], int | None]:
-    """거래량·수익률 표시 여부에 따른 mplfinance panel_ratios 및 누적수익률 패널 인덱스."""
+    """거래량·수익률 표시 여부에 따른 mplfinance panel_ratios 및 누적수익률 패널 인덱스.
+
+    거래량·수익률 패널 세로 비중은 기본 대비 약 30% 축소(×0.7)한 정수 비율.
+    """
     if show_volume and show_return:
-        return (5, 2, 3), 2
+        # was (5, 2, 3) → volume/return ×0.7 → (5, 1.4, 2.1) ≡ (50, 14, 21)
+        return (50, 14, 21), 2
     if show_volume and not show_return:
-        return (7, 3), None
+        # was (7, 3) → 3×0.7=2.1 ≡ (10, 3)
+        return (10, 3), None
     if not show_volume and show_return:
-        return (6, 4), 1
+        # was (6, 4) → 4×0.7=2.8 ≡ (15, 7)
+        return (15, 7), 1
     return (1,), None
 
 
@@ -340,7 +370,7 @@ def _draw_static_trend_ma_legend(ax, bar_label: str) -> None:
 
 
 def _draw_trend_ma_lines_on_price_panel(
-    fig: Figure,
+    ax_price,
     idx: pd.DatetimeIndex,
     trend_ma: dict[int, pd.Series] | None,
     bar_label: str,
@@ -348,14 +378,13 @@ def _draw_trend_ma_lines_on_price_panel(
     """추세 이평 오버레이(체크한 기간만). 매매 기준 N과 무관하게 모두 그린다."""
     if not trend_ma:
         return
-    ax_main = fig.axes[0]
     x = np.arange(len(idx))
     for period in sorted(trend_ma.keys()):
         ser = trend_ma[period].reindex(idx).astype(float)
         if not ser.notna().any():
             continue
         color = TREND_MA_COLORS.get(period, "#546e7a")
-        ax_main.plot(
+        ax_price.plot(
             x,
             ser.to_numpy(),
             color=color,
@@ -451,7 +480,7 @@ def make_backtest_figure(
 
     plot_type = "candle" if show_candle else "line"
 
-    fig, _axlist = mpf.plot(
+    fig, axlist = mpf.plot(
         odata,
         type=plot_type,
         style=style,
@@ -466,9 +495,10 @@ def make_backtest_figure(
     )
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
     _apply_hts_style_xaxis(fig, idx)
-    ax_price = fig.axes[0]
-    _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
-    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, bar_label)
+    ax_price = axlist[0]
+    n_skip_tm = _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
+    setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
+    _draw_trend_ma_lines_on_price_panel(ax_price, idx, trend_ma, bar_label)
     _draw_static_trend_ma_legend(ax_price, bar_label)
     return fig
 
@@ -657,6 +687,13 @@ def run_backtest_detailed(
         show_volume=show_chart_volume,
         show_return=show_chart_return,
     )
+    trade_markers_skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
+    if trade_markers_skipped > 0:
+        lines.append(
+            f"[CRITICAL] 차트 타점 {trade_markers_skipped}건이 OHLCV 인덱스와 날짜 매칭 실패로 생략되었습니다. "
+            "체결일·차트 구간·타임존·normalize 를 재점검하세요."
+        )
+
     _save_report_png(fig, out_png)
 
     replay_chart: dict | None = None
@@ -687,4 +724,5 @@ def run_backtest_detailed(
         replay_chart=replay_chart,
         n_buy=n_buy,
         n_sell=n_sell,
+        trade_markers_skipped=trade_markers_skipped,
     )
