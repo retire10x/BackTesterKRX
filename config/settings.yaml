@@ -13,7 +13,7 @@ universe:
 strategy:
   interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
   ma_period: 20          # 매매 시그널 이평: 5, 10, 20 중 권장 (GUI 라디오와 동일)
-  # 추세선 오버레이 (차트 PNG, v2.9) — 체크한 기간만 표시 (매매 기준 이평과 동일 기간은 중복 생략)
+  # 추세선 오버레이 (차트 PNG) — 체크한 기간만 표시 (매매 기준 N과 차트상 독립)
   show_trend_ma5: false
   show_trend_ma10: false
   show_trend_ma20: true

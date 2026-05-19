@@ -1,7 +1,7 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v3.0: HTS형 X축(MM.DD·연도전환 YYYY-MM)·세로 격자 밀도·추세선 범례;
- v2.9 타점·패널 간격·추세 6종·ymargin 유지.)
+(GUI/Tkinter 비의존. v3.2: 차트에서 매매 기준 이평 실선 제거·추세선 독립 렌더·정적 범례=TREND 색;
+ v3.0 HTS형 X축·격자·타점·패널 간격 유지.)
 """
 from __future__ import annotations
 
@@ -43,7 +43,6 @@ TREND_MA_COLORS: dict[int, str] = {
     120: "#ff6f00",
     200: "#6a1b9a",
 }
-MA_PRIMARY_LINE_COLOR = "#263238"  # 매매 기준 이평선 (추세와 동일 기간은 이 색만 사용)
 
 # 타점 마커 (캔들과 분리)
 MARKER_SIZE = 14
@@ -283,21 +282,14 @@ def _chart_panel_ratios_and_return_panel(
     return (1,), None
 
 
-def _trend_legend_color(period: int, ma_n: int) -> str:
-    """차트에 실제로 대응하는 색: 매매 기준과 같은 기간은 매매 이평색, 나머지는 추세 팔레트."""
-    if period == ma_n:
-        return MA_PRIMARY_LINE_COLOR
-    return TREND_MA_COLORS.get(period, "#546e7a")
-
-
-def _draw_static_trend_ma_legend(ax, bar_label: str, ma_n: int) -> None:
-    """추세 이평 6종 명칭 고정 표시. 매매 이평과 동일 기간은 차트의 매매선 색과 맞춘다."""
+def _draw_static_trend_ma_legend(ax, bar_label: str) -> None:
+    """추세 이평 6종 — 범례 색상은 항상 TREND_MA_COLORS 와 1:1."""
     unit = "봉" if "주" in bar_label else "일"
     handles = [
         Line2D(
             [0],
             [0],
-            color=_trend_legend_color(p, ma_n),
+            color=TREND_MA_COLORS[p],
             linewidth=2.4,
             solid_capstyle="round",
             label=f"{p}{unit}선",
@@ -321,17 +313,14 @@ def _draw_trend_ma_lines_on_price_panel(
     fig: Figure,
     idx: pd.DatetimeIndex,
     trend_ma: dict[int, pd.Series] | None,
-    ma_n: int,
     bar_label: str,
 ) -> None:
-    """추세 이평은 선택된 기간만 겹침. 범례는 별도 정적 6종 호출."""
+    """추세 이평 오버레이(체크한 기간만). 매매 기준 N과 무관하게 모두 그린다."""
     if not trend_ma:
         return
     ax_main = fig.axes[0]
     x = np.arange(len(idx))
     for period in sorted(trend_ma.keys()):
-        if period == ma_n:
-            continue
         ser = trend_ma[period].reindex(idx).astype(float)
         if not ser.notna().any():
             continue
@@ -344,15 +333,6 @@ def _draw_trend_ma_lines_on_price_panel(
             solid_capstyle="round",
             zorder=4,
         )
-
-
-def _draw_ma_primary_line_on_price_panel(
-    ax, idx: pd.DatetimeIndex, ma_primary: pd.Series
-) -> None:
-    """매매 기준 이평선 — mplfinance addplot 대신 직접 겹침(베타 mplfinance 다중 line 회피)."""
-    x = np.arange(len(idx))
-    y = ma_primary.reindex(idx).astype(float).bfill().ffill().to_numpy(dtype=float)
-    ax.plot(x, y, color=MA_PRIMARY_LINE_COLOR, linewidth=1.05, zorder=3, solid_capstyle="round")
 
 
 def _draw_trade_markers_matplotlib(
@@ -418,11 +398,6 @@ def make_backtest_figure(
         odata["Volume"] = 0.0
 
     idx = odata.index
-    ma_col = f"MA{ma_n}"
-    if ma_col in sim.columns:
-        ma_primary = sim[ma_col].reindex(idx).astype(float)
-    else:
-        ma_primary = odata["Close"].rolling(ma_n, min_periods=1).mean()
 
     buy_y = _trade_marker_y_buy_below_low(buys, odata)
     sell_y = _trade_marker_y_sell_above_high(sells, odata)
@@ -434,7 +409,7 @@ def make_backtest_figure(
 
     addplots: list = []
     # mplfinance 0.12.10b: 가격 패널에 line/scatter addplot 을 여러 개 두면 하위 패널 처리 시 빈 y 배열 오류가 남.
-    # 수익률만 make_addplot 으로 두고, 이평·타점은 matplotlib 로 상단 패널에 직접 그린다.
+    # 수익률만 make_addplot 으로 두고, 타점·추세선은 matplotlib 로 상단 패널에 직접 그린다.
     if ret_panel is not None:
         ret_aligned = ret_series.reindex(idx).astype(float)
         if not ret_aligned.notna().any():
@@ -467,9 +442,7 @@ def make_backtest_figure(
     trend_note = ""
     if trend_ma:
         unit = "봉" if "주" in bar_label else "일"
-        extras = [p for p in sorted(trend_ma.keys()) if p != ma_n]
-        if extras:
-            trend_note = " · " + "·".join(f"{p}{unit}" for p in extras)
+        trend_note = " · " + "·".join(f"{p}{unit}" for p in sorted(trend_ma.keys()))
     unit_ma = "봉" if "주" in bar_label else "일"
 
     price_label = "캔들" if show_candle else "종가"
@@ -481,7 +454,7 @@ def make_backtest_figure(
     chart_bits = "+".join(shown)
     title = (
         f"{name} · {bar_label} · {chart_bits} · "
-        f"{ma_n}{unit_ma} 이평{trend_note}"
+        f"매매기준 {ma_n}{unit_ma}{trend_note}"
     )
 
     plot_type = "candle" if show_candle else "line"
@@ -502,10 +475,9 @@ def make_backtest_figure(
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
     _apply_hts_style_xaxis(fig, idx)
     ax_price = fig.axes[0]
-    _draw_ma_primary_line_on_price_panel(ax_price, idx, ma_primary)
     _draw_trade_markers_matplotlib(ax_price, buy_y, sell_y, ms)
-    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, ma_n, bar_label)
-    _draw_static_trend_ma_legend(ax_price, bar_label, ma_n)
+    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, bar_label)
+    _draw_static_trend_ma_legend(ax_price, bar_label)
     return fig
 
 
@@ -658,8 +630,6 @@ def run_backtest_detailed(
     trend_ma: dict[int, pd.Series] = {}
     for p in TREND_MA_PERIODS:
         if not trend_flags.get(p):
-            continue
-        if p == ma_n:
             continue
         trend_ma[p] = rolling_trend_ma_series(full_close, p)
     trend_plot = (
