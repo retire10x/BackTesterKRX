@@ -1,7 +1,7 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v3.2: 차트에서 매매 기준 이평 실선 제거·추세선 독립 렌더·정적 범례=TREND 색;
- v3.0 HTS형 X축·격자·타점·패널 간격 유지.)
+(GUI/Tkinter 비의존. v3.3: 타점 매도색 노랑·offset points 15pt 고정;
+ v3.2 차트 클린화·v3.0 HTS형 축·격자 유지.)
 """
 from __future__ import annotations
 
@@ -44,10 +44,13 @@ TREND_MA_COLORS: dict[int, str] = {
     200: "#6a1b9a",
 }
 
-# 타점 마커 (캔들과 분리)
-MARKER_SIZE = 14
-MARKER_LINEWIDTH = 0.15
-MARKER_PAD_FRAC = 1  # 봉 고저폭 대비 저가 아래·고가 위 오프셋 비율
+# 타점 마커 — 데이터 앵커(저가/고가) + offset points 고정 간격(v3.3)
+TRADE_MARKER_OFFSET_PT = 15.0
+MARKER_BUY_COLOR = "#2e7d32"
+MARKER_BUY_OUTLINE = "#1b5e20"
+MARKER_SELL_COLOR = "#fdd835"
+MARKER_SELL_OUTLINE = "#b45309"
+MARKER_ANNOT_SIZE = 11
 
 
 @dataclass
@@ -138,48 +141,75 @@ def _save_report_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.05)
 
 
-def _trade_marker_y_buy_below_low(
-    buys: list[dict], odata: pd.DataFrame, frac: float = MARKER_PAD_FRAC
-) -> pd.Series:
-    """매수 ▲: 해당 봉 저가 아래로 오프셋."""
+def _trade_resolve_bar_index(t: dict, idx: pd.DatetimeIndex) -> int | None:
+    """거래일 → 시뮬 인덱스 내 봉 번호(실패 시 None)."""
+    ts = pd.Timestamp(t["date"])
+    if ts not in idx:
+        pos = idx.get_indexer([ts], method="nearest")
+        if pos.size and pos[0] >= 0:
+            ts = idx[int(pos[0])]
+        else:
+            return None
+    loc = idx.get_indexer([ts])
+    if loc.size == 0 or loc[0] < 0:
+        return None
+    return int(loc[0])
+
+
+def _draw_trade_markers_matplotlib(
+    ax,
+    buys: list[dict],
+    sells: list[dict],
+    odata: pd.DataFrame,
+) -> None:
+    """매수▲·매도▼ — 저가/고가에 데이터 앵커 후 offset points 로 고정 pt 간격."""
+    import matplotlib.patheffects as pe
+
     idx = odata.index
     low = odata["Low"].astype(float)
     high = odata["High"].astype(float)
-    rng = (high - low).replace(0.0, np.nan)
-    pad = (rng * frac).fillna(low * 0.003).clip(lower=low * 0.0015)
-    s = pd.Series(np.nan, index=idx, dtype=float)
+    xnums = np.arange(len(idx), dtype=float)
+
+    buy_fx = [
+        pe.withStroke(linewidth=1.25, foreground=MARKER_BUY_OUTLINE),
+    ]
+    sell_fx = [
+        pe.withStroke(linewidth=1.35, foreground=MARKER_SELL_OUTLINE),
+    ]
+
     for t in buys:
-        ts = pd.Timestamp(t["date"])
-        if ts not in s.index:
-            pos = idx.get_indexer([ts], method="nearest")
-            if pos.size and pos[0] >= 0:
-                ts = idx[int(pos[0])]
-            else:
-                continue
-        s.loc[ts] = float(low.loc[ts]) - float(pad.loc[ts])
-    return s
+        bi = _trade_resolve_bar_index(t, idx)
+        if bi is None:
+            continue
+        ann = ax.annotate(
+            "▲",
+            xy=(xnums[bi], float(low.iloc[bi])),
+            xytext=(0.0, -TRADE_MARKER_OFFSET_PT),
+            textcoords="offset points",
+            fontsize=MARKER_ANNOT_SIZE,
+            color=MARKER_BUY_COLOR,
+            ha="center",
+            va="center",
+            zorder=6,
+        )
+        ann.set_path_effects(buy_fx)
 
-
-def _trade_marker_y_sell_above_high(
-    sells: list[dict], odata: pd.DataFrame, frac: float = MARKER_PAD_FRAC
-) -> pd.Series:
-    """매도 ▼: 해당 봉 고가 위로 오프셋."""
-    idx = odata.index
-    low = odata["Low"].astype(float)
-    high = odata["High"].astype(float)
-    rng = (high - low).replace(0.0, np.nan)
-    pad = (rng * frac).fillna(high * 0.003).clip(lower=high * 0.0015)
-    s = pd.Series(np.nan, index=idx, dtype=float)
     for t in sells:
-        ts = pd.Timestamp(t["date"])
-        if ts not in s.index:
-            pos = idx.get_indexer([ts], method="nearest")
-            if pos.size and pos[0] >= 0:
-                ts = idx[int(pos[0])]
-            else:
-                continue
-        s.loc[ts] = float(high.loc[ts]) + float(pad.loc[ts])
-    return s
+        bi = _trade_resolve_bar_index(t, idx)
+        if bi is None:
+            continue
+        ann = ax.annotate(
+            "▼",
+            xy=(xnums[bi], float(high.iloc[bi])),
+            xytext=(0.0, TRADE_MARKER_OFFSET_PT),
+            textcoords="offset points",
+            fontsize=MARKER_ANNOT_SIZE,
+            color=MARKER_SELL_COLOR,
+            ha="center",
+            va="center",
+            zorder=6,
+        )
+        ann.set_path_effects(sell_fx)
 
 
 def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> None:
@@ -335,40 +365,6 @@ def _draw_trend_ma_lines_on_price_panel(
         )
 
 
-def _draw_trade_markers_matplotlib(
-    ax,
-    buy_y: pd.Series,
-    sell_y: pd.Series,
-    ms: float,
-) -> None:
-    """매수▲·매도▼ 타점 — mplfinance scatter addplot 대신 matplotlib scatter."""
-    x = np.arange(len(buy_y.index))
-    bm = buy_y.notna().to_numpy()
-    if bm.any():
-        ax.scatter(
-            x[bm],
-            buy_y.to_numpy(dtype=float)[bm],
-            marker="^",
-            s=float(ms) ** 2 * 1.8,
-            color="#2e7d32",
-            edgecolors="#1b5e20",
-            linewidths=MARKER_LINEWIDTH,
-            zorder=6,
-        )
-    sm = sell_y.notna().to_numpy()
-    if sm.any():
-        ax.scatter(
-            x[sm],
-            sell_y.to_numpy(dtype=float)[sm],
-            marker="v",
-            s=float(ms) ** 2 * 1.8,
-            color="#039be5",
-            edgecolors="#01579b",
-            linewidths=MARKER_LINEWIDTH,
-            zorder=6,
-        )
-
-
 def make_backtest_figure(
     sim: pd.DataFrame,
     trades: list[dict],
@@ -398,10 +394,6 @@ def make_backtest_figure(
         odata["Volume"] = 0.0
 
     idx = odata.index
-
-    buy_y = _trade_marker_y_buy_below_low(buys, odata)
-    sell_y = _trade_marker_y_sell_above_high(sells, odata)
-    ms = max(8.0, min(22.0, MARKER_SIZE / 2.5))
 
     panel_ratios, ret_panel = _chart_panel_ratios_and_return_panel(
         show_volume, show_return
@@ -475,7 +467,7 @@ def make_backtest_figure(
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
     _apply_hts_style_xaxis(fig, idx)
     ax_price = fig.axes[0]
-    _draw_trade_markers_matplotlib(ax_price, buy_y, sell_y, ms)
+    _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
     _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, bar_label)
     _draw_static_trend_ma_legend(ax_price, bar_label)
     return fig
