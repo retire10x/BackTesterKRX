@@ -26,7 +26,7 @@ ctk.set_default_color_theme("blue")
 FIXED_PANEL_H = 780   # 좌/우 패널의 고정 세로 높이
 
 FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
-FIXED_RIGHT_W = 1050  # 오른쪽 결과 패널의 고정 가로 폭
+FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 520   # 실제 캔들 차트 이미지의 고정 세로 높이
@@ -316,8 +316,8 @@ class BacktestGUI(ctk.CTk):
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )  # 🎯 가로 1020, 세로 520 고정
         self.chart_frame.grid(
-            row=3, column=0, sticky="nw", padx=14, pady=(0, 14)
-        )  # sticky를 nw로 변경
+            row=0, column=0, sticky="nw", padx=14, pady=(14, 14)
+        )
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
