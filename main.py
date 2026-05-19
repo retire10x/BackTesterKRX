@@ -1,7 +1,7 @@
 """
 BackTesterKRX 시작점.
 - 인자 없음: GUI (`src.gui`)
-- `--watch` / `-w`: GUI 개발용 — 코드 변경 시 창 자동 재시작 (watchdog)
+- `--watch` / `-w`: GUI 개발용 — `src/**/*.py` 및 루트 `main.py` 저장 시 자식 GUI 재시작 (watchdog)
 - 그 외 인자: 터미널(CLI) 백테스트
 """
 from __future__ import annotations
@@ -18,6 +18,11 @@ from tabulate import tabulate
 
 from src.data_loader import fetch_filtered_universe, load_config
 from src.metrics import run_backtest_detailed
+
+# `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
+WATCH_DEBOUNCE_SEC = 0.5
+# 자식 GUI 종료·재기동 루프 폴링 간격(초) — 낮을수록 재시작 반응이 빠름
+CHILD_POLL_SEC = 0.05
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -101,7 +106,7 @@ def cli_main() -> None:
     )
     ap.epilog = (
         "GUI 는 인자 없이: python main.py\n"
-        "코드 저장 시 GUI 자동 재시작(개발): python main.py --watch"
+        "코드 저장 시 GUI 자동 재시작(개발): python main.py --watch  (감시: src/**/*.py, 루트 main.py)"
     )
     args = ap.parse_args()
 
@@ -129,7 +134,7 @@ def _parse_argv_for_watch_and_rest() -> tuple[bool, list[str]]:
 
 
 def run_gui_with_watchdog() -> None:
-    """GUI 를 자식 프로세스로 띄우고, src/·main.py 의 .py 저장 시 종료 후 다시 실행."""
+    """GUI 를 자식 프로세스로 띄우고, src/ 이하·루트 main.py 의 .py 변경 시 종료 후 재실행."""
     try:
         from watchdog.events import PatternMatchingEventHandler
         from watchdog.observers import Observer
@@ -142,8 +147,12 @@ def run_gui_with_watchdog() -> None:
 
     root = Path(__file__).resolve().parent
     src_dir = root / "src"
+    main_py = root / "main.py"
     if not src_dir.is_dir():
         print(f"src 폴더를 찾을 수 없습니다: {src_dir}", file=sys.stderr)
+        raise SystemExit(2)
+    if not main_py.is_file():
+        print(f"main.py 를 찾을 수 없습니다: {main_py}", file=sys.stderr)
         raise SystemExit(2)
 
     restart_event = threading.Event()
@@ -153,11 +162,15 @@ def run_gui_with_watchdog() -> None:
     def request_restart(path_hint: str) -> None:
         now = time.monotonic()
         with debounce_lock:
-            if now - last_fire[0] < 0.45:
+            if now - last_fire[0] < WATCH_DEBOUNCE_SEC:
                 return
             last_fire[0] = now
         print(f"[watch] 코드 변경 감지 ({path_hint}) — GUI 재시작", flush=True)
         restart_event.set()
+
+    skip_name_parts = frozenset(
+        {"venv", ".venv", "__pycache__", "node_modules", ".git", ".tox", "dist", "build"}
+    )
 
     class _PyChangeHandler(PatternMatchingEventHandler):
         def __init__(self) -> None:
@@ -169,16 +182,23 @@ def run_gui_with_watchdog() -> None:
             )
 
         def _maybe_restart(self, src_path: str) -> None:
-            p = Path(src_path).resolve()
+            try:
+                p = Path(src_path).resolve()
+            except OSError:
+                return
             try:
                 rel = p.relative_to(root)
             except ValueError:
                 return
-            parts = set(rel.parts)
-            if "venv" in parts or "__pycache__" in parts:
+            if skip_name_parts.intersection(rel.parts):
                 return
-            if rel.parts[:1] == ("src",) or rel.name == "main.py":
-                request_restart(str(rel))
+            # src 패키지 전체 + 프로젝트 루트의 main.py 만 (다른 루트 .py 는 무시)
+            under_src = len(rel.parts) >= 1 and rel.parts[0] == "src"
+            root_main = (
+                len(rel.parts) == 1 and rel.name.lower() == "main.py"
+            )
+            if under_src or root_main:
+                request_restart(str(rel.as_posix()))
 
         def on_modified(self, event):  # noqa: ANN001
             if not event.is_directory:
@@ -188,13 +208,19 @@ def run_gui_with_watchdog() -> None:
             if not event.is_directory:
                 self._maybe_restart(event.src_path)
 
+        def on_moved(self, event):  # noqa: ANN001
+            """에디터가 임시 파일에 쓴 뒤 main.py 등으로 rename 하는 경우."""
+            if not event.is_directory:
+                self._maybe_restart(event.dest_path)
+
     handler = _PyChangeHandler()
     observer = Observer()
     observer.schedule(handler, str(src_dir), recursive=True)
     observer.schedule(handler, str(root), recursive=False)
     observer.start()
     print(
-        "[watch] GUI 자동 재시작 모드 — 저장 시 창이 꺼졌다가 다시 켜집니다. 종료: GUI 창 닫기 또는 Ctrl+C",
+        "[watch] 자동 재시작 — 감시: src/**/*.py, ./main.py · "
+        f"디바운스 {WATCH_DEBOUNCE_SEC}s · 종료: GUI 닫기 또는 Ctrl+C",
         flush=True,
     )
 
@@ -207,7 +233,7 @@ def run_gui_with_watchdog() -> None:
                 cwd=str(root),
             )
             while proc.poll() is None:
-                if restart_event.wait(timeout=0.2):
+                if restart_event.wait(timeout=CHILD_POLL_SEC):
                     break
             if restart_event.is_set():
                 proc.terminate()

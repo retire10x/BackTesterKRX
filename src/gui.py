@@ -1,6 +1,6 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (v2.9: 차트 높이 확장·매매 이평 라디오·추세선 6종).
+차트: output/backtest_report.png → CTkImage (v3.0: 종목 선택 유지·날짜 하이픈 마스크·v2.9 차트).
 엔진: src.metrics.run_backtest_detailed
 """
 from __future__ import annotations
@@ -35,6 +35,39 @@ FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
+
+
+def _format_partial_iso_date_digits(digits: str) -> str:
+    """숫자만 최대 8자리 → YYYY-MM-DD 진행 형태(미완성 허용)."""
+    digits = digits[:8]
+    if not digits:
+        return ""
+    if len(digits) <= 4:
+        return digits
+    if len(digits) <= 6:
+        return f"{digits[:4]}-{digits[4:]}"
+    return f"{digits[:4]}-{digits[4:6]}-{digits[6:]}"
+
+
+def _bind_iso_date_mask(var: tk.StringVar) -> None:
+    """시작·종료일: 숫자만 입력해도 하이픈 자동 삽입."""
+
+    guard: dict[str, bool] = {"busy": False}
+
+    def _normalize(*_: object) -> None:
+        if guard["busy"]:
+            return
+        raw = var.get()
+        digits = "".join(c for c in raw if c.isdigit())[:8]
+        formatted = _format_partial_iso_date_digits(digits)
+        if formatted != raw:
+            guard["busy"] = True
+            try:
+                var.set(formatted)
+            finally:
+                guard["busy"] = False
+
+    var.trace_add("write", lambda *_: _normalize())
 
 
 def _gui_summary_five_lines(res: BacktestResult) -> str:
@@ -149,7 +182,7 @@ def _try_build_config(ui: "BacktestGUI") -> dict | None:
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BackTesterKRX v2.9")
+        self.title("BackTesterKRX v3.0")
 
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
@@ -207,6 +240,7 @@ class BacktestGUI(ctk.CTk):
             font=("Segoe UI", 11),
             selectmode=tk.SINGLE,
             activestyle="dotbox",
+            exportselection=False,
         )
         sb = tk.Scrollbar(
             list_frame, orient="vertical", command=self.list_codes.yview
@@ -235,11 +269,13 @@ class BacktestGUI(ctk.CTk):
         d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
         d1.grid(row=0, column=1, sticky="ew", padx=(6, 0))
         ctk.CTkLabel(d0, text="시작일 (YYYY-MM-DD)").pack(anchor="w")
-        self.var_start = ctk.StringVar(value="2021-01-01")
+        self.var_start = tk.StringVar(value="2021-01-01")
         ctk.CTkEntry(d0, textvariable=self.var_start).pack(fill="x", pady=(2, 0))
+        _bind_iso_date_mask(self.var_start)
         ctk.CTkLabel(d1, text="종료일 (YYYY-MM-DD)").pack(anchor="w")
-        self.var_end = ctk.StringVar(value="2025-12-31")
+        self.var_end = tk.StringVar(value="2025-12-31")
         ctk.CTkEntry(d1, textvariable=self.var_end).pack(fill="x", pady=(2, 0))
+        _bind_iso_date_mask(self.var_end)
 
         ctk.CTkLabel(left, text="가상 원금 (원)").pack(anchor="w", padx=14)
         self.var_cash = ctk.StringVar(value="5000000")

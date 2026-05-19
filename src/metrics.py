@@ -1,6 +1,7 @@
 """
 누적·CAGR·MDD(소수 둘째 자리)·정적 보고서 PNG·전체 백테스트 파이프라인.
-(GUI/Tkinter 비의존. v2.9: 타점 저가/고가 오프셋·패널 간격·추세선 6종·ymargin; v2.7·v2.6 유지.)
+(GUI/Tkinter 비의존. v3.0: HTS형 X축(MM.DD·연도전환 YYYY-MM)·세로 격자 밀도·추세선 범례;
+ v2.9 타점·패널 간격·추세 6종·ymargin 유지.)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ matplotlib.use("Agg")
 
 import numpy as np
 import pandas as pd
+from matplotlib import ticker as mticker
 from matplotlib.figure import Figure
 
 from .data_loader import (
@@ -215,6 +217,57 @@ def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> Non
         upper["pos"] = upper["pri"].get_position()
 
 
+def _hts_major_tick_formatter(
+    idx: pd.DatetimeIndex, maj_step: int
+) -> mticker.FuncFormatter:
+    """평소 MM.DD, 연도 전환 첫 봉 또는 그 직후 첫 메이저 틱만 YYYY-MM."""
+
+    def fmt(x, pos=None):
+        n = len(idx)
+        if n == 0:
+            return ""
+        i = int(round(float(x)))
+        i = max(0, min(n - 1, i))
+        ts = idx[i]
+        if i > 0 and idx[i - 1].year != ts.year:
+            return f"{ts.year}-{ts.month:02d}"
+        prev_tick = i - maj_step
+        if prev_tick >= 0 and idx[prev_tick].year != ts.year:
+            return f"{ts.year}-{ts.month:02d}"
+        return f"{ts.month:02d}.{ts.day:02d}"
+
+    return mticker.FuncFormatter(fmt)
+
+
+def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
+    """세로 격자 밀도 확대 + 날짜 라벨 포맷 교체 (공유 X축 패널 일괄 적용)."""
+    n = len(idx)
+    if n == 0:
+        return
+    # 기존 mplfinance ~ n/10 간격 대비 약 2배 촘촘한 메이저 틱; 라벨은 메이저에만.
+    maj_step = max(1, min(45, n // 14))
+    min_step = max(1, maj_step // 2)
+    maj_loc = mticker.MultipleLocator(base=maj_step)
+    min_loc = mticker.MultipleLocator(base=min_step)
+    formatter = _hts_major_tick_formatter(idx, maj_step)
+
+    for ax in fig.axes:
+        ax.xaxis.set_major_locator(maj_loc)
+        ax.xaxis.set_minor_locator(min_loc)
+        ax.xaxis.set_major_formatter(formatter)
+        ax.tick_params(axis="x", which="major", labelsize=8.5)
+        ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.55, color="#cfcfcf")
+        ax.grid(
+            True,
+            which="minor",
+            axis="x",
+            linestyle="--",
+            linewidth=0.35,
+            color="#e8e8e8",
+            alpha=0.95,
+        )
+
+
 def _chart_panel_ratios_and_return_panel(
     show_volume: bool, show_return: bool
 ) -> tuple[tuple[int, ...], int | None]:
@@ -233,12 +286,15 @@ def _draw_trend_ma_lines_on_price_panel(
     idx: pd.DatetimeIndex,
     trend_ma: dict[int, pd.Series] | None,
     ma_n: int,
+    bar_label: str,
 ) -> None:
-    """mplfinance 다중 line addplot 버그 회피: 추세 이평은 가격 패널 axes에 직접 겹침."""
+    """추세 이평을 가격 패널에 겹침 + 켜진 기간만 동적 범례."""
     if not trend_ma:
         return
     ax_main = fig.axes[0]
     x = np.arange(len(idx))
+    unit = "봉" if "주" in bar_label else "일"
+    handles: list = []
     for period in sorted(trend_ma.keys()):
         if period == ma_n:
             continue
@@ -246,13 +302,24 @@ def _draw_trend_ma_lines_on_price_panel(
         if not ser.notna().any():
             continue
         color = TREND_MA_COLORS.get(period, "#546e7a")
-        ax_main.plot(
+        (ln,) = ax_main.plot(
             x,
             ser.to_numpy(),
             color=color,
             linewidth=0.95,
             solid_capstyle="round",
             zorder=4,
+            label=f"{period}{unit}선",
+        )
+        handles.append(ln)
+    if handles:
+        ax_main.legend(
+            handles=handles,
+            loc="upper left",
+            fontsize=8.5,
+            framealpha=0.92,
+            fancybox=False,
+            edgecolor="#bdbdbd",
         )
 
 
@@ -410,10 +477,11 @@ def make_backtest_figure(
         scale_padding=0.88,
     )
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
+    _apply_hts_style_xaxis(fig, idx)
     ax_price = fig.axes[0]
     _draw_ma_primary_line_on_price_panel(ax_price, idx, ma_primary)
     _draw_trade_markers_matplotlib(ax_price, buy_y, sell_y, ms)
-    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, ma_n)
+    _draw_trend_ma_lines_on_price_panel(fig, idx, trend_ma, ma_n, bar_label)
     return fig
 
 
