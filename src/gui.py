@@ -295,16 +295,17 @@ class BacktestGUI(ctk.CTk):
 
         row_dt = ctk.CTkFrame(left, fg_color="transparent")
         row_dt.pack(fill="x", padx=14, pady=(0, 6))
-        row_dt.grid_columnconfigure(0, weight=1, uniform="dt")
-        row_dt.grid_columnconfigure(1, weight=1, uniform="dt")
+        row_dt.grid_columnconfigure((0, 1, 2), weight=1, uniform="dt")
         d0 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d0.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        d0.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d1.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        d1.grid(row=0, column=1, sticky="ew", padx=(4, 4))
+        d2 = ctk.CTkFrame(row_dt, fg_color="transparent")
+        d2.grid(row=0, column=2, sticky="ew", padx=(4, 0))
         ctk.CTkLabel(d0, text="시작일").pack(anchor="w")
         self._date_start = DateEntry(
             d0,
-            width=11,
+            width=10,
             date_pattern="yyyy-mm-dd",
             **_date_entry_theme_kw(),
         )
@@ -314,12 +315,17 @@ class BacktestGUI(ctk.CTk):
         ctk.CTkLabel(d1, text="종료일").pack(anchor="w")
         self._date_end = DateEntry(
             d1,
-            width=11,
+            width=10,
             date_pattern="yyyy-mm-dd",
             **_date_entry_theme_kw(),
         )
         self._date_end.set_date(_de)
         self._date_end.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(d2, text="가상 원금(원)").pack(anchor="w")
+        self.var_cash = ctk.StringVar(value="5000000")
+        ctk.CTkEntry(d2, textvariable=self.var_cash, height=28).pack(
+            fill="x", pady=(2, 0)
+        )
 
         self._trend_vars: dict[int, ctk.BooleanVar] = {
             p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
@@ -390,14 +396,6 @@ class BacktestGUI(ctk.CTk):
 
         row_run = ctk.CTkFrame(left, fg_color="transparent")
         row_run.pack(fill="x", padx=14, pady=(8, 8))
-        row_run.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(row_run, text="가상 원금(원)").grid(
-            row=0, column=0, sticky="w", padx=(0, 8)
-        )
-        self.var_cash = ctk.StringVar(value="5000000")
-        ctk.CTkEntry(row_run, textvariable=self.var_cash, width=120, height=36).grid(
-            row=0, column=1, sticky="w"
-        )
         self.btn_run = ctk.CTkButton(
             row_run,
             text="백테스트 실행",
@@ -405,7 +403,7 @@ class BacktestGUI(ctk.CTk):
             font=ctk.CTkFont(size=15, weight="bold"),
             command=self._on_run,
         )
-        self.btn_run.grid(row=0, column=2, sticky="e", padx=(12, 0))
+        self.btn_run.pack(fill="x")
 
         self.text_summary = ctk.CTkTextbox(
             left,
