@@ -13,6 +13,8 @@ from datetime import date, timedelta
 from tkinter import messagebox
 
 import customtkinter as ctk
+import pandas as pd
+from pandas.tseries.offsets import BDay
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
@@ -54,9 +56,11 @@ FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
 
-# 시간축: 좌패널 ±30일 · 차트 좌우 투명 버튼 7일 스텝
+# 시간축: 좌패널 ±30일(달력) · 차트 오버레이 투명 버튼 ±7영업일
 TIME_AXIS_SHIFT_DAYS = 30
-TIME_AXIS_PAN_DAYS = 7
+TIME_AXIS_PAN_BDAY = 7
+# 차트 이미지 위 좌·우 클릭 영역 (px, place)
+CHART_NAV_STRIP_W = 50
 DATE_CLAMP_MIN = date(1990, 1, 1)
 
 
@@ -567,45 +571,64 @@ class BacktestGUI(ctk.CTk):
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
-        self.chart_frame.grid_columnconfigure(0, weight=0, minsize=44)
-        self.chart_frame.grid_columnconfigure(1, weight=1)
-        self.chart_frame.grid_columnconfigure(2, weight=0, minsize=44)
+        self.chart_frame.grid_columnconfigure(0, weight=1)
 
-        self.btn_chart_prev = ctk.CTkButton(
-            self.chart_frame,
-            text="",
-            width=40,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=("gray88", "gray28"),
-            font=gui_body_font(),
-            command=lambda: self._on_chart_pan_days(-TIME_AXIS_PAN_DAYS),
+        # 차트 컨테이너: 이미지 전체 + 좌·우 투명 버튼 place 오버레이(CSS relative + absolute 유사)
+        self.chart_overlay_host = ctk.CTkFrame(
+            self.chart_frame, fg_color="transparent"
         )
-        self.btn_chart_prev.grid(row=0, column=0, sticky="ns", padx=(2, 0), pady=4)
-        HoverTooltip(self.btn_chart_prev, "차트 구간 7일 이전(과거로 이동)")
+        self.chart_overlay_host.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
 
         self.lbl_chart = ctk.CTkLabel(
-            self.chart_frame,
+            self.chart_overlay_host,
             text="백테스트 실행 후 차트가 표시됩니다.",
             fg_color="transparent",
             font=gui_body_font(),
         )
-        self.lbl_chart.grid(row=0, column=1, sticky="nsew", padx=4, pady=4)
+        self.lbl_chart.pack(fill="both", expand=True)
 
-        self.btn_chart_next = ctk.CTkButton(
-            self.chart_frame,
+        self.btn_chart_prev = ctk.CTkButton(
+            self.chart_overlay_host,
             text="",
-            width=40,
-            corner_radius=6,
+            width=CHART_NAV_STRIP_W,
+            height=FIXED_CHART_H,
+            corner_radius=0,
+            border_width=0,
             fg_color="transparent",
             hover_color=("gray88", "gray28"),
             font=gui_body_font(),
-            command=lambda: self._on_chart_pan_days(TIME_AXIS_PAN_DAYS),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(-TIME_AXIS_PAN_BDAY),
         )
-        self.btn_chart_next.grid(row=0, column=2, sticky="ns", padx=(0, 2), pady=4)
-        HoverTooltip(self.btn_chart_next, "차트 구간 7일 이후(최신으로 이동)")
+        # CustomTkinter: pixel width/height 는 생성자에만 — place 에 넣으면 ValueError
+        self.btn_chart_prev.place(relx=0.0, rely=0.0, anchor="nw", relheight=1.0)
+        HoverTooltip(
+            self.btn_chart_prev,
+            "차트 구간 7영업일 이전(과거로 이동, 주말 제외)",
+        )
 
-        self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
+        self.btn_chart_next = ctk.CTkButton(
+            self.chart_overlay_host,
+            text="",
+            width=CHART_NAV_STRIP_W,
+            height=FIXED_CHART_H,
+            corner_radius=0,
+            border_width=0,
+            fg_color="transparent",
+            hover_color=("gray88", "gray28"),
+            font=gui_body_font(),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(TIME_AXIS_PAN_BDAY),
+        )
+        self.btn_chart_next.place(relx=1.0, rely=0.0, anchor="ne", relheight=1.0)
+        HoverTooltip(
+            self.btn_chart_next,
+            "차트 구간 7영업일 이후(최신으로 이동, 주말 제외)",
+        )
+        self.btn_chart_prev.lift()
+        self.btn_chart_next.lift()
+
+        self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
 
         apply_yaml_to_widgets(self)
         self._refresh_trading_rules_display()
@@ -726,10 +749,10 @@ class BacktestGUI(ctk.CTk):
             self.lbl_chart.update_idletasks()
             fw = int(self.lbl_chart.winfo_width())
             fh = int(self.lbl_chart.winfo_height())
-            # 그리드 직후 등 유효 크기 없을 때: 좌우 투명 버튼 열 폭·패딩을 뺀 가로 추정
+            # 그리드 직후 등 유효 크기 없을 때: 차트 패딩만 반영한 추정
             if fw <= 10 or fh <= 10:
-                fw = max(400, FIXED_CHART_W - 44 - 44 - 20)
-                fh = FIXED_CHART_H
+                fw = max(400, FIXED_CHART_W - 16)
+                fh = FIXED_CHART_H - 12
 
             pil_img = Image.open(image_path)
 
@@ -773,6 +796,31 @@ class BacktestGUI(ctk.CTk):
         self._date_start.set_date(ns)
         self._date_end.set_date(ne)
 
+    def _shift_period_trading_days(self, delta_bdays: int) -> None:
+        """시작·종료를 같은 영업일 수만큼 평행 이동 (BDay; 야간·공휴일 휴장은 미반영)."""
+        try:
+            sd = self._date_start.get_date()
+            ed = self._date_end.get_date()
+        except (ValueError, tk.TclError):
+            return
+        span = max(0, (ed - sd).days)
+        today = date.today()
+        try:
+            ns = (pd.Timestamp(sd) + BDay(delta_bdays)).date()
+            ne = (pd.Timestamp(ed) + BDay(delta_bdays)).date()
+        except (ValueError, OSError, pd.errors.OutOfBoundsDatetime):
+            return
+        if ne > today:
+            ne = today
+            ns = ne - timedelta(days=span)
+        if ns < DATE_CLAMP_MIN:
+            ns = DATE_CLAMP_MIN
+            ne = min(ns + timedelta(days=span), today)
+        if ns > ne:
+            ns = ne
+        self._date_start.set_date(ns)
+        self._date_end.set_date(ne)
+
     def _on_shift_period_days(self, delta_days: int) -> None:
         self._shift_period_calendar_days(delta_days)
         self._schedule_auto_run_after_shift()
@@ -792,14 +840,14 @@ class BacktestGUI(ctk.CTk):
         cfg = try_build_config(self, silent=True)
         if cfg is None:
             self.lbl_status.configure(
-                text="시간축 이동됨 · 종목을 선택한 뒤 갱신됩니다."
+                text="시간축 이동됨 · 리스트에서 종목 선택 또는 settings.yaml 의 universe.selected_code 를 확인하세요.",
             )
             return
         self._run_backtest(cfg)
 
-    def _on_chart_pan_days(self, delta_days: int) -> None:
-        """차트 좌우 투명 버튼: 영역을 달력 일수만큼 이동 후 자동 재실행."""
-        self._shift_period_calendar_days(delta_days)
+    def _on_chart_pan_bdays(self, delta_bdays: int) -> None:
+        """차트 좌·우 오버레이: 영업일 기준으로 기간 이동 후 자동 재실행."""
+        self._shift_period_trading_days(delta_bdays)
         self._schedule_auto_run_after_shift()
 
     def _run_backtest(self, cfg: dict | None) -> None:

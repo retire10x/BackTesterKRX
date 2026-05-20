@@ -259,14 +259,19 @@ def try_build_config(ui: "BacktestGUI", *, silent: bool = False) -> dict | None:
     cfg["universe"]["search_keyword"] = kw
 
     sel = ui.list_codes.curselection()
-    if not sel:
-        if not silent:
-            messagebox.showwarning(
-                "알림", "종목 검색 후 리스트에서 종목 1개를 클릭해 선택하세요."
-            )
-        return None
-    line = ui.list_codes.get(sel[0])
-    code = line.split()[0].strip()
+    if sel:
+        line = ui.list_codes.get(sel[0])
+        code = line.split()[0].strip()
+    else:
+        code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
+        if not code:
+            if not silent:
+                messagebox.showwarning(
+                    "알림",
+                    "종목 검색 후 리스트에서 종목 1개를 선택하거나, "
+                    "config/settings.yaml 의 universe.selected_code 를 설정하세요.",
+                )
+            return None
     cfg["universe"]["selected_code"] = code
 
     interval = ui.var_interval.get()
