@@ -46,15 +46,15 @@ from src.metrics import BacktestResult, run_backtest_detailed
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
 FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 1060  # 우측: 매매 규칙 1행 라인업 + 차트·설명 (추세 범례는 PNG 내장 v4.5)
+FIXED_RIGHT_PANEL_H = 780  # 우측 패널 고정 세로 높이를 좌측과 통일
 
-FIXED_LEFT_W = 320    # 왼쪽 입력 패널의 고정 가로 폭
+FIXED_LEFT_W = 290    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 
 FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
-FIXED_CHART_H = 730   # 우측 하단 공백 청산 — 차트 세로 확장
+FIXED_CHART_H = 650   # 우측 차트 높이를 줄여서 좌측 높이와 맞춤
 
 # 시간축: 좌패널 ±30일(달력) · 차트 오버레이 투명 버튼 ±7영업일
 TIME_AXIS_SHIFT_DAYS = 30
@@ -102,7 +102,7 @@ class BacktestGUI(ctk.CTk):
             sf_market,
             values=["KOSPI", "KOSDAQ"],
             variable=self.var_market,
-            width=92,
+            width=76,
             font=gui_body_font(),
         ).pack(side="left")
 
@@ -154,17 +154,19 @@ class BacktestGUI(ctk.CTk):
 
         row_dt = ctk.CTkFrame(left, fg_color="transparent")
         row_dt.pack(fill="x", padx=14, pady=(0, 6))
-        row_dt.grid_columnconfigure((0, 1, 2), weight=1, uniform="dt")
+        row_dt.grid_columnconfigure(0, weight=92)
+        row_dt.grid_columnconfigure(1, weight=92)
+        row_dt.grid_columnconfigure(2, weight=78)
         d0 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d0.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        d0.grid(row=0, column=0, sticky="ew", padx=(0, 2))
         d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d1.grid(row=0, column=1, sticky="ew", padx=(4, 4))
+        d1.grid(row=0, column=1, sticky="ew", padx=(2, 2))
         d2 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d2.grid(row=0, column=2, sticky="ew", padx=(4, 0))
+        d2.grid(row=0, column=2, sticky="ew", padx=(2, 0))
         ctk.CTkLabel(d0, text="시작일", font=gui_body_font()).pack(anchor="w")
         self._date_start = DateEntry(
             d0,
-            width=10,
+            width=9,
             date_pattern="yyyy-mm-dd",
             font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
             **date_entry_theme_kw(),
@@ -175,7 +177,7 @@ class BacktestGUI(ctk.CTk):
         ctk.CTkLabel(d1, text="종료일", font=gui_body_font()).pack(anchor="w")
         self._date_end = DateEntry(
             d1,
-            width=10,
+            width=9,
             date_pattern="yyyy-mm-dd",
             font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
             **date_entry_theme_kw(),
@@ -184,9 +186,13 @@ class BacktestGUI(ctk.CTk):
         self._date_end.pack(fill="x", pady=(2, 0))
         ctk.CTkLabel(d2, text="가상 원금(원)", font=gui_body_font()).pack(anchor="w")
         self.var_cash = ctk.StringVar(value="5000000")
-        ctk.CTkEntry(d2, textvariable=self.var_cash, height=28, font=gui_body_font()).pack(
-            fill="x", pady=(2, 0)
-        )
+        ctk.CTkEntry(
+            d2,
+            textvariable=self.var_cash,
+            width=70,
+            height=28,
+            font=gui_body_font(),
+        ).pack(fill="x", pady=(2, 0))
 
         row_axis = ctk.CTkFrame(left, fg_color="transparent")
         row_axis.pack(fill="x", padx=14, pady=(0, 8))
@@ -561,13 +567,7 @@ class BacktestGUI(ctk.CTk):
         )
         self.chart_frame.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 8))
 
-        self.text_trading_rules = ctk.CTkTextbox(
-            right,
-            height=FIXED_RULES_TEXT_H,
-            font=gui_body_font(),
-            wrap="word",
-        )
-        self.text_trading_rules.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 14))
+
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
@@ -588,39 +588,38 @@ class BacktestGUI(ctk.CTk):
         self.lbl_chart.pack(fill="both", expand=True)
 
         self.btn_chart_prev = ctk.CTkButton(
-            self.chart_overlay_host,
-            text="",
-            width=CHART_NAV_STRIP_W,
-            height=FIXED_CHART_H,
-            corner_radius=0,
-            border_width=0,
-            fg_color="transparent",
-            hover_color=("gray88", "gray28"),
-            font=gui_body_font(),
+            self.lbl_chart,
+            text="<",
+            width=32,
+            height=32,
+            corner_radius=16,
+            fg_color=("gray90", "gray25"),
+            hover_color=("gray80", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 15, "bold"),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(-TIME_AXIS_PAN_BDAY),
         )
-        # CustomTkinter: pixel width/height 는 생성자에만 — place 에 넣으면 ValueError
-        self.btn_chart_prev.place(relx=0.0, rely=0.0, anchor="nw", relheight=1.0)
+        self.btn_chart_prev.place(relx=0.03, rely=0.5, anchor="w")
         HoverTooltip(
             self.btn_chart_prev,
             "차트 구간 7영업일 이전(과거로 이동, 주말 제외)",
         )
 
         self.btn_chart_next = ctk.CTkButton(
-            self.chart_overlay_host,
-            text="",
-            width=CHART_NAV_STRIP_W,
-            height=FIXED_CHART_H,
-            corner_radius=0,
-            border_width=0,
-            fg_color="transparent",
-            hover_color=("gray88", "gray28"),
-            font=gui_body_font(),
+            self.lbl_chart,
+            text=">",
+            width=32,
+            height=32,
+            corner_radius=16,
+            fg_color=("gray90", "gray25"),
+            hover_color=("gray80", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 15, "bold"),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(TIME_AXIS_PAN_BDAY),
         )
-        self.btn_chart_next.place(relx=1.0, rely=0.0, anchor="ne", relheight=1.0)
+        self.btn_chart_next.place(relx=0.97, rely=0.5, anchor="e")
         HoverTooltip(
             self.btn_chart_next,
             "차트 구간 7영업일 이후(최신으로 이동, 주말 제외)",
@@ -675,42 +674,8 @@ class BacktestGUI(ctk.CTk):
         self._apply_maximized_geometry()
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
-        """우측 매매 규칙 패널(읽기 전용 텍스트). 매매 이평·조회 주기 변경 시 갱신."""
-        try:
-            ma_n = int(self.var_ma_period.get())
-        except ValueError:
-            ma_n = 20
-        if ma_n not in (5, 10, 20):
-            ma_n = 20
-        interval = (self.var_interval.get() or "daily").strip().lower()
-        ts_en = bool(self.var_trailing_stop.get())
-        try:
-            t_ref = float(
-                str(self.var_trailing_reference_pct.get()).replace(",", "").strip()
-            )
-            t_bel = float(
-                str(self.var_trailing_drop_below_pct.get()).replace(",", "").strip()
-            )
-            t_abv = float(
-                str(self.var_trailing_drop_above_pct.get()).replace(",", "").strip()
-            )
-        except ValueError:
-            t_ref, t_bel, t_abv = 10.0, 3.0, 5.0
-        body = trading_rules_static_text(
-            ma_n,
-            interval,
-            golden_buy_enabled=bool(self.var_golden_buy.get()),
-            dead_cross_sell_enabled=bool(self.var_dead_sell.get()),
-            trailing_stop_enabled=ts_en,
-            trailing_hinge_pct=t_ref,
-            trailing_below_drop_pct=t_bel,
-            trailing_above_drop_pct=t_abv,
-        )
-        tb = self.text_trading_rules
-        tb.configure(state="normal")
-        tb.delete("1.0", "end")
-        tb.insert("1.0", body)
-        tb.configure(state="disabled")
+        """우측 매매 규칙 패널(읽기 전용 텍스트) - 제거됨."""
+        pass
 
     def _apply_maximized_geometry(self) -> None:
         try:
@@ -754,9 +719,8 @@ class BacktestGUI(ctk.CTk):
                 fw = max(400, FIXED_CHART_W - 16)
                 fh = FIXED_CHART_H - 12
 
-            pil_img = Image.open(image_path)
-
-            resized = pil_img.resize((fw, fh), Image.Resampling.LANCZOS)
+            with Image.open(image_path) as pil_img:
+                resized = pil_img.resize((fw, fh), Image.Resampling.LANCZOS)
 
             self._img_ref = ctk.CTkImage(
                 light_image=resized,
@@ -764,6 +728,10 @@ class BacktestGUI(ctk.CTk):
                 size=(fw, fh),
             )
             self.lbl_chart.configure(image=self._img_ref, text="")
+            if hasattr(self, "btn_chart_prev"):
+                self.btn_chart_prev.lift()
+            if hasattr(self, "btn_chart_next"):
+                self.btn_chart_next.lift()
         except Exception as e:
             self._img_ref = None
             self.lbl_chart.configure(image=None, text=f"이미지 로드 실패: {e}")
@@ -858,8 +826,20 @@ class BacktestGUI(ctk.CTk):
         self.lbl_status.configure(text="백테스트 계산 중…")
 
         def work():
-            res = run_backtest_detailed(cfg)
-            self.after(0, lambda: self._finish_run(res))
+            try:
+                res = run_backtest_detailed(cfg)
+                self.after(0, lambda: self._finish_run(res))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                err_res = BacktestResult(
+                    ok=False,
+                    error=f"백테스트 중 오류가 발생했습니다: {e}",
+                    summary_rows=[],
+                    report_path=None,
+                    log_lines=[f"Error: {e}"],
+                )
+                self.after(0, lambda: self._finish_run(err_res))
 
         threading.Thread(target=work, daemon=True).start()
 

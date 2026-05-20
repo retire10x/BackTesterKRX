@@ -292,11 +292,11 @@ def _chart_panel_ratios_and_return_panel(
     가격 패널 비중을 다소 키워 캔들·추세선이 세로 중앙에 잘 보이게 함.
     """
     if show_volume and show_return:
-        return (54, 13, 21), 2
+        return (54, 13, 10), 2
     if show_volume and not show_return:
         return (10, 3), None
     if not show_volume and show_return:
-        return (15, 7), 1
+        return (15, 3), 1
     return (1,), None
 
 
