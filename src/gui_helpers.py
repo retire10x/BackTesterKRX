@@ -16,6 +16,23 @@ from src.backtest_constants import TREND_MA_PERIODS
 from src.data_loader import default_backtest_period_range, load_config
 from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
 
+# GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
+# CTkFont 는 import 시점에 만들 수 없음(기본 Tk 루트 없음) — `gui_body_font()` 로 창 생성 후 사용.
+GUI_FONT_FAMILY = "Segoe UI"
+GUI_FONT_SIZE = 13
+
+_gui_body_font_cached: ctk.CTkFont | None = None
+
+
+def gui_body_font() -> ctk.CTkFont:
+    """메인 CTk 창 `super().__init__()` 이후에만 호출. 싱글턴 캐시."""
+    global _gui_body_font_cached
+    if _gui_body_font_cached is None:
+        _gui_body_font_cached = ctk.CTkFont(
+            family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE
+        )
+    return _gui_body_font_cached
+
 TooltipTextFn = str | Callable[[], str]
 
 
@@ -95,7 +112,7 @@ class HoverTooltip:
             background="#fffacd",
             relief="solid",
             borderwidth=1,
-            font=("Segoe UI", 10),
+            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
             wraplength=440,
         )
         lbl.pack(ipadx=8, ipady=6)
@@ -118,35 +135,36 @@ def trading_rules_static_text(
     ma_n: int,
     interval: str,
     *,
+    golden_buy_enabled: bool = True,
+    dead_cross_sell_enabled: bool = True,
     trailing_stop_enabled: bool = False,
     trailing_hinge_pct: float = 10.0,
     trailing_below_drop_pct: float = 3.0,
     trailing_above_drop_pct: float = 5.0,
 ) -> str:
-    """우측 매매 규칙 패널용 안내 문구(엔진 strategy.add_signals 와 동일 전제)."""
+    """우측 매매 규칙 패널용 안내(엔진 `strategy.add_signals`·`simulator.simulate_single` 과 v4.6 동기)."""
     bar_kw = "주간 봉" if interval.strip().lower() == "weekly" else "일간 봉"
+    g_on = golden_buy_enabled
+    d_on = dead_cross_sell_enabled
     body = (
-        "※ 아래 체크 필터는 매수 진입에만 적용(매도 신호는 동일).\n\n"
-        f"매매 기준 : 종가 기준 {ma_n}기간 단순 이동평균 ({bar_kw})\n\n"
-        "1. 매매 기준 이평선 골든크로스 매수, 데드크로스 매도.\n"
-        "   → 종가가 위 이평선을 상향 돌파하면 매수 신호, 하향 돌파하면 매도 신호 "
-        "(전일·당일 종가와 당일 이평으로 판단).\n\n"
-        "체결 시뮬 : 신호는 봉 종가에서 확정, 다음 봉 시가 체결로 반영됩니다.\n\n"
-        "[v4.0] 활성화한 필터는 엔진에서 AND 로 결합됩니다."
+        f"[매매 기준] 종가 기준 {ma_n}일 이동평균 ({bar_kw})\n\n"
+        f"[기본] 골든 매수: {'사용' if g_on else '끔'} · "
+        f"데드크로스 매도 체결: {'사용' if d_on else '끔'}\n\n"
+        "[매수] 골든 매수를 켠 경우에만 이평 골든크로스가 매수 후보입니다. "
+        "'대세(Slope)'·'돌파 강도'를 켠 경우 활성 필터 조건은 **모두 AND** 로 같은 봉에서 만족해야 최종 매수합니다. "
+        "시간 버퍼 진입 역시 검증되는 신호 봉에서 활성 필터 AND 를 통과해야 합니다.\n\n"
+        "[매도] 가변 낙폭을 켠 경우 고점 대비 하락 조건이 먼저 충족되면 다음 봉 시가 조기 청산합니다. "
+        "그렇지 않거나 끈 경우에는 데드 매도 사용 시 데크로스 다음 봉 시가 청산 — **트레일 우선**(OR 브랜치).\n\n"
+        "신호는 봉 종가에서 확정, 체결은 다음 봉 시가입니다."
     )
-    if not trailing_stop_enabled:
-        return body
-    hinge = trailing_hinge_pct
-    bd = trailing_below_drop_pct
-    ad = trailing_above_drop_pct
-    body += (
-        "\n\n"
-        "[v4.4] 가변 낙폭 매도: 보유 중 매수 체결가 대비 장중 최고가(워터마크) 기준 피크 "
-        "수익률이 "
-        f"기준 {hinge:g}% 미만이면 고점 대비 {bd:g}% 하락 종가 확정 시(다음 봉 시가 청산), "
-        f"피크가 한 번이라도 기준 {hinge:g}% 이상이면 고점 대비 {ad:g}% 하락 시 청산합니다. "
-        "이 조건은 데드크로스 전에도 우선 적용되며 차트 타점은 밝은 노란색 ▼ 로 표시됩니다."
-    )
+    if trailing_stop_enabled:
+        hinge = trailing_hinge_pct
+        bd = trailing_below_drop_pct
+        ad = trailing_above_drop_pct
+        body += (
+            f"\n\n[가변 낙폭 ON] 피크 기준 {hinge:g}% 미만 구간은 고점 대비 {bd:g}% 하락, "
+            f"그 이상 한 번이라도 노출 시에는 고점 대비 {ad:g}% 하락 시 조기 청산(차트 타점 밝은 노랑 ▼)."
+        )
     return body
 
 
@@ -208,6 +226,10 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_show_volume.set(bool(st["show_chart_volume"]))
     if "show_chart_return" in st:
         ui.var_show_revenue.set(bool(st["show_chart_return"]))
+    if "golden_buy_enabled" in st:
+        ui.var_golden_buy.set(bool(st["golden_buy_enabled"]))
+    if "dead_cross_sell_enabled" in st:
+        ui.var_dead_sell.set(bool(st["dead_cross_sell_enabled"]))
     if "filter_trend_slope" in st:
         ui.var_filter_trend.set(bool(st["filter_trend_slope"]))
     if "filter_breakout_strength" in st:
@@ -298,6 +320,11 @@ def try_build_config(ui: "BacktestGUI", *, silent: bool = False) -> dict | None:
     cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
     cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
     cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
+
+    cfg.setdefault("strategy", {})["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
+    cfg.setdefault("strategy", {})["dead_cross_sell_enabled"] = bool(
+        ui.var_dead_sell.get()
+    )
 
     try:
         slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())

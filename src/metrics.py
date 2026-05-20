@@ -5,7 +5,8 @@
 v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
 v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
-v4.5: 활성 추세 이평 범례를 가격 패널 `matplotlib` `Axes.legend`(좌상·반투명)·GUI 외부 범례 제거(backtest_chart);
+v4.6: 매매 규칙 분리(`golden_buy_enabled`·`dead_cross_sell_enabled`) — 매수 후보 필터 AND·매도 트레일/데크 OR(strategy·simulator);
+v4.5: 차트 내 `ax.legend` 범례 매립·GUI 외부 범례 제거;
 v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.
 """
 from __future__ import annotations
@@ -54,6 +55,14 @@ def strategy_trailing_stop_from_cfg(st: dict) -> dict[str, bool | float]:
         "trailing_reference_pct": float(st.get("trailing_reference_pct", 10.0)),
         "trailing_drop_below_pct": float(st.get("trailing_drop_below_pct", 3.0)),
         "trailing_drop_above_pct": float(st.get("trailing_drop_above_pct", 5.0)),
+    }
+
+
+def strategy_cross_flags_from_cfg(st: dict) -> dict[str, bool]:
+    """기본 크로스 스위치 — `strategy.add_signals`·`simulate_single` 데크 매도 실행과 동기화."""
+    return {
+        "golden_buy_enabled": bool(st.get("golden_buy_enabled", True)),
+        "dead_cross_sell_enabled": bool(st.get("dead_cross_sell_enabled", True)),
     }
 
 
@@ -243,7 +252,17 @@ def run_backtest_detailed(
             parts.append("돌파강도")
         if entry_ef["filter_time_buffer"]:
             parts.append("시간버퍼")
-        lines.append("[전략 v4.0] 매수 진입 필터: " + ", ".join(parts))
+        lines.append("[전략 v4.0] 매수 진입 필터(골던 후보 AND): " + ", ".join(parts))
+
+    cross_flags = strategy_cross_flags_from_cfg(st)
+    if not cross_flags["golden_buy_enabled"]:
+        lines.append(
+            "[전략 v4.6] 골든 매수 OFF — 매매 기준 이평 골든크로스 매수 신호 없음"
+        )
+    if not cross_flags["dead_cross_sell_enabled"]:
+        lines.append(
+            "[전략 v4.6] 데드 매도 OFF — 데드크로스 신호 기반 매도 체결 없음(트레일만 가능)"
+        )
 
     trail_cfg = strategy_trailing_stop_from_cfg(st)
     if trail_cfg["enabled"]:
@@ -254,7 +273,14 @@ def run_backtest_detailed(
             f"이상 도달 시 고점 대비 {trail_cfg['trailing_drop_above_pct']}%"
         )
 
-    sig_df = add_entry_filter_columns(add_signals(bars, ma_n))
+    sig_df = add_entry_filter_columns(
+        add_signals(
+            bars,
+            ma_n,
+            golden_buy_enabled=cross_flags["golden_buy_enabled"],
+            dead_cross_sell_enabled=cross_flags["dead_cross_sell_enabled"],
+        )
+    )
     res = simulate_single(
         sig_df,
         str(start),
@@ -263,6 +289,7 @@ def run_backtest_detailed(
         sell_c,
         entry_filters=entry_ef,
         trailing_stop=trail_cfg,
+        dead_cross_sell_enabled=cross_flags["dead_cross_sell_enabled"],
     )
     if res is None:
         return BacktestResult(False, "시뮬 구간이 너무 짧습니다.", [], None, lines)
@@ -360,6 +387,7 @@ __all__ = [
     "run_backtest_detailed",
     "save_backtest_report_png",
     "save_figure_as_png",
+    "strategy_cross_flags_from_cfg",
     "strategy_entry_filters_from_cfg",
     "strategy_trailing_stop_from_cfg",
     "trend_overlay_flags_from_strategy",

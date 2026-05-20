@@ -13,6 +13,9 @@ universe:
 strategy:
   interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
   ma_period: 20          # 매매 시그널 이평: 5, 10, 20 중 권장 (GUI 라디오와 동일)
+  # v4.6 기본 크로스 스위치 (strategy.add_signals / simulate 데드 매도 실행)
+  golden_buy_enabled: true
+  dead_cross_sell_enabled: true
   # 추세선 오버레이 (차트 PNG) — 체크한 기간만 표시 (매매 기준 N과 차트상 독립)
   show_trend_ma5: false
   show_trend_ma10: false

@@ -2,6 +2,7 @@
 익봉 시가 체결 시뮬레이션. GUI 비의존.
 v4.0: 선택적 매수 진입 필터 — 120일선 선형회귀 기울기·돌파 강도·시간 버퍼.
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(트레일링); 종가 확정 후 다음 봉 시가 청산·`reason='trail_stop'` 타점 차트 색 구분).
+v4.6: 매도 분기에서 가변 낙폭(우선)·데드 크로스(옵션) OR; `dead_cross_sell_enabled` 가 False 면 신호 매도 실행 안 함(strategy 와 결합).
 """
 from __future__ import annotations
 
@@ -106,6 +107,7 @@ def simulate_single(
     *,
     entry_filters: dict[str, Any] | None = None,
     trailing_stop: dict[str, Any] | None = None,
+    dead_cross_sell_enabled: bool = True,
 ):
     """봉 종가에서 신호 확정 → 다음 봉 시가 체결. 전액 매수/전액 매도.
 
@@ -117,6 +119,9 @@ def simulate_single(
     trailing_drop_above_pct(도달 후 적용 고점 대비 하락 %) — 활성 시 보유 중
     매수 체결가 대비 장중 최고가 워터마크 기준 피크 수익률로 분기한 뒤 종가 확정 분기별
     임계로 트레일 청산(다음 봉 시가 체결, trade reason ``trail_stop``).
+
+    dead_cross_sell_enabled (v4.6): False 이면 `pending==-1`(데드 크로스) 시가 매도 실행을 건너뜁니다.
+    가변 낙폭 매도만 켠 경우에는 이 플래그를 끌고 전략에서도 매도 신호를 막거나, 신호 매도 없이 트레일만 사용 가능합니다.
     """
     start_ts = pd.Timestamp(start_date)
     d = df.loc[df.index >= start_ts].copy()
@@ -221,7 +226,7 @@ def simulate_single(
         if trail_exec_next and position == 1:
             _sell_at_open_trail_stop()
 
-        elif pending == -1 and position == 1:
+        elif pending == -1 and position == 1 and dead_cross_sell_enabled:
             _sell_at_open_ma_cross()
 
         # ftbuf 시에는 통상 pending 매수 대신 버퍼만 사용; 시뮬 첫 봉(i==0) 워밍업 pending==1 만 예외
