@@ -443,7 +443,8 @@ def make_backtest_figure(
         shown.append("수익률")
     chart_bits = "+".join(shown)
     # v4.5: 추세 이평 이름·색상은 가격 패널 ax.legend 로 표시(제목에 중복 나열 안 함).
-    title = f"{name} · {bar_label} · {chart_bits} · 매매기준 {ma_n}{unit_ma}"
+    
+    title = f"{name} (매매기준 MA{ma_n})"
 
     plot_type = "candle" if show_candle else "line"
 

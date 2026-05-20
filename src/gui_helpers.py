@@ -65,7 +65,7 @@ def date_entry_theme_kw() -> dict[str, str]:
 
 
 class HoverTooltip:
-    """체크박스·입력칸 등에 마우스를 올렸을 때 잠시 후 노란 설명 팝업."""
+    """마우스 오버 시 다크 네이비(#1e293b) 배경, 흰색 글자, 둥근 모서리(8px) 및 하단 중앙 화살표를 갖춘 모던 말풍선 툴팁."""
 
     def __init__(
         self, widget: tk.Misc, text: TooltipTextFn, delay_ms: int = 420
@@ -95,27 +95,110 @@ class HoverTooltip:
         self._after_id = None
         if self._tip is not None:
             return
-        x = int(self._widget.winfo_rootx() + 14)
-        y = int(self._widget.winfo_rooty() + self._widget.winfo_height() + 6)
+
+        body = self._text() if callable(self._text) else self._text
+        if not body:
+            return
+
+        # 1. 텍스트 바운딩 박스 정밀 측정
+        tmp_lbl = tk.Label(
+            self._widget,
+            text=body,
+            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            justify="left",
+            wraplength=350,
+        )
+        tmp_lbl.update_idletasks()
+        text_w = tmp_lbl.winfo_reqwidth()
+        text_h = tmp_lbl.winfo_reqheight()
+        tmp_lbl.destroy()
+
+        # 2. 패딩 및 캔버스 크기 계산 (코너 깎임 방지를 위해 여유 4px 확보)
+        w = text_w + 24
+        h = text_h + 20
+        arrow_h = 8
+        margin = 4
+        W = w + margin * 2
+        H = h + arrow_h + margin * 2
+
+        # 3. 팝업 창 생성 및 투명 마스킹 설정
         self._tip = tk.Toplevel(self._widget)
         self._tip.wm_overrideredirect(True)
         try:
             self._tip.attributes("-topmost", True)
         except tk.TclError:
             pass
-        self._tip.wm_geometry(f"+{x}+{y}")
-        body = self._text() if callable(self._text) else self._text
-        lbl = tk.Label(
+        self._tip.wm_attributes("-transparentcolor", "#fe00fe")
+        self._tip.configure(bg="#fe00fe")
+
+        # 4. 좌표 계산: 하단 중앙 화살표 끝이 대상 위젯의 상단 중앙을 향하도록 함
+        w_x = self._widget.winfo_rootx()
+        w_y = self._widget.winfo_rooty()
+        w_w = self._widget.winfo_width()
+        target_x = w_x + w_w / 2
+        target_y = w_y
+
+        tip_x = target_x - W / 2
+        tip_y = target_y - H + margin  # 약간의 겹침 처리
+
+        self._tip.wm_geometry(f"+{int(tip_x)}+{int(tip_y)}")
+
+        # 5. Canvas 생성 및 말풍선 그리기
+        canvas = tk.Canvas(
             self._tip,
-            text=body,
-            justify="left",
-            background="#fffacd",
-            relief="solid",
-            borderwidth=1,
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
-            wraplength=440,
+            width=W,
+            height=H,
+            bg="#fe00fe",
+            highlightthickness=0,
         )
-        lbl.pack(ipadx=8, ipady=6)
+        canvas.pack()
+
+        r = 8
+        x1, y1, x2, y2 = margin, margin, W - margin, H - arrow_h - margin
+        color = "#1e293b"  # 다크 네이비
+
+        # 둥근 코너 호(Arc) 그리기
+        canvas.create_arc(x1, y1, x1 + r * 2, y1 + r * 2, start=90, extent=90, fill=color, outline=color, style="pieslice")
+        canvas.create_arc(x2 - r * 2, y1, x2, y1 + r * 2, start=0, extent=90, fill=color, outline=color, style="pieslice")
+        canvas.create_arc(x2 - r * 2, y2 - r * 2, x2, y2, start=270, extent=90, fill=color, outline=color, style="pieslice")
+        canvas.create_arc(x1, y2 - r * 2, x1 + r * 2, y2, start=180, extent=90, fill=color, outline=color, style="pieslice")
+
+        # 사각형 내부 채우기
+        canvas.create_rectangle(x1 + r, y1, x2 - r, y2, fill=color, outline=color)
+        canvas.create_rectangle(x1, y1 + r, x2, y2 - r, fill=color, outline=color)
+
+        # 하단 중앙 아래방향 삼각형 그리기
+        arrow_pts = [W / 2 - 6, y2, W / 2, H - margin, W / 2 + 6, y2]
+        canvas.create_polygon(arrow_pts, fill=color, outline=color)
+
+        # 텍스트 그리기
+        canvas.create_text(
+            W / 2,
+            (y1 + y2) / 2,
+            text=body,
+            fill="#f8fafc",  # 흰색 글씨
+            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            justify="left",
+            width=350,
+            anchor="center",
+        )
+
+        # 6. 부드러운 Fade-in 애니메이션 (200ms)
+        self._tip.attributes("-alpha", 0.0)
+
+        def _fade_in(current_alpha: float = 0.0) -> None:
+            if self._tip is None:
+                return
+            try:
+                val = float(self._tip.attributes("-alpha"))
+            except tk.TclError:
+                return
+            if val < 1.0:
+                next_alpha = min(1.0, val + 0.1)
+                self._tip.attributes("-alpha", next_alpha)
+                self._tip.after(20, lambda: _fade_in(next_alpha))
+
+        _fade_in(0.0)
 
     def _hide_tip(self) -> None:
         self._cancel_scheduled()

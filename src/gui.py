@@ -54,7 +54,7 @@ FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
-FIXED_CHART_H = 650   # 우측 차트 높이를 줄여서 좌측 높이와 맞춤
+FIXED_CHART_H = 490   # 우측 차트 높이를 줄여서 좌측 입력 섹션 하단을 넘지 않도록 조절 (수익률 그래프 잘림 방지)
 
 # 시간축: 좌패널 ±30일(달력) · 차트 오버레이 투명 버튼 ±7영업일
 TIME_AXIS_SHIFT_DAYS = 30
@@ -309,7 +309,7 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
         self.text_summary.configure(state="disabled")
 
-        self.var_filter_trend = ctk.BooleanVar(value=False)
+        self.var_filter_trend = ctk.BooleanVar(value=True)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
         self.var_filter_breakout = ctk.BooleanVar(value=False)
         self.var_filter_timebuf = ctk.BooleanVar(value=False)
@@ -328,8 +328,9 @@ class BacktestGUI(ctk.CTk):
         right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
         right.grid_propagate(False)
         right.grid_rowconfigure(0, weight=0)  # 매매 규칙(전략 옵션)
-        right.grid_rowconfigure(1, weight=0)  # 차트
-        right.grid_rowconfigure(2, weight=0)  # 설명 텍스트
+        right.grid_rowconfigure(1, weight=0)  # 차트 컨트롤 패널
+        right.grid_rowconfigure(2, weight=0)  # 차트
+        right.grid_rowconfigure(3, weight=0)  # 설명 텍스트
         right.grid_columnconfigure(0, weight=1)
 
         rules_panel = ctk.CTkFrame(
@@ -366,18 +367,43 @@ class BacktestGUI(ctk.CTk):
             s = f"{v:.4f}".rstrip("0").rstrip(".")
             self.var_slope_threshold.set(s or "0")
 
-        strip = ctk.CTkFrame(rules_panel, fg_color="transparent")
-        strip.pack(fill="x", padx=6, pady=(0, 10))
+        # 좌우 격자 레이아웃을 위한 컨테이너 프레임 생성
+        grid_container = ctk.CTkFrame(rules_panel, fg_color="transparent")
+        grid_container.pack(fill="x", padx=10, pady=(0, 10))
+        grid_container.grid_columnconfigure(0, weight=1, uniform="rules_col")
+        grid_container.grid_columnconfigure(1, weight=1, uniform="rules_col")
+
+        # 🟢 좌측: 매수 조건 카드 프레임
+        buy_frame = ctk.CTkFrame(
+            grid_container,
+            corner_radius=6,
+            border_width=1,
+            border_color=("gray75", "gray30"),
+            fg_color=("gray95", "gray20"),
+        )
+        buy_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=4)
+
+        # 🔴 우측: 매도 조건 카드 프레임
+        sell_frame = ctk.CTkFrame(
+            grid_container,
+            corner_radius=6,
+            border_width=1,
+            border_color=("gray75", "gray30"),
+            fg_color=("gray95", "gray20"),
+        )
+        sell_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=4)
 
         tt_golden = (
-            "종가가 선택한 매매 기준 이동평균선을 상향 돌파(골든크로스)할 때 기본 매수 신호 후보 발생"
+            " 골든크로스 신호\n"
+            "위의 '추세' 조건이 충족된 상승장 안에서, 단기 주가가 이동평균선을 위로 돌파할 때 최종 매수 진입을 시도합니다."
         )
         tt_dead = (
             "종가가 매매 기준 이동평균선을 하향 돌파(데드크로스)할 때 기본 매도 신호 후보 발생"
         )
         tt_trend = (
-            "종가가 120일선 위이고 최근 5봉 MA120 의 선형 회귀 기울기가 설정 임계값 이상일 때만 "
-            "(골든 매수 후보 발생 시점에 AND)"
+            " 장기 추세 필터 (기본 활성화)\n"
+            "지난 6개월간의 평균 주가(120일선)가 하루 0.01%(연 약 2.5%) 이상 완만하게 우상향하는지 검사합니다. "
+            "하락장 분별을 위한 필수 안전장치입니다."
         )
         tt_breakout = (
             "거래량 > 직전 5봉 평균×1.5 또는 종가 > MA20×1.02 (골든 후보 봉 AND)"
@@ -385,156 +411,190 @@ class BacktestGUI(ctk.CTk):
         tt_timebuf = (
             "골든 후보 봉(i) 즉시 매수 안 함 — i+1, i+2 종가까지 MA20 위 안착 후 다음 봉 시가 진입 시에도 활성 필터 AND"
         )
-        tt_slope = "대세(Slope): MA120 회귀 기울기(OLS β₁) 입력값 이상."
         tt_trailing_short = (
             "매수 이후 최고가 대비 설정 % 하락 시, 데드크로스 매도 신호보다 앞선 시점에서 다음 봉 시가 조기 청산"
         )
 
-        cb_golden = ctk.CTkCheckBox(
-            strip,
+        # 🟢 매수 조건 내용 배치
+        lbl_buy_title = ctk.CTkLabel(
+            buy_frame,
+            text="🟢 매수 진입 조건 (AND 결합)",
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
+            anchor="w",
+        )
+        lbl_buy_title.pack(anchor="w", padx=10, pady=(8, 6))
+
+        buy_strip = ctk.CTkFrame(buy_frame, fg_color="transparent")
+        buy_strip.pack(fill="x", padx=10, pady=(0, 10))
+
+        # 1. 추세 (맨 왼쪽 배치)
+        self.cb_trend = ctk.CTkCheckBox(
+            buy_strip,
+            text="추세",
+            variable=self.var_filter_trend,
+            font=gui_body_font(),
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.cb_trend.pack(side="left", padx=(0, 2))
+        HoverTooltip(self.cb_trend, tt_trend)
+
+        self.slope_spin = ctk.CTkFrame(buy_strip, fg_color="transparent")
+        self.slope_spin.pack(side="left", padx=(0, 8))
+        self.btn_slope_up = ctk.CTkButton(
+            self.slope_spin,
+            text="▴",
+            width=20,
+            height=20,
+            font=gui_body_font(),
+            corner_radius=3,
+            command=lambda: _bump_slope(0.01),
+        )
+        self.btn_slope_up.pack(side="left", padx=(0, 1))
+        self.entry_slope_threshold = ctk.CTkEntry(
+            self.slope_spin,
+            width=48,
+            height=22,
+            font=gui_body_font(),
+            textvariable=self.var_slope_threshold,
+        )
+        self.entry_slope_threshold.pack(side="left")
+        self.btn_slope_down = ctk.CTkButton(
+            self.slope_spin,
+            text="▾",
+            width=20,
+            height=20,
+            font=gui_body_font(),
+            corner_radius=3,
+            command=lambda: _bump_slope(-0.01),
+        )
+        self.btn_slope_down.pack(side="left", padx=(1, 0))
+        HoverTooltip(self.entry_slope_threshold, tt_trend)
+
+        ctk.CTkLabel(buy_strip, text="|", font=gui_body_font(), text_color="gray50").pack(
+            side="left", padx=(0, 8)
+        )
+
+        # 2. 골든 매수
+        self.cb_golden = ctk.CTkCheckBox(
+            buy_strip,
             text="골든 매수",
             variable=self.var_golden_buy,
             font=gui_body_font(),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_golden.pack(side="left")
-        HoverTooltip(cb_golden, tt_golden)
-        ctk.CTkLabel(strip, text=" | ", font=gui_body_font()).pack(
-            side="left", padx=(4, 4)
-        )
-        cb_dead = ctk.CTkCheckBox(
-            strip,
-            text="데드 매도",
-            variable=self.var_dead_sell,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_dead.pack(side="left")
-        HoverTooltip(cb_dead, tt_dead)
+        self.cb_golden.pack(side="left", padx=(0, 8))
+        HoverTooltip(self.cb_golden, tt_golden)
 
-        ctk.CTkLabel(strip, text=" || ", font=gui_body_font()).pack(
-            side="left", padx=(10, 6)
+        ctk.CTkLabel(buy_strip, text="|", font=gui_body_font(), text_color="gray50").pack(
+            side="left", padx=(0, 8)
         )
 
-        cb_trend = ctk.CTkCheckBox(
-            strip,
-            text="대세(Slope)",
-            variable=self.var_filter_trend,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_trend.pack(side="left")
-        HoverTooltip(cb_trend, tt_trend)
-        slope_spin = ctk.CTkFrame(strip, fg_color="transparent")
-        slope_spin.pack(side="left", padx=(4, 0))
-        ctk.CTkButton(
-            slope_spin,
-            text="▴",
-            width=22,
-            height=24,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(0.01),
-        ).pack(side="left", padx=(0, 1))
-        self.entry_slope_threshold = ctk.CTkEntry(
-            slope_spin,
-            width=50,
-            height=24,
-            font=gui_body_font(),
-            textvariable=self.var_slope_threshold,
-        )
-        self.entry_slope_threshold.pack(side="left")
-        ctk.CTkButton(
-            slope_spin,
-            text="▾",
-            width=22,
-            height=24,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(-0.01),
-        ).pack(side="left", padx=(1, 0))
-        HoverTooltip(self.entry_slope_threshold, tt_slope)
-
-        ctk.CTkLabel(strip, text=" | ", font=gui_body_font()).pack(
-            side="left", padx=(10, 4)
-        )
-        cb_breakout = ctk.CTkCheckBox(
-            strip,
+        # 3. 돌파 강도
+        self.cb_breakout = ctk.CTkCheckBox(
+            buy_strip,
             text="돌파 강도",
             variable=self.var_filter_breakout,
             font=gui_body_font(),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_breakout.pack(side="left")
-        HoverTooltip(cb_breakout, tt_breakout)
+        self.cb_breakout.pack(side="left", padx=(0, 8))
+        HoverTooltip(self.cb_breakout, tt_breakout)
 
-        ctk.CTkLabel(strip, text=" | ", font=gui_body_font()).pack(
-            side="left", padx=(10, 4)
+        ctk.CTkLabel(buy_strip, text="|", font=gui_body_font(), text_color="gray50").pack(
+            side="left", padx=(0, 8)
         )
-        cb_timebuf = ctk.CTkCheckBox(
-            strip,
+
+        # 4. 시간 버퍼
+        self.cb_timebuf = ctk.CTkCheckBox(
+            buy_strip,
             text="시간 버퍼",
             variable=self.var_filter_timebuf,
             font=gui_body_font(),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_timebuf.pack(side="left")
-        HoverTooltip(cb_timebuf, tt_timebuf)
+        self.cb_timebuf.pack(side="left")
+        HoverTooltip(self.cb_timebuf, tt_timebuf)
 
-        ctk.CTkLabel(strip, text=" | ", font=gui_body_font()).pack(
-            side="left", padx=(10, 4)
+        # 🔴 매도 조건 내용 배치
+        lbl_sell_title = ctk.CTkLabel(
+            sell_frame,
+            text="🔴 매도 청산 조건 (OR 결합)",
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
+            anchor="w",
         )
+        lbl_sell_title.pack(anchor="w", padx=10, pady=(8, 6))
+
+        sell_strip = ctk.CTkFrame(sell_frame, fg_color="transparent")
+        sell_strip.pack(fill="x", padx=10, pady=(0, 10))
+
+        cb_dead = ctk.CTkCheckBox(
+            sell_strip,
+            text="데드 매도",
+            variable=self.var_dead_sell,
+            font=gui_body_font(),
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        cb_dead.pack(side="left", padx=(0, 8))
+        HoverTooltip(cb_dead, tt_dead)
+
+        ctk.CTkLabel(sell_strip, text="|", font=gui_body_font(), text_color="gray50").pack(
+            side="left", padx=(0, 8)
+        )
+
         cb_trailing = ctk.CTkCheckBox(
-            strip,
+            sell_strip,
             text="가변 낙폭",
             variable=self.var_trailing_stop,
             font=gui_body_font(),
             checkbox_width=18,
             checkbox_height=18,
         )
-        cb_trailing.pack(side="left")
+        cb_trailing.pack(side="left", padx=(0, 6))
         HoverTooltip(cb_trailing, tt_trailing_short)
-        ctk.CTkLabel(strip, text="기준", font=gui_body_font()).pack(
-            side="left", padx=(8, 2)
+
+        ctk.CTkLabel(sell_strip, text="기준", font=gui_body_font()).pack(
+            side="left", padx=(0, 2)
         )
         self.entry_trailing_ref = ctk.CTkEntry(
-            strip,
-            width=40,
-            height=24,
+            sell_strip,
+            width=36,
+            height=22,
             font=gui_body_font(),
             textvariable=self.var_trailing_reference_pct,
         )
         self.entry_trailing_ref.pack(side="left")
-        ctk.CTkLabel(strip, text="%", font=gui_body_font()).pack(
+        ctk.CTkLabel(sell_strip, text="%", font=gui_body_font()).pack(
             side="left", padx=(2, 6)
         )
-        ctk.CTkLabel(strip, text="미달", font=gui_body_font()).pack(side="left")
+
+        ctk.CTkLabel(sell_strip, text="미달", font=gui_body_font()).pack(side="left")
         self.entry_trailing_below = ctk.CTkEntry(
-            strip,
-            width=38,
-            height=24,
+            sell_strip,
+            width=32,
+            height=22,
             font=gui_body_font(),
             textvariable=self.var_trailing_drop_below_pct,
         )
         self.entry_trailing_below.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(strip, text="%", font=gui_body_font()).pack(
+        ctk.CTkLabel(sell_strip, text="%", font=gui_body_font()).pack(
             side="left", padx=(0, 6)
         )
-        ctk.CTkLabel(strip, text="돌파", font=gui_body_font()).pack(side="left")
+
+        ctk.CTkLabel(sell_strip, text="돌파", font=gui_body_font()).pack(side="left")
         self.entry_trailing_above = ctk.CTkEntry(
-            strip,
-            width=38,
-            height=24,
+            sell_strip,
+            width=32,
+            height=22,
             font=gui_body_font(),
             textvariable=self.var_trailing_drop_above_pct,
         )
         self.entry_trailing_above.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(strip, text="%", font=gui_body_font()).pack(side="left")
+        ctk.CTkLabel(sell_strip, text="%", font=gui_body_font()).pack(side="left")
 
         def _trailing_tooltip_detail() -> str:
             try:
@@ -562,18 +622,106 @@ class BacktestGUI(ctk.CTk):
         HoverTooltip(self.entry_trailing_below, _trailing_tooltip_detail)
         HoverTooltip(self.entry_trailing_above, _trailing_tooltip_detail)
 
+        # 차트 컨트롤 패널 (매매 규칙과 차트 사이)
+        self.chart_control_panel = ctk.CTkFrame(
+            right, fg_color="transparent"
+        )
+        self.chart_control_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+
+        btn_container = ctk.CTkFrame(self.chart_control_panel, fg_color="transparent")
+        btn_container.pack(anchor="center")
+
+        self.btn_fast_rewind = ctk.CTkButton(
+            btn_container,
+            text="⏪",
+            width=36,
+            height=36,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 14),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(-30),
+        )
+        self.btn_fast_rewind.pack(side="left", padx=6)
+        HoverTooltip(self.btn_fast_rewind, "30영업일 전으로 이동 (-30d)")
+
+        self.btn_prev_7 = ctk.CTkButton(
+            btn_container,
+            text="◀",
+            width=36,
+            height=36,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 14),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(-7),
+        )
+        self.btn_prev_7.pack(side="left", padx=6)
+        HoverTooltip(self.btn_prev_7, "7영업일 전으로 이동 (-7d)")
+
+        self.btn_next_7 = ctk.CTkButton(
+            btn_container,
+            text="▶",
+            width=36,
+            height=36,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 14),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(7),
+        )
+        self.btn_next_7.pack(side="left", padx=6)
+        HoverTooltip(self.btn_next_7, "7영업일 후로 이동 (+7d)")
+
+        self.btn_fast_forward = ctk.CTkButton(
+            btn_container,
+            text="⏩",
+            width=36,
+            height=36,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=(GUI_FONT_FAMILY, 14),
+            cursor="hand2",
+            command=lambda: self._on_chart_pan_bdays(30),
+        )
+        self.btn_fast_forward.pack(side="left", padx=6)
+        HoverTooltip(self.btn_fast_forward, "30영업일 후로 이동 (+30d)")
+
+        # 현재 기간 표시 라벨 추가 (플레이 버튼 우측)
+        self.lbl_current_period = ctk.CTkLabel(
+            btn_container,
+            text="",
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
+            text_color=("gray25", "gray75"),
+        )
+        self.lbl_current_period.pack(side="left", padx=(18, 6))
+
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )
-        self.chart_frame.grid(row=1, column=0, sticky="nw", padx=14, pady=(0, 8))
-
-
+        self.chart_frame.grid(row=2, column=0, sticky="nw", padx=14, pady=(0, 8))
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
 
-        # 차트 컨테이너: 이미지 전체 + 좌·우 투명 버튼 place 오버레이(CSS relative + absolute 유사)
+        # 차트 컨테이너: 이미지 전체
         self.chart_overlay_host = ctk.CTkFrame(
             self.chart_frame, fg_color="transparent"
         )
@@ -586,46 +734,6 @@ class BacktestGUI(ctk.CTk):
             font=gui_body_font(),
         )
         self.lbl_chart.pack(fill="both", expand=True)
-
-        self.btn_chart_prev = ctk.CTkButton(
-            self.lbl_chart,
-            text="<",
-            width=32,
-            height=32,
-            corner_radius=16,
-            fg_color=("gray90", "gray25"),
-            hover_color=("gray80", "gray35"),
-            text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 15, "bold"),
-            cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(-TIME_AXIS_PAN_BDAY),
-        )
-        self.btn_chart_prev.place(relx=0.03, rely=0.5, anchor="w")
-        HoverTooltip(
-            self.btn_chart_prev,
-            "차트 구간 7영업일 이전(과거로 이동, 주말 제외)",
-        )
-
-        self.btn_chart_next = ctk.CTkButton(
-            self.lbl_chart,
-            text=">",
-            width=32,
-            height=32,
-            corner_radius=16,
-            fg_color=("gray90", "gray25"),
-            hover_color=("gray80", "gray35"),
-            text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 15, "bold"),
-            cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(TIME_AXIS_PAN_BDAY),
-        )
-        self.btn_chart_next.place(relx=0.97, rely=0.5, anchor="e")
-        HoverTooltip(
-            self.btn_chart_next,
-            "차트 구간 7영업일 이후(최신으로 이동, 주말 제외)",
-        )
-        self.btn_chart_prev.lift()
-        self.btn_chart_next.lift()
 
         self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
 
@@ -672,6 +780,11 @@ class BacktestGUI(ctk.CTk):
             "「백테스트 실행」 후 이곳에 성과 요약(5줄)이 표시됩니다."
         )
         self._apply_maximized_geometry()
+        self._update_period_label()
+
+        # 매수 필터 인터락 등록
+        self.var_filter_trend.trace_add("write", self._sync_buy_filters_interlock)
+        self._sync_buy_filters_interlock()
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
         """우측 매매 규칙 패널(읽기 전용 텍스트) - 제거됨."""
@@ -728,10 +841,6 @@ class BacktestGUI(ctk.CTk):
                 size=(fw, fh),
             )
             self.lbl_chart.configure(image=self._img_ref, text="")
-            if hasattr(self, "btn_chart_prev"):
-                self.btn_chart_prev.lift()
-            if hasattr(self, "btn_chart_next"):
-                self.btn_chart_next.lift()
         except Exception as e:
             self._img_ref = None
             self.lbl_chart.configure(image=None, text=f"이미지 로드 실패: {e}")
@@ -741,6 +850,28 @@ class BacktestGUI(ctk.CTk):
         self.text_summary.delete("1.0", "end")
         self.text_summary.insert("1.0", text)
         self.text_summary.configure(state="disabled")
+
+    def _sync_buy_filters_interlock(self, *_args: object) -> None:
+        """'추세' 필터 체크박스 상태에 따라 우측 매수 필터 및 OLS 임계값 스핀을 비활성화(인터락)."""
+        trend_active = bool(self.var_filter_trend.get())
+        target_state = "normal" if trend_active else "disabled"
+
+        self.cb_golden.configure(state=target_state)
+        self.cb_breakout.configure(state=target_state)
+        self.cb_timebuf.configure(state=target_state)
+        self.btn_slope_up.configure(state=target_state)
+        self.btn_slope_down.configure(state=target_state)
+        self.entry_slope_threshold.configure(state=target_state)
+
+    def _update_period_label(self) -> None:
+        try:
+            sd = self._date_start.get_date()
+            ed = self._date_end.get_date()
+            self.lbl_current_period.configure(
+                text=f"조회 기간: {sd.strftime('%Y-%m-%d')} ~ {ed.strftime('%Y-%m-%d')}"
+            )
+        except Exception:
+            pass
 
     def _shift_period_calendar_days(self, delta_days: int) -> None:
         """시작·종료를 같은 일수만큼 평행 이동. 종료가 오늘을 넘으면 창 길이 유지하며 오늘에 맞춤."""
@@ -763,6 +894,7 @@ class BacktestGUI(ctk.CTk):
             ns = ne
         self._date_start.set_date(ns)
         self._date_end.set_date(ne)
+        self._update_period_label()
 
     def _shift_period_trading_days(self, delta_bdays: int) -> None:
         """시작·종료를 같은 영업일 수만큼 평행 이동 (BDay; 야간·공휴일 휴장은 미반영)."""
@@ -788,6 +920,7 @@ class BacktestGUI(ctk.CTk):
             ns = ne
         self._date_start.set_date(ns)
         self._date_end.set_date(ne)
+        self._update_period_label()
 
     def _on_shift_period_days(self, delta_days: int) -> None:
         self._shift_period_calendar_days(delta_days)
@@ -822,6 +955,7 @@ class BacktestGUI(ctk.CTk):
         if cfg is None or self._busy:
             return
         self._busy = True
+        self._update_period_label()
         self.btn_run.configure(state="disabled", text="계산 중…")
         self.lbl_status.configure(text="백테스트 계산 중…")
 
@@ -875,6 +1009,7 @@ class BacktestGUI(ctk.CTk):
 
         self.update_idletasks()
         self._update_chart_image(res.report_path)
+        self._update_period_label()
         if res.trade_markers_skipped > 0:
             self.lbl_status.configure(
                 text=f"완료 · 매칭 실패 오류 발생 — 차트 타점 {res.trade_markers_skipped}건 누락"

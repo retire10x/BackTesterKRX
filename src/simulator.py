@@ -80,6 +80,24 @@ def _pass_breakout_strength(d: pd.DataFrame, sig_bar: int) -> bool:
     return bool(cond_vol or cond_px)
 
 
+def _pass_time_buffer(d: pd.DataFrame, sig_bar: int) -> bool:
+    """골든크로스 신호일(sig_bar) 이후 +1, +2 영업일 종가가 모두 MA20 위에 안착했는지 확인."""
+    if "MA20" not in d.columns:
+        return False
+    if sig_bar + 2 >= len(d):
+        return False
+    
+    cl1 = float(d["Close"].iloc[sig_bar + 1])
+    ma20_1 = float(d["MA20"].iloc[sig_bar + 1])
+    cl2 = float(d["Close"].iloc[sig_bar + 2])
+    ma20_2 = float(d["MA20"].iloc[sig_bar + 2])
+    
+    return (
+        np.isfinite(cl1) and np.isfinite(ma20_1) and cl1 > ma20_1
+        and np.isfinite(cl2) and np.isfinite(ma20_2) and cl2 > ma20_2
+    )
+
+
 def _buy_filters_pass(
     d: pd.DataFrame,
     sig_bar: int,
@@ -94,6 +112,9 @@ def _buy_filters_pass(
             return False
     if bool(ef.get("filter_breakout_strength", False)):
         if not _pass_breakout_strength(d, sig_bar):
+            return False
+    if bool(ef.get("filter_time_buffer", False)):
+        if not _pass_time_buffer(d, sig_bar):
             return False
     return True
 
@@ -146,7 +167,6 @@ def simulate_single(
     equity = []
     trades: list[dict] = []
 
-    tb_anchor: int | None = None
     buf_exec_bar: int | None = None
     buf_sig_bar: int | None = None
 
@@ -240,19 +260,6 @@ def simulate_single(
         eq = cash + shares * (cl if pd.notna(cl) else 0)
         equity.append(eq)
 
-        # --- 시간 버퍼: 돌파일(tb_anchor) 이후 i+1, i+2 종가가 MA20 위 ---
-        if tb_anchor is not None and "MA20" in d.columns:
-            if i == tb_anchor + 1:
-                m20 = float(d["MA20"].iloc[i])
-                if not (np.isfinite(m20) and np.isfinite(cl) and cl > m20):
-                    tb_anchor = None
-            elif i == tb_anchor + 2:
-                m20 = float(d["MA20"].iloc[i])
-                if np.isfinite(m20) and np.isfinite(cl) and cl > m20:
-                    buf_exec_bar = tb_anchor + 3
-                    buf_sig_bar = tb_anchor
-                tb_anchor = None
-
         # --- v4.4 가변 낙폭: 종가 확정 분기별 트레일(다음 봉 시가 청산) ---
         if (
             ts_en
@@ -276,16 +283,15 @@ def simulate_single(
 
         if sig == -1:
             pending = -1
-            tb_anchor = None
             buf_exec_bar = None
             buf_sig_bar = None
         elif sig == 1:
             if ftbuf:
-                tb_anchor = i
+                buf_exec_bar = i + 3
+                buf_sig_bar = i
                 pending = 0
             else:
                 pending = 1
-                tb_anchor = None
         else:
             pending = 0
 
