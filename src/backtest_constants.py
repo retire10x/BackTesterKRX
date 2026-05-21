@@ -28,7 +28,7 @@ MARKER_SELL_OUTLINE = "#b45309"
 # v4.4 가변 낙폭 매도(TRAIL STOP) 타점 — MA 데드크로스 매도와 구분
 MARKER_TRAIL_STOP_COLOR = "#ffea00"
 MARKER_TRAIL_STOP_OUTLINE = "#f57f17"
-MARKER_ANNOT_SIZE = 11
+MARKER_ANNOT_SIZE = 9
 
 # make_backtest_figure 가 생성한 Figure 에 부착: 차트에서 스킵된 매매 타점 건수(v3.5)
 FIG_ATTR_TRADE_MARKERS_SKIPPED = "_trade_markers_skipped"

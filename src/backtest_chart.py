@@ -58,7 +58,7 @@ def _chart_rc_params() -> dict:
 
 
 def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
-    """보고서 PNG: 저장 직전 tight_layout + bbox/pad로 상단·사방 흰 여백 최소화."""
+    """보고서 PNG: 저장 직전 tight_layout + subplots_adjust + bbox/pad로 상단·사방 흰 여백 최소화 및 하단 잘림 방지."""
     dn = os.path.dirname(out_path)
     if dn:
         os.makedirs(dn, exist_ok=True)
@@ -72,7 +72,12 @@ def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
             fig.tight_layout()
         except Exception:
             pass
-    fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+        try:
+            # 하단 축 텍스트와 수익률 그래프 잘림 방지를 위해 하단 마진 명시적 확보
+            fig.subplots_adjust(bottom=0.15, hspace=0.3)
+        except Exception:
+            pass
+    fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
 
 
 def _trade_resolve_bar_index(t: dict, idx: pd.DatetimeIndex) -> int | None:
@@ -123,10 +128,15 @@ def _draw_trade_markers_matplotlib(
     ]
 
     for t in buys:
-        bi = _trade_resolve_bar_index(t, idx)
-        if bi is None:
+        bi_exec = _trade_resolve_bar_index(t, idx)
+        if bi_exec is None:
             skipped_count += 1
             continue
+        bi = bi_exec - 1
+        if bi < 0:
+            skipped_count += 1
+            continue
+        t["marked_date"] = idx[bi].strftime("%Y-%m-%d")
         ann = ax.annotate(
             "▲",
             xy=(xnums[bi], float(low.iloc[bi])),
@@ -141,10 +151,15 @@ def _draw_trade_markers_matplotlib(
         ann.set_path_effects(buy_fx)
 
     for t in sells:
-        bi = _trade_resolve_bar_index(t, idx)
-        if bi is None:
+        bi_exec = _trade_resolve_bar_index(t, idx)
+        if bi_exec is None:
             skipped_count += 1
             continue
+        bi = bi_exec - 1
+        if bi < 0:
+            skipped_count += 1
+            continue
+        t["marked_date"] = idx[bi].strftime("%Y-%m-%d")
         if str((t.get("reason") or "")).strip().lower() == "trail_stop":
             scolor = MARKER_TRAIL_STOP_COLOR
             sfx = sell_fx_trail
@@ -177,39 +192,66 @@ def _draw_trade_markers_matplotlib(
 
 
 def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> None:
-    """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보."""
+    """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보.
+    
+    하단 마진(0.15)과 상단 마진(0.95)을 강제 지정하고,
+    각 패널이 차지하는 세로 비율을 원래 비율(6:2:2 등)로 완벽히 등분하여 재배치합니다.
+    """
     axes_all = fig.axes
     n_pairs = len(axes_all) // 2
     if n_pairs < 2:
+        # 단일 패널인 경우에도 최소한 하단 마진(0.15)을 확보해 줍니다.
+        if n_pairs == 1:
+            pri = axes_all[0]
+            twin = axes_all[1] if len(axes_all) > 1 else None
+            pos = pri.get_position()
+            if pos.y0 < 0.15:
+                diff = 0.15 - pos.y0
+                new_h = pos.height - diff
+                if new_h > 0.1:
+                    pri.set_position([pos.x0, 0.15, pos.width, new_h])
+                    if twin is not None:
+                        twin.set_position([pos.x0, 0.15, pos.width, new_h])
         return
+
     pairs: list[tuple] = []
     for i in range(n_pairs):
         pri = axes_all[2 * i]
         twin = axes_all[2 * i + 1] if 2 * i + 1 < len(axes_all) else None
         pairs.append((pri, twin))
+        
     meta = []
     for pri, twin in pairs:
         pos = pri.get_position()
         meta.append({"pri": pri, "twin": twin, "pos": pos})
+        
+    # 하단에서 상단 순으로 정렬
     meta.sort(key=lambda d: d["pos"].y0)
-    for i in range(len(meta) - 1):
-        lower = meta[i]
-        upper = meta[i + 1]
-        lp = lower["pos"]
-        up = upper["pos"]
-        new_lo_h = lp.height - gap_each
-        new_up_y0 = up.y0 + gap_each
-        new_up_h = up.height - gap_each
-        if new_lo_h <= 0.04 or new_up_h <= 0.04:
-            continue
-        lower["pri"].set_position([lp.x0, lp.y0, lp.width, new_lo_h])
-        if lower["twin"] is not None:
-            lower["twin"].set_position([lp.x0, lp.y0, lp.width, new_lo_h])
-        upper["pri"].set_position([up.x0, new_up_y0, up.width, new_up_h])
-        if upper["twin"] is not None:
-            upper["twin"].set_position([up.x0, new_up_y0, up.width, new_up_h])
-        lower["pos"] = lower["pri"].get_position()
-        upper["pos"] = upper["pri"].get_position()
+    
+    # 마진 확보 범위 (하단 0.15 ~ 상단 0.95)
+    y_min = 0.15
+    y_max = 0.95
+    N = len(meta)
+    
+    total_orig_h = sum(m["pos"].height for m in meta)
+    H_total = y_max - y_min
+    H_panels = H_total - (N - 1) * gap_each
+    
+    if H_panels <= 0.1:
+        return
+        
+    y_current = y_min
+    for m in meta:
+        orig_h = m["pos"].height
+        ratio = orig_h / total_orig_h
+        h_new = H_panels * ratio
+        
+        lp = m["pos"]
+        m["pri"].set_position([lp.x0, y_current, lp.width, h_new])
+        if m["twin"] is not None:
+            m["twin"].set_position([lp.x0, y_current, lp.width, h_new])
+            
+        y_current += h_new + gap_each
 
 
 def _hts_major_tick_formatter(
@@ -292,11 +334,11 @@ def _chart_panel_ratios_and_return_panel(
     가격 패널 비중을 다소 키워 캔들·추세선이 세로 중앙에 잘 보이게 함.
     """
     if show_volume and show_return:
-        return (54, 13, 10), 2
+        return (6, 2, 2), 2
     if show_volume and not show_return:
-        return (10, 3), None
+        return (6, 2), None
     if not show_volume and show_return:
-        return (15, 3), 1
+        return (6, 2), 1
     return (1,), None
 
 
@@ -456,7 +498,7 @@ def make_backtest_figure(
         volume=show_volume,
         panel_ratios=panel_ratios,
         returnfig=True,
-        figsize=(12, 10),
+        figsize=(12, 8.2),
         title=title,
         tight_layout=True,
         scale_padding=0.92,

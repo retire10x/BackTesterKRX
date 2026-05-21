@@ -343,6 +343,72 @@ def run_backtest_detailed(
 
     save_figure_as_png(fig, out_png)
 
+    # 디버그 검증 로그 생성 (backtest_signal_debug.txt)
+    debug_log_path = "backtest_signal_debug.txt"
+    try:
+        with open(debug_log_path, "w", encoding="utf-8") as f:
+            f.write("=====================================================\n")
+            f.write("[시뮬레이터 매매 신호 및 차트 마킹 동기화 검증 로그]\n")
+            f.write(f"종목: {name} ({selected})\n\n")
+            
+            idx = sim.index
+            buy_idx = 0
+            sell_idx = 0
+            
+            for t in trades:
+                side = t["side"]
+                if side == "BUY":
+                    buy_idx += 1
+                    label = f"매수 {buy_idx}번"
+                else:
+                    sell_idx += 1
+                    label = f"매도 {sell_idx}번"
+                
+                # 체결일 인덱스
+                trade_ts = pd.Timestamp(t["date"]).normalize()
+                idx_norm = idx.normalize()
+                pos = idx_norm.get_indexer([trade_ts], method=None)
+                if pos.size == 0 or int(pos[0]) < 0:
+                    continue
+                bi_exec = int(pos[0])
+                bi_signal = bi_exec - 1
+                if bi_signal < 0:
+                    continue
+                    
+                t_date_str = idx[bi_signal].strftime("%Y-%m-%d")
+                exec_date_str = idx[bi_exec].strftime("%Y-%m-%d")
+                
+                # 캔들 형태 판단 (T일)
+                op = float(sim["Open"].iloc[bi_signal])
+                cl = float(sim["Close"].iloc[bi_signal])
+                pct = (cl - op) / op if op > 0 else 0
+                if pct < -0.03:
+                    candle_desc = "장대음봉"
+                elif pct > 0.03:
+                    candle_desc = "장대양봉"
+                elif pct < 0:
+                    candle_desc = "음봉"
+                elif pct > 0:
+                    candle_desc = "양봉"
+                else:
+                    candle_desc = "도지"
+                    
+                marked_date = t.get("marked_date", exec_date_str)
+                
+                error_suffix = ""
+                if marked_date != t_date_str:
+                    error_suffix = "   [오류: 인덱스 1칸 밀림 발생]"
+                    
+                f.write(f" [{label}]\n\n")
+                f.write(f"전략 판단 신호 발생일 (T일 종가): {t_date_str} ({candle_desc})\n\n")
+                f.write(f"실제 차트 마킹 적용일 (정상 위치): {t_date_str}\n\n")
+                f.write(f"현재 차트 플로팅 인덱스 날짜   : {marked_date}{error_suffix}\n\n")
+                f.write(f"실제 체결 집행일 (T+1일 시가)  : {exec_date_str}\n")
+                f.write("=====================================================\n\n")
+    except Exception as e:
+        import sys
+        print(f"[ERROR] 검증 로그 작성 실패: {e}", file=sys.stderr)
+
     replay_chart: dict | None = None
     if embed_figure:
         replay_chart = {

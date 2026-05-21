@@ -45,8 +45,8 @@ from src.metrics import BacktestResult, run_backtest_detailed
 # ==========================================
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
-FIXED_PANEL_H = 780   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 780  # 우측 패널 고정 세로 높이를 좌측과 통일
+FIXED_PANEL_H = 850   # 좌측 입력 패널 고정 세로 높이
+FIXED_RIGHT_PANEL_H = 850  # 우측 패널 고정 세로 높이를 좌측과 통일
 
 FIXED_LEFT_W = 290    # 왼쪽 입력 패널의 고정 가로 폭
 FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
@@ -54,7 +54,7 @@ FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
 FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
-FIXED_CHART_H = 490   # 우측 차트 높이를 줄여서 좌측 입력 섹션 하단을 넘지 않도록 조절 (수익률 그래프 잘림 방지)
+FIXED_CHART_H = 560   # 우측 차트 높이 상향 조정 (850px 레이아웃에 맞춰 세로 확장)
 
 # 시간축: 좌패널 ±30일(달력) · 차트 오버레이 투명 버튼 ±7영업일
 TIME_AXIS_SHIFT_DAYS = 30
@@ -329,7 +329,7 @@ class BacktestGUI(ctk.CTk):
         right.grid_propagate(False)
         right.grid_rowconfigure(0, weight=0)  # 매매 규칙(전략 옵션)
         right.grid_rowconfigure(1, weight=0)  # 차트 컨트롤 패널
-        right.grid_rowconfigure(2, weight=0)  # 차트
+        right.grid_rowconfigure(2, weight=1)  # 차트 (남은 공간을 모두 차지하도록 weight=1)
         right.grid_rowconfigure(3, weight=0)  # 설명 텍스트
         right.grid_columnconfigure(0, weight=1)
 
@@ -644,10 +644,10 @@ class BacktestGUI(ctk.CTk):
             text_color=("black", "white"),
             font=(GUI_FONT_FAMILY, 14),
             cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(-30),
+            command=lambda: self._on_chart_pan_bdays(-7),
         )
         self.btn_fast_rewind.pack(side="left", padx=6)
-        HoverTooltip(self.btn_fast_rewind, "30영업일 전으로 이동 (-30d)")
+        HoverTooltip(self.btn_fast_rewind, "7영업일 전으로 이동 (-7d)")
 
         self.btn_prev_7 = ctk.CTkButton(
             btn_container,
@@ -662,10 +662,10 @@ class BacktestGUI(ctk.CTk):
             text_color=("black", "white"),
             font=(GUI_FONT_FAMILY, 14),
             cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(-7),
+            command=lambda: self._on_chart_pan_bdays(-1),
         )
         self.btn_prev_7.pack(side="left", padx=6)
-        HoverTooltip(self.btn_prev_7, "7영업일 전으로 이동 (-7d)")
+        HoverTooltip(self.btn_prev_7, "1영업일 전으로 이동 (-1d)")
 
         self.btn_next_7 = ctk.CTkButton(
             btn_container,
@@ -680,10 +680,10 @@ class BacktestGUI(ctk.CTk):
             text_color=("black", "white"),
             font=(GUI_FONT_FAMILY, 14),
             cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(7),
+            command=lambda: self._on_chart_pan_bdays(1),
         )
         self.btn_next_7.pack(side="left", padx=6)
-        HoverTooltip(self.btn_next_7, "7영업일 후로 이동 (+7d)")
+        HoverTooltip(self.btn_next_7, "1영업일 후로 이동 (+1d)")
 
         self.btn_fast_forward = ctk.CTkButton(
             btn_container,
@@ -698,10 +698,10 @@ class BacktestGUI(ctk.CTk):
             text_color=("black", "white"),
             font=(GUI_FONT_FAMILY, 14),
             cursor="hand2",
-            command=lambda: self._on_chart_pan_bdays(30),
+            command=lambda: self._on_chart_pan_bdays(7),
         )
         self.btn_fast_forward.pack(side="left", padx=6)
-        HoverTooltip(self.btn_fast_forward, "30영업일 후로 이동 (+30d)")
+        HoverTooltip(self.btn_fast_forward, "7영업일 후로 이동 (+7d)")
 
         # 현재 기간 표시 라벨 추가 (플레이 버튼 우측)
         self.lbl_current_period = ctk.CTkLabel(
@@ -715,7 +715,7 @@ class BacktestGUI(ctk.CTk):
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
         )
-        self.chart_frame.grid(row=2, column=0, sticky="nw", padx=14, pady=(0, 8))
+        self.chart_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 8))
 
         self.chart_frame.grid_propagate(False)
         self.chart_frame.grid_rowconfigure(0, weight=1)
@@ -784,6 +784,7 @@ class BacktestGUI(ctk.CTk):
 
         # 매수 필터 인터락 등록
         self.var_filter_trend.trace_add("write", self._sync_buy_filters_interlock)
+        self.var_filter_trend.set(True)
         self._sync_buy_filters_interlock()
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:

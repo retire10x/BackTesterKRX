@@ -26,3 +26,5 @@ build/
 
 # 백테스트 생성 그래프·산출물
 output/
+backtest_signal_debug.txt
+
