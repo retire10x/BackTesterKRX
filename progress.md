@@ -14,8 +14,16 @@
 - [x] 좌측 패널 수수료 입력·종목 실행 이력(FIFO 최대 30)·검색/이력 리스트 더블클릭 즉시 백테스트 (`gui.py`, `gui_helpers.try_build_config`)
 - [x] 백테스트 종목 이력 `output/backtest_history.json` 저장·재실행 시 자동 불러오기 (`gui.py`)
 - [x] 일봉 기준 종목 스크리너(종료일 이전 확정 분만 이용, 최근 N거래일 변동성+거래대금 상위 M개) 후 일괄 백테스트 (`stock_screener.py`, GUI·CLI·`settings.yaml` `universe.screener`)
+- [x] 스크리너 하드 필터: 종료일 종가 기준 120일선 역배열 종목 제외 (`stock_screener.py`)
+- [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈로 저해상도 대응 (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-21 (스크리너 역배열 120선 차단 및 GUI 가변 레이아웃·PNG 축 레이블)
+- **내용:**
+  - **스크리너:** 종가 확정 분 기준 종가\<MA120(일봉 120 거래일 롤링) 종목을 변동성·거래대금 랭킹 전 제외하고, 필요 시 차단을 위해 스크린용 일봉 fetch 카렌더 구간 ±400일로 확대했습니다 (`stock_screener.py`).
+  - **GUI:** 메인 창 열(weight)으로 우측 차트 영역이 창 크기에 맞춰 확장되도록 하고 고정 크기 패널·과도 패딩을 줄였으며, 차트 이미지 크기를 `chart_overlay_host` 실측 기준으로 리사이즈합니다 (`gui.py`).
+  - **PNG:** `save_figure_as_png` 에 `subplots_adjust` 및 `figure.autofmt_xdate`, x틱 강제 0도 회전은 제거했습니다 (`backtest_chart.py`).
 
 ### 2026-05-21 (종목 스크리너: 변동성·거래대금 상위 N 자동 필터링 후 배치 백테스트)
 - **목표:** 전체 후보 종목마다 순회하기보다 종료일 기준 과거 확정 일봉만으로 최근 거래일 구간의 변동성(ATR 또는 일간 수익률 표준편차)·거래대금(Σ 거래량×종가)이 모두 상대적으로 큰 순으로 상위 M개만 선별해 순차 백테스트함(시점 왜곡 회피).
@@ -26,6 +34,7 @@
   - **CLI:** `main.py --screener-batch` 로 테이블형 배치 결과 출력 및 동일 YAML 파라미터 사용.
   - **설정:** `config/settings.yaml` 의 `universe.screener` 기본 블록 추가.
 
+### 2026-05-21 (좌측 입력창 재배치, ETF 시장·수수료 UI, 실행 이력 FIFO·더블클릭 실행)
 - **목표:** 좌패널을 상단부터 실행 버튼까지 재정렬하고, 검색 결과·종목 이력에서 빠르게 재실행할 수 있도록 하며 거래 비용을 GUI에서 직접 조정 가능하게 한다.
 - **수정 내용:**
   - **UI 제거:** 조회 주기(일·주)·시간축 이동(±30일) 라벨·버튼 및 연동 분기 코드 제거 (`gui.py`; 내부 변수 `var_interval=daily`는 YAML·차트 간격 호환 목적으로 유지).

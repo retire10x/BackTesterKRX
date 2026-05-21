@@ -73,8 +73,12 @@ def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
         except Exception:
             pass
         try:
-            # 하단 축 텍스트와 수익률 그래프 잘림 방지를 위해 하단 마진 명시적 확보
-            fig.subplots_adjust(bottom=0.15, hspace=0.3)
+            # 하단·상단 라벨 잘림 및 멀티패널 간격 안정화
+            fig.subplots_adjust(bottom=0.16, top=0.94, left=0.07, right=0.97, hspace=0.32)
+        except Exception:
+            pass
+        try:
+            fig.autofmt_xdate(bottom=0.21, rotation=22)
         except Exception:
             pass
     fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
@@ -511,9 +515,9 @@ def make_backtest_figure(
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
     _draw_trend_ma_lines_and_legend(ax_price, idx, trend_ma, bar_label)
     _autoscale_price_panel_y_with_trends(ax_price, odata, trend_ma, idx)
-    # sharex 시 상단 패널 라벨이 숨겨지는 경우가 있어 동일 날짜가 보이게 강제
+    # sharex 시 상단 패널 라벨 겹침 방지용 — 회전과 최종 여백은 save 단계(autofmt_xdate+tight_layout)에서 보정.
     for ax in fig.axes:
-        plt.setp(ax.get_xticklabels(), visible=True, rotation=0, ha="center")
+        plt.setp(ax.get_xticklabels(), visible=True)
     return fig
 
 

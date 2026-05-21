@@ -1,6 +1,7 @@
 """
 일봉 기준 종목 스크리너: 설정 종료일 이전 영업일 구간만 사용(미래 참조 금지).
-최근 N거래일 변동성(ATR 또는 수익률 표준편차)·거래대금(Σ 거래량×종가)으로 상위 종목 후보 산출.
+종가가 120일 단순이평 미만인 종목(역배열)은 랭킹 전 하드 필터링으로 제외.
+최근 N거래일 변동성(ATR 또는 일간 로그수익률 표준편차)·거래대금 합으로 상위 후보 산출.
 FinanceDataReader 기반으로 GUI 비의존.
 """
 from __future__ import annotations
@@ -14,8 +15,9 @@ import pandas as pd
 
 from .data_loader import ensure_datetime_index, fetch_filtered_universe, load_ohlcv
 
-# 일봉 ATR 안정 추정 및 20영업일 윈도우를 위한 캘린더 상 여유(fetch 상한 스크린 대비)
-_SCR_FETCH_CALENDAR_DAYS = 200
+# 일봉 ATR·MA120·20영업일 윈도우 분석을 위해 충분히 당김(저장소 휴장일 반영)
+_SCR_FETCH_CALENDAR_DAYS = 400
+SCREEN_MA_LOOKBACK = 120  # 종가 < MA120 역배열 종목 스크린 랭킹 단계 제외
 MAX_SCREEN_WORKERS = 6
 
 
@@ -37,6 +39,28 @@ def default_screener_config() -> dict:
         "volatility_metric": "atr14",  # atr14 | std_return
         "combine": "sum_rank_pct",   # 각 지표 순위분위합(둘 다 클수록 상위)
     }
+
+
+def _below_ma120_excluded(df: pd.DataFrame, *, end_ts: pd.Timestamp) -> bool:
+    """
+    종료일(T일) 포함 시계열 마지막 확정 종가가 120일 단순이평 미만이면 True.
+    데이터가 120봉 미만이거나 NaN 인 경우 역시 True(랭킹 후보 제외).
+    """
+    z = df.copy()
+    z = ensure_datetime_index(z)
+    if "Close" not in z.columns:
+        return True
+    z = z.loc[z.index.normalize() <= end_ts.normalize()].copy()
+    z = z.dropna(subset=["Close"])
+    cl = pd.to_numeric(z["Close"], errors="coerce").dropna()
+    if len(cl) < SCREEN_MA_LOOKBACK:
+        return True
+    ma = cl.rolling(SCREEN_MA_LOOKBACK, min_periods=SCREEN_MA_LOOKBACK).mean()
+    lc = float(cl.iloc[-1])
+    lm = float(ma.iloc[-1])
+    if not np.isfinite(lc) or not np.isfinite(lm):
+        return True
+    return lc < lm
 
 
 def atr_ratio_series(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
@@ -170,6 +194,8 @@ def _load_one_candidate(
     if df is None or df.empty:
         return None
     end_ts = pd.Timestamp(str(end_date).strip()[:10])
+    if _below_ma120_excluded(df, end_ts=end_ts):
+        return None
     v, tv = _daily_metrics_slice(
         df, end_ts=end_ts, lookback=lookback, volatility_metric=volatility_metric
     )

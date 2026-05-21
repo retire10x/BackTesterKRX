@@ -48,21 +48,17 @@ from src.stock_screener import ScreenerEntry, screen_universe, summary_line_for_
 # ==========================================
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
-FIXED_PANEL_H = 850   # 좌측 입력 패널 고정 세로 높이
-FIXED_RIGHT_PANEL_H = 850  # 우측 패널 고정 세로 높이를 좌측과 통일
-
-FIXED_LEFT_W = 290    # 왼쪽 입력 패널의 고정 가로 폭
-FIXED_RIGHT_W = 1050  # 오른쪽 차트 패널의 고정 가로 폭
-
-FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
-
-FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
-FIXED_CHART_H = 560   # 우측 차트 높이 상향 조정 (850px 레이아웃에 맞춰 세로 확장)
+# 좌측 최소 가로폭. 우측·차트는 창 크기에 맞춰 가변(CHART_IMG_* 는 이미지 첫 레이아웃 전 추정 크기용).
+FIXED_LEFT_W = 290
 
 # 차트 패널: 영업일 기준(±7, ±1) 기간 평행 이동 시 라벨·자동 재실행과 연계
 # 차트 이미지 위 좌·우 클릭 영역 (px, place)
 CHART_NAV_STRIP_W = 50
 DATE_CLAMP_MIN = date(1990, 1, 1)
+
+# 차트 패널이 아직 레이아웃 측정 전일 때 PIL 리사이즈 추정 크기 (노트북 저해상도 대응)
+CHART_IMG_FALLBACK_W = 640
+CHART_IMG_FALLBACK_H = 400
 
 # 최근 실행 종목 이력: 메모리·디스크 모두 최대 이 개수 (FIFO)
 BACKTEST_HISTORY_MAX = 30
@@ -97,17 +93,18 @@ class BacktestGUI(ctk.CTk):
         self.var_screener_metric = ctk.StringVar(value="atr14")
         self._history_deque = deque(maxlen=BACKTEST_HISTORY_MAX)
 
-        self.grid_columnconfigure(0, weight=0)
-        self.grid_columnconfigure(1, weight=0)
-        self.grid_rowconfigure(0, weight=0)
+        self.grid_columnconfigure(0, weight=0, minsize=FIXED_LEFT_W)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=0)
 
         left = ctk.CTkFrame(
-            self, corner_radius=10, width=FIXED_LEFT_W, height=FIXED_PANEL_H
-        )  # 🎯 가로 320, 세로 780 고정
+            self, corner_radius=10, width=FIXED_LEFT_W
+        )
         left.grid(
-            row=0, column=0, sticky="nw", padx=(12, 6), pady=(12, 6)
-        )  # sticky에서 nsew를 빼고 nw(좌측상단 정렬)로 변경
-        left.grid_propagate(False)  # 중요: 내부 컴포넌트 때문에 프레임 크기가 변하는 걸 막음
+            row=0, column=0, sticky="nw", padx=(8, 4), pady=(8, 8)
+        )  # 좌측: 고정 최소폭만 유지하고 세로는 내용 기준 (저해상도 대응)
+        left.grid_propagate(True)
 
         row_search = ctk.CTkFrame(left, fg_color="transparent")
         row_search.pack(fill="x", padx=14, pady=(12, 6))
@@ -156,6 +153,7 @@ class BacktestGUI(ctk.CTk):
         tt_scr = (
             "백테스트 시작 전 실행됩니다.\n마지막 영업일(종료일) 기준 최근 거래일 N일 구간만 사용해 "
             "변동성·거래대금(Σ 거래량×종가)이 모두 높은 종목 순으로 상위 M개만 골라 M번 연속 백테스트합니다.\n"
+            "종가가 일봉 120선 아래(역배열)인 종목은 랭킹 후보에서 먼저 제외합니다.\n"
             "시점 왜곡을 피하기 위해 스크린은 종료일까지의 과거 확정 분만 사용합니다(YAML universe.screener)."
         )
         HoverTooltip(self.cb_screener, tt_scr)
@@ -328,15 +326,12 @@ class BacktestGUI(ctk.CTk):
         self.var_trailing_drop_below_pct = ctk.StringVar(value="3.0")
         self.var_trailing_drop_above_pct = ctk.StringVar(value="5.0")
 
-        right = ctk.CTkFrame(
-            self, corner_radius=10, width=FIXED_RIGHT_W, height=FIXED_RIGHT_PANEL_H
-        )
-        right.grid(row=0, column=1, sticky="nw", padx=(6, 12), pady=(12, 6))
-        right.grid_propagate(False)
-        right.grid_rowconfigure(0, weight=0)  # 매매 규칙(전략 옵션)
-        right.grid_rowconfigure(1, weight=0)  # 차트 컨트롤 패널
-        right.grid_rowconfigure(2, weight=1)  # 차트 (남은 공간을 모두 차지하도록 weight=1)
-        right.grid_rowconfigure(3, weight=0)  # 설명 텍스트
+        right = ctk.CTkFrame(self, corner_radius=10)
+        right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=(8, 8))
+        right.grid_propagate(True)
+        right.grid_rowconfigure(0, weight=0)
+        right.grid_rowconfigure(1, weight=0)
+        right.grid_rowconfigure(2, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
         rules_panel = ctk.CTkFrame(
@@ -346,7 +341,7 @@ class BacktestGUI(ctk.CTk):
             border_color=("gray65", "gray45"),
             fg_color=("gray92", "gray18"),
         )
-        rules_panel.grid(row=0, column=0, sticky="ew", padx=14, pady=(8, 8))
+        rules_panel.grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 4))
 
         rules_head = ctk.CTkFrame(rules_panel, fg_color="transparent")
         rules_head.pack(fill="x", padx=8, pady=(8, 4))
@@ -632,7 +627,7 @@ class BacktestGUI(ctk.CTk):
         self.chart_control_panel = ctk.CTkFrame(
             right, fg_color="transparent"
         )
-        self.chart_control_panel.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 6))
+        self.chart_control_panel.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 4))
 
         btn_container = ctk.CTkFrame(self.chart_control_panel, fg_color="transparent")
         btn_container.pack(anchor="center")
@@ -719,11 +714,11 @@ class BacktestGUI(ctk.CTk):
         self.lbl_current_period.pack(side="left", padx=(18, 6))
 
         self.chart_frame = ctk.CTkFrame(
-            right, fg_color=("gray95", "gray17"), width=FIXED_CHART_W, height=FIXED_CHART_H
+            right, fg_color=("gray95", "gray17")
         )
-        self.chart_frame.grid(row=2, column=0, sticky="nsew", padx=14, pady=(0, 8))
+        self.chart_frame.grid(row=2, column=0, sticky="nsew", padx=8, pady=(0, 4))
 
-        self.chart_frame.grid_propagate(False)
+        self.chart_frame.grid_propagate(True)
         self.chart_frame.grid_rowconfigure(0, weight=1)
         self.chart_frame.grid_columnconfigure(0, weight=1)
 
@@ -731,7 +726,7 @@ class BacktestGUI(ctk.CTk):
         self.chart_overlay_host = ctk.CTkFrame(
             self.chart_frame, fg_color="transparent"
         )
-        self.chart_overlay_host.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self.chart_overlay_host.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
 
         self.lbl_chart = ctk.CTkLabel(
             self.chart_overlay_host,
@@ -803,12 +798,13 @@ class BacktestGUI(ctk.CTk):
 
     def _apply_maximized_geometry(self) -> None:
         try:
+            self.minsize(960, 540)
             self.state("zoomed")
         except tk.TclError:
             try:
                 self.attributes("-zoomed", True)
             except tk.TclError:
-                self.geometry("1400x900")
+                self.geometry("1280x840")
 
     def _on_chart_frame_configure(self, _event: tk.Event) -> None:
         if not self._last_chart_path:
@@ -834,14 +830,12 @@ class BacktestGUI(ctk.CTk):
 
         self._last_chart_path = image_path
         try:
-            self.chart_frame.update_idletasks()
-            self.lbl_chart.update_idletasks()
-            fw = int(self.lbl_chart.winfo_width())
-            fh = int(self.lbl_chart.winfo_height())
-            # 그리드 직후 등 유효 크기 없을 때: 차트 패딩만 반영한 추정
+            self.chart_overlay_host.update_idletasks()
+            fw = max(240, int(self.chart_overlay_host.winfo_width()) - 6)
+            fh = max(200, int(self.chart_overlay_host.winfo_height()) - 6)
             if fw <= 10 or fh <= 10:
-                fw = max(400, FIXED_CHART_W - 16)
-                fh = FIXED_CHART_H - 12
+                fw = CHART_IMG_FALLBACK_W
+                fh = CHART_IMG_FALLBACK_H
 
             with Image.open(image_path) as pil_img:
                 resized = pil_img.resize((fw, fh), Image.Resampling.LANCZOS)
