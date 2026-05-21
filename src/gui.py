@@ -43,6 +43,7 @@ from src.gui_helpers import (
 )
 from src.backtest_constants import TREND_MA_PERIODS
 from src.metrics import BacktestResult, run_backtest_detailed
+from src.stock_screener import ScreenerEntry, screen_universe, summary_line_for_entry
 
 # ==========================================
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
@@ -92,6 +93,8 @@ class BacktestGUI(ctk.CTk):
         self.var_show_revenue = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.18")
+        self.var_screener_enabled = ctk.BooleanVar(value=False)
+        self.var_screener_metric = ctk.StringVar(value="atr14")
         self._history_deque = deque(maxlen=BACKTEST_HISTORY_MAX)
 
         self.grid_columnconfigure(0, weight=0)
@@ -138,6 +141,37 @@ class BacktestGUI(ctk.CTk):
             font=gui_body_font(),
             command=self._on_search,
         ).grid(row=0, column=2, sticky="e")
+
+        row_scr = ctk.CTkFrame(left, fg_color="transparent")
+        row_scr.pack(fill="x", padx=14, pady=(4, 2))
+        self.cb_screener = ctk.CTkCheckBox(
+            row_scr,
+            text="종목 스크리너(상위 일봉 N거래일)",
+            variable=self.var_screener_enabled,
+            font=gui_body_font(),
+            checkbox_width=18,
+            checkbox_height=18,
+        )
+        self.cb_screener.pack(side="left", padx=(0, 10))
+        tt_scr = (
+            "백테스트 시작 전 실행됩니다.\n마지막 영업일(종료일) 기준 최근 거래일 N일 구간만 사용해 "
+            "변동성·거래대금(Σ 거래량×종가)이 모두 높은 종목 순으로 상위 M개만 골라 M번 연속 백테스트합니다.\n"
+            "시점 왜곡을 피하기 위해 스크린은 종료일까지의 과거 확정 분만 사용합니다(YAML universe.screener)."
+        )
+        HoverTooltip(self.cb_screener, tt_scr)
+
+        scr_metric_wrap = ctk.CTkFrame(row_scr, fg_color="transparent")
+        scr_metric_wrap.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(
+            scr_metric_wrap, text="변동성 지표", font=gui_body_font(), width=74
+        ).pack(side="left", padx=(0, 4))
+        ctk.CTkOptionMenu(
+            scr_metric_wrap,
+            variable=self.var_screener_metric,
+            values=["atr14", "std_return"],
+            width=134,
+            font=gui_body_font(),
+        ).pack(side="left")
 
         ctk.CTkLabel(left, text="검색 결과 (1개만 선택)", font=gui_body_font()).pack(anchor="w", padx=14)
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
@@ -894,6 +928,8 @@ class BacktestGUI(ctk.CTk):
                 text="기간 변경됨 · 검색 결과·이력에서 종목을 선택했는지 또는 settings 의 universe.selected_code 를 확인하세요.",
             )
             return
+        # 차트 기간 평행 이동 시 전 유니버스 일괄 스크린을 피하기 위해 단일 종목 재실행만 수행합니다.
+        cfg.setdefault("universe", {}).setdefault("screener", {})["enabled"] = False
         self._run_backtest(cfg)
 
     def _on_chart_pan_bdays(self, delta_bdays: int) -> None:
@@ -915,7 +951,7 @@ class BacktestGUI(ctk.CTk):
         def work():
             try:
                 res = run_backtest_detailed(cfg)
-                self.after(0, lambda: self._finish_run(res))
+                self.after(0, lambda r=res: self._finish_run(r))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -926,9 +962,256 @@ class BacktestGUI(ctk.CTk):
                     report_path=None,
                     log_lines=[f"Error: {e}"],
                 )
-                self.after(0, lambda: self._finish_run(err_res))
+                self.after(0, lambda r=err_res: self._finish_run(r))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _run_screener_batch(self, cfg: dict) -> None:
+        """스크린 → 선정 종목 일괄 백테스트(차트·요약은 마지막 성공 건 또는 집계)."""
+        if self._busy:
+            return
+        self._busy = True
+        uni = cfg.get("universe") or {}
+        scr = uni.get("screener") or {}
+        self._pending_run_code = str(uni.get("selected_code") or "").zfill(6)
+        self._update_period_label()
+        self.btn_run.configure(state="disabled", text="스크린·일괄 계산 중…")
+        self.lbl_status.configure(text="종목 스크리너 실행 중…")
+        period = cfg.get("period") or {}
+        end_d = str(period.get("end_date") or "").strip()
+
+        def worker() -> None:
+            agg_err: list[str] = []
+            try:
+                lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
+                tn = max(1, min(200, int(scr.get("top_n", 30))))
+                metric = str(scr.get("volatility_metric") or "atr14").strip().lower()
+
+                def prog(done: int, total: int, code: str) -> None:
+                    self.after(
+                        0,
+                        lambda d=done, tot=total, c=code: self.lbl_status.configure(
+                            text=(
+                                f"스크리너 진행 {d}/{tot} "
+                                f"· 종료일까지 일봉만 사용 · 최근 심볼 {c}"
+                            )
+                        ),
+                    )
+
+                picks = screen_universe(
+                    market=str(uni.get("market") or "KOSPI"),
+                    keyword=str(uni.get("search_keyword") or ""),
+                    end_date=end_d,
+                    lookback_trading_days=lk,
+                    top_n=tn,
+                    volatility_metric=metric,
+                    progress_cb=prog,
+                )
+                if not picks:
+                    self.after(
+                        0,
+                        lambda: self._finish_screener_batch_error(
+                            "스크리너 후보가 없습니다. 종료일·시장·키워드·데이터를 확인하세요."
+                        ),
+                    )
+                    return
+
+                out_dir = os.path.join("output")
+                os.makedirs(out_dir, exist_ok=True)
+                tsv_path = os.path.join(out_dir, "screener_last.tsv")
+                try:
+                    with open(tsv_path, "w", encoding="utf-8") as fh:
+                        fh.write(
+                            "rank\tcode\tname\tvol_metric\tamount_krw_sum\tscore_pct_mean\n"
+                        )
+                        for i, ent in enumerate(picks, start=1):
+                            fh.write(
+                                f"{i}\t{ent.code}\t{ent.name}\t{ent.volatility_raw:.12g}"
+                                f"\t{int(round(ent.turnover_krw_sum))}\t"
+                                f"{ent.combined_score:.6g}\n"
+                            )
+                except OSError:
+                    agg_err.append(f"[경고] 스크리너 TSV 저장 실패 ({tsv_path})")
+
+                results: list[tuple[ScreenerEntry, BacktestResult]] = []
+                for i, ent in enumerate(picks):
+                    self.after(
+                        0,
+                        lambda ix=i + 1, tot=len(picks), c=str(ent.code): self.lbl_status.configure(
+                            text=f"백테스트 {ix}/{tot} 진행 중… ({c})"
+                        ),
+                    )
+                    r = run_backtest_detailed(cfg, override_code=ent.code)
+                    results.append((ent, r))
+
+                self.after(
+                    0,
+                    lambda plist=list(picks), rlst=list(results): self._finish_screener_batch(
+                        plist,
+                        rlst,
+                        agg_err,
+                        tsv_path,
+                    ),
+                )
+            except Exception as e:
+                import traceback
+
+                traceback.print_exc()
+                self.after(
+                    0,
+                    lambda msg=str(e): self._finish_screener_batch_error(
+                        f"스크리너·일괄 백테스트 오류: {msg}"
+                    ),
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_screener_batch_error(self, msg: str) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="백테스트 실행")
+        self.lbl_status.configure(text="오류로 종료됨.")
+        messagebox.showerror("스크리너 실패", msg)
+
+    def _finish_screener_batch(
+        self,
+        picks: list[ScreenerEntry],
+        results: list[tuple[ScreenerEntry, BacktestResult]],
+        agg_err: list[str],
+        screener_tsv_path: str,
+    ) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="백테스트 실행")
+
+        ok_runs = [(e, r) for e, r in results if r.ok]
+        if not ok_runs:
+            worst = results[0][1] if results else None
+            err_txt = worst.error if worst and worst.error else "모든 종목에서 백테스트가 실패했습니다."
+            self._last_chart_path = None
+            self._img_ref = None
+            self.lbl_chart.configure(image=None, text=err_txt)
+            lines = [*agg_err, f"[안내] 스크리너 TSV → {screener_tsv_path}"]
+            for e, r in results:
+                if not r.ok and r.error:
+                    lines.append(f"[실패] {e.code} {e.name}: {r.error}")
+            self._set_summary("\n".join(lines[:28]))
+            self.lbl_status.configure(text="실패 종료.")
+            messagebox.showerror("일괄 백테스트 실패", err_txt)
+            return
+
+        self.list_codes.delete(0, tk.END)
+        self._candidates = [(e.code, e.name) for e in picks]
+        for code, name in self._candidates:
+            self.list_codes.insert(tk.END, f"{code}  {name}")
+        if self._candidates:
+            try:
+                self.list_codes.selection_set(0)
+            except tk.TclError:
+                pass
+
+        rows_out: list[list[str]] = []
+        for e, r in results:
+            if not r.ok:
+                rows_out.append(
+                    [e.code, e.name, "-", "-", str(r.error or "실패")[:40]]
+                )
+                continue
+            m = self._metrics_from_summary(r)
+            rows_out.append(
+                [
+                    e.code,
+                    e.name,
+                    f"{m['total']:.2f}"
+                    if m["total"] is not None
+                    else "-",
+                    f"{m['mdd']:.2f}" if m["mdd"] is not None else "-",
+                    "",
+                ]
+            )
+
+        agg_lines: list[str] = [
+            f"종목 스크리너: 선정 {len(picks)}개 · 성공 {len(ok_runs)}개 백테스트",
+            f"스크린 결과 파일: {screener_tsv_path}",
+        ]
+        agg_lines.extend(agg_err)
+        agg_lines.extend(
+            [
+                "",
+                "--- 스크린 상위 (일부) ---",
+                *[summary_line_for_entry(x) for x in picks[: min(8, len(picks))]],
+            ]
+        )
+        if len(picks) > 8:
+            agg_lines.append(f"... 외 {len(picks) - 8}개 생략")
+        agg_lines.extend(
+            [
+                "",
+                "코드 · 종목 · 누적% · MDD%",
+            ]
+        )
+        for row in rows_out[:20]:
+            agg_lines.append(" · ".join(str(x) for x in row))
+        if len(rows_out) > 20:
+            agg_lines.append(f"... 외 {len(rows_out) - 20}행 생략")
+
+        self._set_summary("\n".join(agg_lines))
+
+        _, last_ok = ok_runs[-1]
+        self._pending_run_code = ok_runs[-1][0].code.zfill(6)
+        for ent, rr in ok_runs:
+            self._push_history(
+                ent.code.zfill(6),
+                self._disp_name_from_res(rr),
+            )
+
+        self.update_idletasks()
+        self._update_chart_image(last_ok.report_path)
+        self._update_period_label()
+
+        warn_skip = False
+        for _e, rr in ok_runs:
+            if rr.trade_markers_skipped > 0:
+                warn_skip = True
+                break
+        if warn_skip:
+            self.lbl_status.configure(text="완료(일부 타점 확인 필요)")
+            messagebox.showwarning(
+                "차트 타점 확인",
+                "일부 종목에서 차트 타점 매칭 경고가 있었습니다. 터미널 로그의 [CRITICAL] 을 참고하세요.",
+            )
+        else:
+            self.lbl_status.configure(text="완료 (스크리너 배치)")
+
+
+    @staticmethod
+    def _metrics_from_summary(res: BacktestResult) -> dict[str, float | None]:
+        keys = {row[0]: row[1] for row in res.summary_rows}
+
+        def grab_pct(label: str) -> float | None:
+            raw = str(keys.get(label, "")).replace(",", "").strip().replace("%", "")
+            if not raw:
+                return None
+            try:
+                return float(raw)
+            except ValueError:
+                return None
+
+        return {
+            "total": grab_pct("누적 수익률"),
+            "cagr": grab_pct("연평균 수익률"),
+            "mdd": grab_pct("최대 손실 낙폭"),
+        }
+
+    @staticmethod
+    def _disp_name_from_res(res: BacktestResult) -> str:
+        for row in res.summary_rows:
+            if row[0] != "종목":
+                continue
+            cell = str(row[1])
+            lp = cell.rfind("(")
+            rp = cell.rfind(")")
+            if lp >= 0 and rp > lp:
+                return cell[:lp].strip()
+        return ""
 
     @staticmethod
     def _split_codes_list_line(line: str) -> tuple[str, str]:
@@ -1075,7 +1358,18 @@ class BacktestGUI(ctk.CTk):
             self.list_codes.insert(tk.END, f"{code}  {name}")
 
     def _on_run(self):
-        self._run_backtest(try_build_config(self, silent=False))
+        cfg = try_build_config(self, silent=False)
+        if cfg is None:
+            return
+        scr = (
+            cfg.get("universe", {}).get("screener")
+            if isinstance(cfg.get("universe", {}).get("screener"), dict)
+            else {}
+        )
+        if scr.get("enabled"):
+            self._run_screener_batch(cfg)
+        else:
+            self._run_backtest(cfg)
 
     def _finish_run(self, res):
         self._busy = False

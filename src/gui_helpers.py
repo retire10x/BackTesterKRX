@@ -15,6 +15,7 @@ import customtkinter as ctk
 from src.backtest_constants import TREND_MA_PERIODS
 from src.data_loader import default_backtest_period_range, load_config
 from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
+from src.stock_screener import default_screener_config
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
 # CTkFont 는 import 시점에 만들 수 없음(기본 Tk 루트 없음) — `gui_body_font()` 로 창 생성 후 사용.
@@ -304,6 +305,14 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_market.set(mv)
     if uni.get("search_keyword") is not None:
         ui.var_keyword.set(str(uni["search_keyword"]))
+    scr_yaml = uni.get("screener")
+    if isinstance(scr_yaml, dict) and hasattr(ui, "var_screener_enabled"):
+        if "enabled" in scr_yaml:
+            ui.var_screener_enabled.set(bool(scr_yaml["enabled"]))
+        if scr_yaml.get("volatility_metric") is not None:
+            mv = str(scr_yaml["volatility_metric"]).strip().lower()
+            if mv in ("atr14", "std_return"):
+                ui.var_screener_metric.set(mv)
     st = cfg.get("strategy", {})
     if st.get("interval"):
         ui.var_interval.set(str(st["interval"]).lower())
@@ -380,6 +389,23 @@ def try_build_config(
     )
     cfg["universe"]["search_keyword"] = kw
 
+    uni_block = cfg.setdefault("universe", {})
+    yaml_uni = base.get("universe") or {}
+    yaml_scr = (
+        yaml_uni.get("screener")
+        if isinstance(yaml_uni.get("screener"), dict)
+        else {}
+    )
+    scr_merged = {**default_screener_config(), **yaml_scr}
+    if hasattr(ui, "var_screener_enabled"):
+        scr_merged["enabled"] = bool(ui.var_screener_enabled.get())
+    if getattr(ui, "var_screener_metric", None) is not None:
+        mv = str(ui.var_screener_metric.get()).strip().lower()
+        if mv in ("atr14", "std_return"):
+            scr_merged["volatility_metric"] = mv
+    uni_block["screener"] = scr_merged
+    screener_on = bool(scr_merged.get("enabled"))
+
     code: str
     ov = (
         str(selected_code_override).strip().zfill(6)
@@ -395,14 +421,28 @@ def try_build_config(
             code = line.split()[0].strip()
         else:
             code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-            if not code:
-                if not silent:
-                    messagebox.showwarning(
-                        "알림",
-                        "종목 검색 후 리스트에서 종목 1개를 선택하거나, "
-                        "이력 더블클릭 또는 config/settings.yaml 의 universe.selected_code 를 설정하세요.",
-                    )
-                return None
+            # deepcopy 초기값이 비어 있는 경우 원본 YAML의 selected_code 재시도
+            if (not code or code == "000000") and screener_on:
+                fallback = (
+                    str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
+                )
+                if fallback and fallback != "000000":
+                    code = fallback
+
+    code = code.zfill(6) if code else ""
+
+    if not code or code == "000000":
+        if not silent:
+            hint = ""
+            if screener_on:
+                hint = " 종목 스크리너 사용 시에는 config/settings.yaml 의 universe.selected_code 또는 검색·선택을 준비하세요."
+            messagebox.showwarning(
+                "알림",
+                "종목 검색 후 리스트에서 종목 1개를 선택하거나, 이력 더블클릭 또는 "
+                "config/settings.yaml 의 universe.selected_code 를 설정하세요." + hint,
+            )
+        return None
+
     cfg["universe"]["selected_code"] = code
 
     interval = ui.var_interval.get()

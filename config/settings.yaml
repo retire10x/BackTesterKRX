@@ -8,6 +8,13 @@ universe:
   market: "KOSPI"
   search_keyword: "삼성"   # "" 이면 시장 전체(후보 목록용)
   selected_code: "005930"
+  # 종목 스크리너: GUI 체크박스 또는 batch CLI 시 활성. 종료일(end_date)까지의 일봉만 보고 과거 참조 금지.
+  screener:
+    enabled: false
+    lookback_trading_days: 20
+    top_n: 30
+    volatility_metric: "atr14"   # atr14 | std_return — 일봉 기준 평균 ATR%/거래량×종가 합 순위 또는 일간 수익률 표준편차
+    combine: "sum_rank_pct"     # 현재 코드: 각 지표 백분위 순위평균(둘 다 클수록 상위)
 
 # 전략
 strategy:

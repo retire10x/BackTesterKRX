@@ -18,6 +18,7 @@ from tabulate import tabulate
 
 from src.data_loader import fetch_filtered_universe, load_config
 from src.metrics import run_backtest_detailed
+from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
 WATCH_DEBOUNCE_SEC = 0.5
@@ -51,6 +52,8 @@ def merge_cli_into_config(cfg: dict, args: argparse.Namespace) -> dict:
         out.setdefault("strategy", {})["show_trend_ma120"] = True
     if args.ma200:
         out.setdefault("strategy", {})["show_trend_ma200"] = True
+    if getattr(args, "screener_batch", False):
+        out.setdefault("universe", {}).setdefault("screener", {})["enabled"] = True
     return out
 
 
@@ -81,6 +84,114 @@ def run_backtest_cli(cfg: dict, override_code: str | None = None) -> bool:
     return True
 
 
+def run_screener_batch_cli(cfg: dict) -> bool:
+    uni = cfg.get("universe") or {}
+    period = cfg.get("period") or {}
+    end_d = str(period.get("end_date") or "").strip()
+    if not end_d:
+        print("[오류] screener-batch 는 period.end_date 가 필요합니다. YAML 또는 --end 로 지정하세요.", file=sys.stderr)
+        return False
+    raw_scr = uni.get("screener") if isinstance(uni.get("screener"), dict) else {}
+    scr = {**default_screener_config(), **raw_scr}
+
+    lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
+    tn = max(1, min(200, int(scr.get("top_n", 30))))
+    metric = str(scr.get("volatility_metric") or "atr14").strip()
+
+    picks = screen_universe(
+        market=str(uni.get("market") or "KOSPI"),
+        keyword=str(uni.get("search_keyword") or ""),
+        end_date=end_d,
+        lookback_trading_days=lk,
+        top_n=tn,
+        volatility_metric=metric,
+        progress_cb=None,
+    )
+    if not picks:
+        print("[오류] 스크리너 후보 없음.", file=sys.stderr)
+        return False
+
+    print(f"\n[스크리너] 종료일 {end_d} 일봉 기준 최근 {lk}영업일 | 지표={metric} | 상위 {len(picks)}개\n")
+    print(tabulate(
+        [
+            [
+                i,
+                e.code,
+                e.name[:16],
+                f"{e.volatility_raw:.6g}",
+                int(round(e.turnover_krw_sum)),
+                f"{e.combined_score:.4f}",
+            ]
+            for i, e in enumerate(picks, start=1)
+        ],
+        headers=["순위", "코드", "종목명", "vol_raw", "거래대금합(원)", "score"],
+        tablefmt="grid",
+    ))
+
+    out_dir = Path("output")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tsv = out_dir / "screener_last.tsv"
+    try:
+        with open(tsv, "w", encoding="utf-8") as fh:
+            fh.write("rank\tcode\tname\tvol_metric\tamount_krw_sum\tscore_pct_mean\n")
+            for i, ent in enumerate(picks, start=1):
+                fh.write(
+                    f"{i}\t{ent.code}\t{ent.name}\t{ent.volatility_raw:.12g}"
+                    f"\t{int(round(ent.turnover_krw_sum))}\t{ent.combined_score:.6g}\n"
+                )
+    except OSError as e:
+        print(f"[경고] screener TSV 저장 실패: {e}", file=sys.stderr)
+
+    agg_rows = []
+    all_ok = True
+    for i, ent in enumerate(picks, start=1):
+        print("\n" + "-" * 60)
+        print(f"[{i}/{len(picks)}] 백테스트 {ent.code} {ent.name}")
+        print("-" * 60)
+        r = run_backtest_detailed(cfg, override_code=ent.code)
+        for ln in r.log_lines[-5:]:
+            print(ln)
+        if not r.ok:
+            all_ok = False
+            agg_rows.append(
+                [
+                    ent.code,
+                    ent.name[:18],
+                    "FAIL",
+                    str(r.error or "")[:52],
+                    summary_line_for_entry(ent),
+                ]
+            )
+            continue
+        m = {
+            row[0]: row[1]
+            for row in r.summary_rows
+        }
+        agg_rows.append(
+            [
+                ent.code,
+                ent.name[:18],
+                m.get("누적 수익률", "-"),
+                m.get("최대 손실 낙폭", "-"),
+                summary_line_for_entry(ent),
+            ]
+        )
+
+    print("\n" + "=" * 72)
+    print(f" 종목 스크리너 배치 요약 (성공 포함 {sum(1 for row in agg_rows if row[2] != 'FAIL')} / {len(agg_rows)}) ")
+    print("=" * 72)
+    print(
+        tabulate(
+            agg_rows,
+            headers=["코드", "종목명", "누적 수익률", "MDD", "스크린 요약 줄"],
+            tablefmt="grid",
+        )
+    )
+    print(f"\n스크린 TSV: {tsv.resolve()}")
+
+    return all_ok
+
+
 def cli_main() -> None:
     ap = argparse.ArgumentParser(
         description="BackTesterKRX — 일봉/주봉 · 싱글 종목 (설정은 YAML, 옵션으로 덮어쓰기)"
@@ -109,6 +220,14 @@ def cli_main() -> None:
         action="store_true",
         help="PNG 차트에 200일/200봉 추세 이평 오버레이 (show_trend_ma200)",
     )
+    ap.add_argument(
+        "--screener-batch",
+        action="store_true",
+        help=(
+            "일봉 스크리너로 후보 종목 필터링 후 순차 백테스트합니다"
+            "(universe.screener + 기간 종료일 기준)."
+        ),
+    )
     ap.epilog = (
         "GUI 는 인자 없이: python main.py\n"
         "코드 저장 시 GUI 자동 재시작(개발): python main.py --watch  (감시: src/**/*.py, 루트 main.py)"
@@ -127,7 +246,10 @@ def cli_main() -> None:
         print_candidate_list(cand)
         return
 
-    ok = run_backtest_cli(cfg, override_code=args.code)
+    if args.screener_batch:
+        ok = run_screener_batch_cli(cfg)
+    else:
+        ok = run_backtest_cli(cfg, override_code=args.code)
     sys.exit(0 if ok else 1)
 
 

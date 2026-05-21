@@ -20,7 +20,8 @@ BackTesterKRX/
 │   ├── data_loader.py  # 종목·OHLCV·주봉 집계·YAML 로드
 │   ├── strategy.py     # 골든/데드크로스 시그널
 │   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
-│   └── metrics.py      # 성과 지표·PNG 보고서·run_backtest_detailed
+│   ├── metrics.py      # 성과 지표·PNG 보고서·run_backtest_detailed
+│   └── stock_screener.py  # 일봉 종목 스크리너(변동성·거래대금 상위 필터)
 ├── output/             # backtest_report.png
 ├── config/             # settings.yaml (기본 설정)
 ├── main.py             # GUI/CLI 공통 진입
@@ -85,6 +86,14 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 (`--ma120` / `--ma200` 은 YAML 의 `show_trend_ma120` / `show_trend_ma200` 을 켭니다.)
 
+**종목 스크리너 배치:** 종료일(`--end` 또는 YAML `period.end_date`)까지의 **일봉만**으로 최근 `universe.screener.lookback_trading_days` 거래일의 변동성·거래대금 상위 `top_n` 종목만 순차 백테스트합니다.
+
+```powershell
+python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
+```
+
+선정 순위는 `output/screener_last.tsv` 에 저장합니다. 검색 키워드를 비우면 해당 시장 **전 후보**를 돌려 **네트워크 부하와 시간이 큽니다.**
+
 **그래프:** `output/backtest_report.png` — **`mplfinance`** 로 가격(**캔들** 또는 **종가선**)·**(선택) 거래량**·**(선택) 누적 수익률** 패널을 조합(비율: 전체 **50:14:21**(거래량·수익률 패널 높이 기존 대비 약 30% 축소), 거래량 끔 **15:7**, 수익률 끔 **10:3**, 가격만 **단일 패널**) + **(선택) 추세 이평 오버레이**(켜진 기간만 `TREND_MA_COLORS`, **PNG 가격 패널 좌상단 `ax.legend`(v4.5)·반투명 박스)** + **매매 타점**(v3.4~v3.5 동일)·매매 기준 이평(N일)은 **차트 선으로 그리지 않음**(시그널·체결만).
 
 ## 설정
@@ -104,3 +113,4 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 |
 | `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) |
+| `src/stock_screener.py` | 일봉 기준 종목 스크리너(변동성·거래대금 상위 선별, GUI·CLI 공용) |
