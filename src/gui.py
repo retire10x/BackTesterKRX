@@ -6,8 +6,10 @@ YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_deta
 """
 from __future__ import annotations
 
+import json
 import os
 import threading
+from collections import deque
 import tkinter as tk
 from datetime import date, timedelta
 from tkinter import messagebox
@@ -56,12 +58,14 @@ FIXED_RULES_TEXT_H = 100  # 우측 하단 참고 문구(읽기 전용) 높이
 FIXED_CHART_W = 1020  # 실제 캔들 차트 이미지의 고정 가로 폭
 FIXED_CHART_H = 560   # 우측 차트 높이 상향 조정 (850px 레이아웃에 맞춰 세로 확장)
 
-# 시간축: 좌패널 ±30일(달력) · 차트 오버레이 투명 버튼 ±7영업일
-TIME_AXIS_SHIFT_DAYS = 30
-TIME_AXIS_PAN_BDAY = 7
+# 차트 패널: 영업일 기준(±7, ±1) 기간 평행 이동 시 라벨·자동 재실행과 연계
 # 차트 이미지 위 좌·우 클릭 영역 (px, place)
 CHART_NAV_STRIP_W = 50
 DATE_CLAMP_MIN = date(1990, 1, 1)
+
+# 최근 실행 종목 이력: 메모리·디스크 모두 최대 이 개수 (FIFO)
+BACKTEST_HISTORY_MAX = 30
+BACKTEST_HISTORY_FILE = os.path.join("output", "backtest_history.json")
 
 
 class BacktestGUI(ctk.CTk):
@@ -77,6 +81,18 @@ class BacktestGUI(ctk.CTk):
         self._last_chart_path: str | None = None
         self._chart_resize_after_id: str | None = None
         self._shift_auto_run_after_id: str | None = None
+
+        self.var_interval = ctk.StringVar(value="daily")
+        self.var_ma_period = ctk.StringVar(value="20")
+        self._trend_vars: dict[int, ctk.BooleanVar] = {
+            p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
+        }
+        self.var_show_candle = ctk.BooleanVar(value=True)
+        self.var_show_volume = ctk.BooleanVar(value=True)
+        self.var_show_revenue = ctk.BooleanVar(value=True)
+        self.var_buy_fee_pct = ctk.StringVar(value="0.015")
+        self.var_sell_fee_pct = ctk.StringVar(value="0.18")
+        self._history_deque = deque(maxlen=BACKTEST_HISTORY_MAX)
 
         self.grid_columnconfigure(0, weight=0)
         self.grid_columnconfigure(1, weight=0)
@@ -100,9 +116,9 @@ class BacktestGUI(ctk.CTk):
         self.var_market = ctk.StringVar(value="KOSPI")
         ctk.CTkOptionMenu(
             sf_market,
-            values=["KOSPI", "KOSDAQ"],
+            values=["KOSPI", "KOSDAQ", "ETF"],
             variable=self.var_market,
-            width=76,
+            width=86,
             font=gui_body_font(),
         ).pack(side="left")
 
@@ -140,29 +156,16 @@ class BacktestGUI(ctk.CTk):
         self.list_codes.configure(yscrollcommand=sb.set)
         self.list_codes.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-
-        ctk.CTkLabel(left, text="조회 주기", font=gui_body_font()).pack(anchor="w", padx=14)
-        self.var_interval = ctk.StringVar(value="daily")
-        rf = ctk.CTkFrame(left, fg_color="transparent")
-        rf.pack(anchor="w", padx=14, pady=(0, 6))
-        ctk.CTkRadioButton(
-            rf, text="일봉", variable=self.var_interval, value="daily", font=gui_body_font()
-        ).pack(side="left", padx=(0, 12))
-        ctk.CTkRadioButton(
-            rf, text="주봉", variable=self.var_interval, value="weekly", font=gui_body_font()
-        ).pack(side="left")
+        self.list_codes.bind("<Double-Button-1>", self._on_search_list_dbl_click)
 
         row_dt = ctk.CTkFrame(left, fg_color="transparent")
         row_dt.pack(fill="x", padx=14, pady=(0, 6))
-        row_dt.grid_columnconfigure(0, weight=92)
-        row_dt.grid_columnconfigure(1, weight=92)
-        row_dt.grid_columnconfigure(2, weight=78)
+        row_dt.grid_columnconfigure(0, weight=1)
+        row_dt.grid_columnconfigure(1, weight=1)
         d0 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d0.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        d0.grid(row=0, column=0, sticky="ew", padx=(0, 4))
         d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d1.grid(row=0, column=1, sticky="ew", padx=(2, 2))
-        d2 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d2.grid(row=0, column=2, sticky="ew", padx=(2, 0))
+        d1.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ctk.CTkLabel(d0, text="시작일", font=gui_body_font()).pack(anchor="w")
         self._date_start = DateEntry(
             d0,
@@ -184,110 +187,79 @@ class BacktestGUI(ctk.CTk):
         )
         self._date_end.set_date(_de)
         self._date_end.pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(d2, text="가상 원금(원)", font=gui_body_font()).pack(anchor="w")
+
+        row_money_fee = ctk.CTkFrame(left, fg_color="transparent")
+        row_money_fee.pack(fill="x", padx=14, pady=(0, 6))
+        row_money_fee.grid_columnconfigure(0, weight=1)
+        row_money_fee.grid_columnconfigure(1, weight=1)
+        row_money_fee.grid_columnconfigure(2, weight=1)
+        fc = ctk.CTkFrame(row_money_fee, fg_color="transparent")
+        fc.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        f0 = ctk.CTkFrame(row_money_fee, fg_color="transparent")
+        f0.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        f1 = ctk.CTkFrame(row_money_fee, fg_color="transparent")
+        f1.grid(row=0, column=2, sticky="ew", padx=(0, 0))
+        ctk.CTkLabel(fc, text="가상 원금", font=gui_body_font()).pack(anchor="w")
         self.var_cash = ctk.StringVar(value="5000000")
         ctk.CTkEntry(
-            d2,
+            fc,
             textvariable=self.var_cash,
-            width=70,
+            height=28,
+            font=gui_body_font(),
+        ).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(f0, text="매수 수수료(%)", font=gui_body_font()).pack(
+            anchor="w"
+        )
+        ctk.CTkEntry(
+            f0,
+            textvariable=self.var_buy_fee_pct,
+            height=28,
+            font=gui_body_font(),
+        ).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(f1, text="매도 수수료(%)", font=gui_body_font()).pack(
+            anchor="w"
+        )
+        ctk.CTkEntry(
+            f1,
+            textvariable=self.var_sell_fee_pct,
             height=28,
             font=gui_body_font(),
         ).pack(fill="x", pady=(2, 0))
 
-        row_axis = ctk.CTkFrame(left, fg_color="transparent")
-        row_axis.pack(fill="x", padx=14, pady=(0, 8))
-        row_axis.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(
-            row_axis,
-            text="시간축 이동 (±30일)",
-            font=gui_body_font(),
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
-        ctk.CTkButton(
-            row_axis,
-            text="◀ 1달 전",
-            height=30,
-            font=gui_body_font(),
-            command=lambda: self._on_shift_period_days(-TIME_AXIS_SHIFT_DAYS),
-        ).grid(row=1, column=0, sticky="ew", padx=(0, 6))
-        ctk.CTkButton(
-            row_axis,
-            text="1달 후 ▶",
-            height=30,
-            font=gui_body_font(),
-            command=lambda: self._on_shift_period_days(TIME_AXIS_SHIFT_DAYS),
-        ).grid(row=1, column=1, sticky="ew", padx=(6, 0))
-
-        self._trend_vars: dict[int, ctk.BooleanVar] = {
-            p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
-        }
-
-        row_ma = ctk.CTkFrame(left, fg_color="transparent")
-        row_ma.pack(fill="x", padx=14, pady=(0, 6))
-        ctk.CTkLabel(row_ma, text="매매 기준 이평선", font=gui_body_font()).pack(anchor="w")
-        rf_ma = ctk.CTkFrame(row_ma, fg_color="transparent")
-        rf_ma.pack(fill="x", pady=(4, 0))
-        self.var_ma_period = ctk.StringVar(value="20")
-        for val in ("5", "10", "20"):
-            ctk.CTkRadioButton(
-                rf_ma,
-                text=f"{val}일선",
-                variable=self.var_ma_period,
-                value=val,
-                font=gui_body_font(),
-            ).pack(side="left", padx=(0, 14))
-
         ctk.CTkLabel(
             left,
-            text="추세선 표시 (차트 오버레이)",
+            text=f"최근 백테스트 이력 (FIFO {BACKTEST_HISTORY_MAX})",
             font=gui_body_font(),
         ).pack(anchor="w", padx=14, pady=(4, 2))
-        trend_grid = ctk.CTkFrame(left, fg_color="transparent")
-        trend_grid.pack(fill="x", padx=14, pady=(0, 6))
-        trend_grid.grid_columnconfigure((0, 1, 2), weight=1)
-        trend_positions = [
-            (5, 0, 0),
-            (10, 0, 1),
-            (20, 0, 2),
-            (60, 1, 0),
-            (120, 1, 1),
-            (200, 1, 2),
-        ]
-        for p, r, c in trend_positions:
-            ctk.CTkCheckBox(
-                trend_grid,
-                text=f"{p}일선",
-                variable=self._trend_vars[p],
-                font=gui_body_font(),
-            ).grid(row=r, column=c, sticky="w", padx=4, pady=2)
-
-        ctk.CTkLabel(
-            left,
-            text="차트 표시 지표 선택 (중복 가능)",
-            font=gui_body_font(),
-        ).pack(anchor="w", padx=14, pady=(4, 4))
-        row_ind = ctk.CTkFrame(left, fg_color="transparent")
-        row_ind.pack(fill="x", padx=14, pady=(0, 4))
-        self.var_show_candle = ctk.BooleanVar(value=True)
-        self.var_show_volume = ctk.BooleanVar(value=True)
-        self.var_show_revenue = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(
-            row_ind,
-            text="캔들 차트",
-            variable=self.var_show_candle,
-            font=gui_body_font(),
-        ).pack(side="left", padx=(0, 10))
-        ctk.CTkCheckBox(
-            row_ind,
-            text="거래량",
-            variable=self.var_show_volume,
-            font=gui_body_font(),
-        ).pack(side="left", padx=(0, 10))
-        ctk.CTkCheckBox(
-            row_ind,
-            text="수익률",
-            variable=self.var_show_revenue,
-            font=gui_body_font(),
-        ).pack(side="left")
+        hist_wrap = ctk.CTkFrame(left, fg_color="transparent")
+        hist_wrap.pack(fill="x", padx=14, pady=(0, 6))
+        hist_wrap.grid_columnconfigure(0, weight=1)
+        hist_list_frame = ctk.CTkFrame(hist_wrap, fg_color="transparent")
+        hist_list_frame.grid(row=0, column=0, sticky="nsew")
+        self.list_history = tk.Listbox(
+            hist_list_frame,
+            height=5,
+            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            selectmode=tk.SINGLE,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        hsb = tk.Scrollbar(
+            hist_list_frame, orient="vertical", command=self.list_history.yview
+        )
+        self.list_history.configure(yscrollcommand=hsb.set)
+        self.list_history.pack(side="left", fill="both", expand=True)
+        hsb.pack(side="right", fill="y")
+        self.list_history.bind("<Double-Button-1>", self._on_history_list_dbl_click)
+        self.btn_history_del = ctk.CTkButton(
+            hist_wrap,
+            text="삭제",
+            width=44,
+            height=28,
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 1),
+            command=self._on_history_delete,
+        )
+        self.btn_history_del.grid(row=0, column=1, sticky="ne", padx=(8, 0))
 
         row_run = ctk.CTkFrame(left, fg_color="transparent")
         row_run.pack(fill="x", padx=14, pady=(8, 8))
@@ -787,6 +759,10 @@ class BacktestGUI(ctk.CTk):
         self.var_filter_trend.set(True)
         self._sync_buy_filters_interlock()
 
+        self._load_backtest_history_from_disk()
+        self._sync_history_listbox()
+        self.protocol("WM_DELETE_WINDOW", self._on_user_close)
+
     def _refresh_trading_rules_display(self, *_args: object) -> None:
         """우측 매매 규칙 패널(읽기 전용 텍스트) - 제거됨."""
         pass
@@ -874,29 +850,6 @@ class BacktestGUI(ctk.CTk):
         except Exception:
             pass
 
-    def _shift_period_calendar_days(self, delta_days: int) -> None:
-        """시작·종료를 같은 일수만큼 평행 이동. 종료가 오늘을 넘으면 창 길이 유지하며 오늘에 맞춤."""
-        try:
-            sd = self._date_start.get_date()
-            ed = self._date_end.get_date()
-        except (ValueError, tk.TclError):
-            return
-        span = max(0, (ed - sd).days)
-        today = date.today()
-        ns = sd + timedelta(days=delta_days)
-        ne = ed + timedelta(days=delta_days)
-        if ne > today:
-            ne = today
-            ns = ne - timedelta(days=span)
-        if ns < DATE_CLAMP_MIN:
-            ns = DATE_CLAMP_MIN
-            ne = min(ns + timedelta(days=span), today)
-        if ns > ne:
-            ns = ne
-        self._date_start.set_date(ns)
-        self._date_end.set_date(ne)
-        self._update_period_label()
-
     def _shift_period_trading_days(self, delta_bdays: int) -> None:
         """시작·종료를 같은 영업일 수만큼 평행 이동 (BDay; 야간·공휴일 휴장은 미반영)."""
         try:
@@ -923,10 +876,6 @@ class BacktestGUI(ctk.CTk):
         self._date_end.set_date(ne)
         self._update_period_label()
 
-    def _on_shift_period_days(self, delta_days: int) -> None:
-        self._shift_period_calendar_days(delta_days)
-        self._schedule_auto_run_after_shift()
-
     def _schedule_auto_run_after_shift(self) -> None:
         if self._shift_auto_run_after_id is not None:
             self.after_cancel(self._shift_auto_run_after_id)
@@ -942,7 +891,7 @@ class BacktestGUI(ctk.CTk):
         cfg = try_build_config(self, silent=True)
         if cfg is None:
             self.lbl_status.configure(
-                text="시간축 이동됨 · 리스트에서 종목 선택 또는 settings.yaml 의 universe.selected_code 를 확인하세요.",
+                text="기간 변경됨 · 검색 결과·이력에서 종목을 선택했는지 또는 settings 의 universe.selected_code 를 확인하세요.",
             )
             return
         self._run_backtest(cfg)
@@ -955,6 +904,9 @@ class BacktestGUI(ctk.CTk):
     def _run_backtest(self, cfg: dict | None) -> None:
         if cfg is None or self._busy:
             return
+        self._pending_run_code = str(
+            (cfg.get("universe") or {}).get("selected_code") or ""
+        ).zfill(6)
         self._busy = True
         self._update_period_label()
         self.btn_run.configure(state="disabled", text="계산 중…")
@@ -978,8 +930,139 @@ class BacktestGUI(ctk.CTk):
 
         threading.Thread(target=work, daemon=True).start()
 
+    @staticmethod
+    def _split_codes_list_line(line: str) -> tuple[str, str]:
+        s = line.strip()
+        if not s:
+            return "", ""
+        parts = s.split(None, 1)
+        code = parts[0].strip().zfill(6)
+        name = parts[1].strip() if len(parts) > 1 else ""
+        return code, name
+
+    def _sync_history_listbox(self) -> None:
+        self.list_history.delete(0, tk.END)
+        for c, nm in self._history_deque:
+            self.list_history.insert(tk.END, f"{c}  {nm}")
+
+    def _load_backtest_history_from_disk(self) -> None:
+        path = BACKTEST_HISTORY_FILE
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
+            return
+        seq: list | None = None
+        if isinstance(raw, dict) and isinstance(raw.get("items"), list):
+            seq = raw["items"]
+        elif isinstance(raw, list):
+            seq = raw
+        if not seq:
+            return
+        pairs: list[tuple[str, str]] = []
+        for el in seq:
+            if not isinstance(el, (list, tuple)) or len(el) < 2:
+                continue
+            cd = str(el[0]).strip().zfill(6)
+            if not cd or cd == "000000":
+                continue
+            nm_el = el[1]
+            nm = str(nm_el).strip() if nm_el is not None else ""
+            pairs.append((cd, nm or cd))
+            if len(pairs) >= BACKTEST_HISTORY_MAX:
+                break
+        if not pairs:
+            return
+        nd = deque(maxlen=BACKTEST_HISTORY_MAX)
+        for cd, nm in reversed(pairs):
+            nd.appendleft((cd, nm))
+        self._history_deque = nd
+
+    def _save_backtest_history_to_disk(self) -> None:
+        path = BACKTEST_HISTORY_FILE
+        out_dir = os.path.dirname(path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        items = [[c, n] for c, n in self._history_deque]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                {"version": 1, "items": items},
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+
+    def _on_user_close(self) -> None:
+        try:
+            self._save_backtest_history_to_disk()
+        except OSError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+
+    def _push_history(self, code: str, display_name: str) -> None:
+        """최근 실행 이력을 갱신한다(맨 위 최신 · 동일 종목 재실행 시 순서 재배치)."""
+        cd = str(code).strip().zfill(6)
+        if not cd or cd == "000000":
+            return
+        nm = (display_name or "").strip() or cd
+        rest = [(c, n) for c, n in self._history_deque if c != cd][
+            : BACKTEST_HISTORY_MAX - 1
+        ]
+        nd = deque(maxlen=BACKTEST_HISTORY_MAX)
+        nd.appendleft((cd, nm))
+        nd.extend(rest)
+        self._history_deque = deque(nd, maxlen=BACKTEST_HISTORY_MAX)
+        self._sync_history_listbox()
+
+    def _on_history_delete(self) -> None:
+        sel = self.list_history.curselection()
+        if not sel:
+            messagebox.showinfo("안내", "삭제할 이력 줄을 선택하세요.")
+            return
+        code, _ = self._split_codes_list_line(self.list_history.get(sel[0]))
+        if not code:
+            return
+        self._history_deque = deque(
+            ((c, n) for c, n in self._history_deque if c != code),
+            maxlen=BACKTEST_HISTORY_MAX,
+        )
+        self._sync_history_listbox()
+
+    def _on_search_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
+        sel = self.list_codes.curselection()
+        if not sel:
+            return
+        code, name = self._split_codes_list_line(self.list_codes.get(sel[0]))
+        if not code or code == "000000":
+            return
+        if name:
+            self.var_keyword.set(name)
+        cfg = try_build_config(self, silent=False, selected_code_override=code)
+        if cfg is None:
+            return
+        self._run_backtest(cfg)
+
+    def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
+        sel = self.list_history.curselection()
+        if not sel:
+            return
+        code, _name = self._split_codes_list_line(self.list_history.get(sel[0]))
+        if not code or code == "000000":
+            return
+        cfg = try_build_config(self, silent=False, selected_code_override=code)
+        if cfg is None:
+            return
+        self._run_backtest(cfg)
+
     def _on_search(self) -> None:
-        m = self.var_market.get().strip() or "KOSPI"
+        m = self.var_market.get().strip().upper() or "KOSPI"
+        if m not in ("KOSPI", "KOSDAQ", "ETF"):
+            m = "KOSPI"
         kw = self.var_keyword.get().strip()
         try:
             d = fetch_filtered_universe(m, kw)
@@ -1007,6 +1090,18 @@ class BacktestGUI(ctk.CTk):
             return
 
         self._set_summary(gui_summary_five_lines(res))
+
+        code_hist = str(getattr(self, "_pending_run_code", "") or "").zfill(6)
+        disp_name = ""
+        for row in res.summary_rows:
+            if row[0] == "종목":
+                cell = str(row[1])
+                lp = cell.rfind("(")
+                rp = cell.rfind(")")
+                if lp >= 0 and rp > lp:
+                    disp_name = cell[:lp].strip()
+                break
+        self._push_history(code_hist, disp_name)
 
         self.update_idletasks()
         self._update_chart_image(res.report_path)

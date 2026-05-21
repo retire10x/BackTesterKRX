@@ -69,9 +69,17 @@ def load_config(path: str | None = None) -> dict:
     return cfg
 
 
+def fdr_stock_listing(market: str) -> pd.DataFrame | None:
+    """FinanceDataReader StockListing 호출 전 시장 라벨 정규화."""
+    m = str(market or "").strip().upper()
+    if m == "ETF":
+        return fdr.StockListing("ETF/KR")
+    return fdr.StockListing(m)
+
+
 def fetch_filtered_universe(market: str, keyword: str) -> dict[str, str]:
     """종목 리스트에서 이름 키워드로 필터. keyword 가 비면 전체."""
-    stocks = fdr.StockListing(market)
+    stocks = fdr_stock_listing(market)
     if stocks is None or stocks.empty:
         return {}
     if "Code" not in stocks.columns or "Name" not in stocks.columns:

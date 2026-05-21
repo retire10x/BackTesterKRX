@@ -41,7 +41,7 @@ strategy:
 # 매매 비용
 trading_costs:
   buy_cost: 0.00015
-  sell_cost: 0.0020
+  sell_cost: 0.0018
 
 # 자산 (한 종목 전액)
 portfolio:

@@ -269,6 +269,13 @@ def gui_summary_five_lines(res: BacktestResult) -> str:
     )
 
 
+def _decimal_rate_to_pct_str(dec: float) -> str:
+    """0.00015 → '0.015'처럼 % 입력란 표시 문자열."""
+    x = float(dec) * 100.0
+    s = f"{x:.8f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
     """config/settings.yaml 값으로 입력 기본값 채움."""
     try:
@@ -291,7 +298,10 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui._date_end.set_date(e_d)
     uni = cfg.get("universe", {})
     if uni.get("market"):
-        ui.var_market.set(str(uni["market"]).upper())
+        mv = str(uni["market"]).strip().upper()
+        if mv not in ("KOSPI", "KOSDAQ", "ETF"):
+            mv = "KOSPI"
+        ui.var_market.set(mv)
     if uni.get("search_keyword") is not None:
         ui.var_keyword.set(str(uni["search_keyword"]))
     st = cfg.get("strategy", {})
@@ -332,29 +342,67 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
     port = cfg.get("portfolio", {})
     if port.get("initial_cash") is not None:
         ui.var_cash.set(str(int(port["initial_cash"])))
+    tc = cfg.get("trading_costs", {})
+    if hasattr(ui, "var_buy_fee_pct") and tc.get("buy_cost") is not None:
+        ui.var_buy_fee_pct.set(_decimal_rate_to_pct_str(float(tc["buy_cost"])))
+    if hasattr(ui, "var_sell_fee_pct") and tc.get("sell_cost") is not None:
+        ui.var_sell_fee_pct.set(_decimal_rate_to_pct_str(float(tc["sell_cost"])))
 
 
-def try_build_config(ui: "BacktestGUI", *, silent: bool = False) -> dict | None:
+def _parse_pct_fee_field(s: str, label: str) -> float | None:
+    """사용자 입력을 백테스트 소수 비율로 변환(숫자는 % 단위로 해석, 예 0.015 → 0.00015)."""
+    t = str(s or "").strip().replace("%", "").replace(",", "").strip()
+    if not t:
+        return None
+    try:
+        v = float(t)
+    except ValueError:
+        messagebox.showerror("오류", f"{label}은(는) 숫자로 입력해 주세요.")
+        return None
+    if not (0.0 <= v < 50.0):
+        messagebox.showerror("오류", f"{label}은(는) 합리적인 범위(0 이상 ~ 50 미만 %)로 입력해 주세요.")
+        return None
+    return v / 100.0
+
+
+def try_build_config(
+    ui: "BacktestGUI",
+    *,
+    silent: bool = False,
+    selected_code_override: str | None = None,
+) -> dict | None:
     base = load_config()
     cfg = copy.deepcopy(base)
     kw = ui.var_keyword.get().strip()
-    cfg.setdefault("universe", {})["market"] = ui.var_market.get().strip() or "KOSPI"
+    m_raw = ui.var_market.get().strip().upper() or "KOSPI"
+    cfg.setdefault("universe", {})["market"] = (
+        m_raw if m_raw in ("KOSPI", "KOSDAQ", "ETF") else "KOSPI"
+    )
     cfg["universe"]["search_keyword"] = kw
 
-    sel = ui.list_codes.curselection()
-    if sel:
-        line = ui.list_codes.get(sel[0])
-        code = line.split()[0].strip()
+    code: str
+    ov = (
+        str(selected_code_override).strip().zfill(6)
+        if selected_code_override
+        else ""
+    )
+    if ov and ov != "000000":
+        code = ov
     else:
-        code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-        if not code:
-            if not silent:
-                messagebox.showwarning(
-                    "알림",
-                    "종목 검색 후 리스트에서 종목 1개를 선택하거나, "
-                    "config/settings.yaml 의 universe.selected_code 를 설정하세요.",
-                )
-            return None
+        sel = ui.list_codes.curselection()
+        if sel:
+            line = ui.list_codes.get(sel[0])
+            code = line.split()[0].strip()
+        else:
+            code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
+            if not code:
+                if not silent:
+                    messagebox.showwarning(
+                        "알림",
+                        "종목 검색 후 리스트에서 종목 1개를 선택하거나, "
+                        "이력 더블클릭 또는 config/settings.yaml 의 universe.selected_code 를 설정하세요.",
+                    )
+                return None
     cfg["universe"]["selected_code"] = code
 
     interval = ui.var_interval.get()
@@ -399,6 +447,18 @@ def try_build_config(ui: "BacktestGUI", *, silent: bool = False) -> dict | None:
         messagebox.showerror("오류", "가상 원금은 0보다 큰 숫자여야 합니다.")
         return None
     cfg.setdefault("portfolio", {})["initial_cash"] = cash
+
+    buy_pct = getattr(ui, "var_buy_fee_pct", None)
+    sell_pct = getattr(ui, "var_sell_fee_pct", None)
+    if buy_pct is not None and sell_pct is not None:
+        br = _parse_pct_fee_field(buy_pct.get(), "매수 수수료(%)")
+        if br is None:
+            return None
+        sr = _parse_pct_fee_field(sell_pct.get(), "매도 수수료(%)")
+        if sr is None:
+            return None
+        cfg.setdefault("trading_costs", {})["buy_cost"] = br
+        cfg["trading_costs"]["sell_cost"] = sr
 
     for p in TREND_MA_PERIODS:
         cfg.setdefault("strategy", {})[f"show_trend_ma{p}"] = bool(ui._trend_vars[p].get())

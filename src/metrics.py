@@ -166,7 +166,7 @@ def run_backtest_detailed(
 
     costs = cfg.get("trading_costs", {})
     buy_c = float(costs.get("buy_cost", 0.00015))
-    sell_c = float(costs.get("sell_cost", 0.0020))
+    sell_c = float(costs.get("sell_cost", 0.0018))
 
     port = cfg.get("portfolio", {})
     initial = float(port.get("initial_cash", 5_000_000))
@@ -180,17 +180,20 @@ def run_backtest_detailed(
             lines,
         )
 
-    candidates = fetch_filtered_universe(market, keyword)
-    if selected not in candidates:
-        return BacktestResult(
-            False,
-            f"코드 {selected} 가 현재 검색 결과에 없습니다. 키워드·시장을 확인하세요.",
-            [],
-            None,
-            lines,
-        )
-
-    name = candidates[selected]
+    candidates_kw = fetch_filtered_universe(market, keyword)
+    if selected in candidates_kw:
+        name = candidates_kw[selected]
+    else:
+        universe_all = fetch_filtered_universe(market, "")
+        if selected not in universe_all:
+            return BacktestResult(
+                False,
+                f"코드 {selected} 는 시장 '{market}' 상장 종목 목록에 없습니다. 시장·코드를 확인하세요.",
+                [],
+                None,
+                lines,
+            )
+        name = universe_all[selected]
     bar_label = "주봉" if interval == "weekly" else "일봉"
     bars_per_year = 52.0 if interval == "weekly" else 252.0
 
