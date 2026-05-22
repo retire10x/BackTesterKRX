@@ -134,6 +134,8 @@ class BacktestGUI(ctk.CTk):
         self._candidates: list[tuple[str, str]] = []
         self._busy = False
         self._screener_display_cap = 30
+        # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
+        self._last_active_stock_code = ""
         self._chart_ohlcv_cache_df = None  # 타입: pd.DataFrame | None
         self._chart_ohlcv_cache_code = ""
         self._img_ref: ctk.CTkImage | None = None
@@ -151,7 +153,7 @@ class BacktestGUI(ctk.CTk):
         self.var_show_revenue = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.18")
-        self.var_screener_enabled = ctk.BooleanVar(value=False)
+        self.var_screener_enabled = ctk.BooleanVar(value=True)
         self.var_screener_metric = ctk.StringVar(value="atr14")
         self._history_deque = deque(maxlen=BACKTEST_HISTORY_MAX)
 
@@ -205,7 +207,7 @@ class BacktestGUI(ctk.CTk):
         row_scr.pack(fill="x", padx=14, pady=(4, 2))
         self.cb_screener = ctk.CTkCheckBox(
             row_scr,
-            text="종목 스크리너(상위 일봉 N거래일)",
+            text="종목 스크리너",
             variable=self.var_screener_enabled,
             font=gui_body_font(),
             checkbox_width=18,
@@ -377,8 +379,8 @@ class BacktestGUI(ctk.CTk):
 
         self.var_filter_trend = ctk.BooleanVar(value=True)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
-        self.var_filter_breakout = ctk.BooleanVar(value=False)
-        self.var_filter_timebuf = ctk.BooleanVar(value=False)
+        self.var_filter_breakout = ctk.BooleanVar(value=True)
+        self.var_filter_timebuf = ctk.BooleanVar(value=True)
 
         self.var_golden_buy = ctk.BooleanVar(value=True)
         self.var_dead_sell = ctk.BooleanVar(value=True)
@@ -1038,6 +1040,15 @@ class BacktestGUI(ctk.CTk):
         self._chart_ohlcv_cache_df = df
         self._chart_ohlcv_cache_code = str(code).zfill(6)
 
+    @property
+    def current_code(self) -> str:
+        """현재 차트·재실행에 유지해야 할 활성 종목(6자리). 없으면 빈 문자열."""
+        c = str(getattr(self, "_last_active_stock_code", "") or "").strip().zfill(6)
+        if c and c != "000000":
+            return c
+        cc = str(getattr(self, "_chart_ohlcv_cache_code", "") or "").strip().zfill(6)
+        return cc if cc and cc != "000000" else ""
+
     def _schedule_auto_run_after_shift(self) -> None:
         if self._shift_auto_run_after_id is not None:
             self.after_cancel(self._shift_auto_run_after_id)
@@ -1050,10 +1061,17 @@ class BacktestGUI(ctk.CTk):
                 280, self._flush_auto_run_after_shift
             )
             return
-        cfg = try_build_config(self, silent=True)
+        nav = self.current_code
+        nav_ov = nav if nav else None
+        cfg = try_build_config(
+            self,
+            silent=True,
+            selected_code_override=nav_ov,
+            period_nav=True,
+        )
         if cfg is None:
             self.lbl_status.configure(
-                text="기간 변경됨 · 검색 결과·이력에서 종목을 선택했는지 또는 settings 의 universe.selected_code 를 확인하세요.",
+                text="기간 이동: 먼저 한 종목 백테스트를 완료하거나 종목 스크린 후 차트가 열린 뒤 패닝하세요.",
             )
             return
         # 차트 기간 평행 이동 시 전 유니버스 일괄 스크린을 피하기 위해 단일 종목 재실행만 수행합니다.
@@ -1371,6 +1389,7 @@ class BacktestGUI(ctk.CTk):
 
         _, last_ok = ok_runs[-1]
         self._pending_run_code = ok_runs[-1][0].code.zfill(6)
+        self._last_active_stock_code = self._pending_run_code
         for ent, rr in ok_runs:
             self._push_history(
                 ent.code.zfill(6),
@@ -1616,7 +1635,15 @@ class BacktestGUI(ctk.CTk):
         검색어 O + 스크리너 OFF: 유니버스 전체 중 검색어 부분 일치.
         검색어 X + 스크리너 ON: 스크린 상위 N 목록 그대로(랭킹 순서 유지).
         검색어 X + 스크리너 OFF: 안내만 하고 종료.
+
+        스크리너·유니버스 조회가 메인 스레드를 길게 블로킹하지 않도록 백그라운드 스레드에서 실행한다.
         """
+        if self._busy:
+            self.set_status_message(
+                "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
+            )
+            return
+
         is_screener_on = bool(self.var_screener_enabled.get())
         keyword = self.var_keyword.get().strip()
         market = self.var_market.get().strip().upper() or "KOSPI"
@@ -1625,12 +1652,53 @@ class BacktestGUI(ctk.CTk):
 
         self._clear_search_results_listbox()
 
+        if not keyword and not is_screener_on:
+            self.set_status_message(
+                "검색어 입력 또는 스크리너 선택하세요."
+            )
+            return
+
+        sp: dict[str, object] | None = None
+        if is_screener_on:
+            sp = self._search_screen_universe_params()
+            if sp is None:
+                return
+
+        self._busy = True
+        self.set_status_message(
+            "퀀트 스크리너 및 유니버스 분석 중… (메인 창 멈춤 방지)"
+        )
+
+        threading.Thread(
+            target=self._exec_search_worker,
+            kwargs={
+                "is_screener_on": is_screener_on,
+                "keyword": keyword,
+                "market": market,
+                "screener_params": sp,
+            },
+            daemon=True,
+        ).start()
+
+    def _exec_search_worker(
+        self,
+        *,
+        is_screener_on: bool,
+        keyword: str,
+        market: str,
+        screener_params: dict[str, object] | None,
+    ) -> None:
+        """검색·스크린에 필요한 무거운 I/O 및 screen_universe 를 백그라운드에서 수행한다."""
+        rows: list[tuple[str, str]] = []
+
         try:
             if keyword:
                 if is_screener_on:
-                    p = self._search_screen_universe_params()
-                    if p is None:
-                        return
+                    if screener_params is None:
+                        raise ValueError(
+                            "스크리너 검색 설정을 읽지 못했습니다. 종료일·설정을 확인하세요."
+                        )
+                    p = screener_params
                     picks = screen_universe(
                         market=market,
                         keyword="",
@@ -1652,15 +1720,17 @@ class BacktestGUI(ctk.CTk):
                         n = str(ent.name)
                         if kl in c.lower() or kl in n.lower():
                             filt.append((c, n))
-                    self._candidates = sorted(filt, key=lambda x: x[0])
+                    rows = sorted(filt, key=lambda x: x[0])
                 else:
                     d = fetch_filtered_universe(market, keyword)
-                    self._candidates = sorted(d.items(), key=lambda x: x[0])
+                    rows = sorted(d.items(), key=lambda x: x[0])
             else:
                 if is_screener_on:
-                    p = self._search_screen_universe_params()
-                    if p is None:
-                        return
+                    if screener_params is None:
+                        raise ValueError(
+                            "스크리너 검색 설정을 읽지 못했습니다. 종료일·설정을 확인하세요."
+                        )
+                    p = screener_params
                     picks = screen_universe(
                         market=market,
                         keyword="",
@@ -1675,18 +1745,24 @@ class BacktestGUI(ctk.CTk):
                         ),
                         pullback_rank_cap_pct=float(p["pullback_rank_cap_pct"]),
                     )
-                    self._candidates = [
+                    rows = [
                         (str(e.code).strip().zfill(6), str(e.name)) for e in picks
                     ]
-                else:
-                    self.set_status_message(
-                        "검색어 입력 또는 스크리너 선택하세요."
-                    )
-                    return
-        except Exception as e:
-            self.set_status_message(f"검색 실패: {e}")
-            messagebox.showerror("검색 실패", str(e))
+
+        except Exception as ex:
+            self.after(
+                0,
+                lambda m=str(ex): self._finalize_search_failure(m),
+            )
             return
+
+        copy_rows = list(rows)
+        self.after(0, lambda r=copy_rows: self._finalize_search_ui(r))
+
+    def _finalize_search_ui(self, candidates: list[tuple[str, str]]) -> None:
+        """워커 완료 후 메인 스레드에서 검색 결과 리스트만 갱신한다."""
+        self._busy = False
+        self._candidates = list(candidates)
 
         if not self._candidates:
             self.set_status_message("조건에 부합하는 종목이 없습니다.")
@@ -1701,6 +1777,12 @@ class BacktestGUI(ctk.CTk):
         self.set_status_message(
             f"조회 완료: {len(self._candidates)}건이 리스트업되었습니다."
         )
+
+    def _finalize_search_failure(self, msg: str) -> None:
+        """검색 워커 예외 처리(메인 스레드 전용)."""
+        self._busy = False
+        self.set_status_message(f"검색 실패: {msg}")
+        messagebox.showerror("검색 실패", msg)
 
     def _on_run(self):
         cfg = try_build_config(self, silent=False)
@@ -1731,6 +1813,8 @@ class BacktestGUI(ctk.CTk):
         self._set_summary(gui_summary_five_lines(res))
 
         code_hist = str(getattr(self, "_pending_run_code", "") or "").zfill(6)
+        if code_hist and code_hist != "000000":
+            self._last_active_stock_code = code_hist
         disp_name = ""
         for row in res.summary_rows:
             if row[0] == "종목":

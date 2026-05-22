@@ -25,6 +25,14 @@
 - **설정·출력:** `universe.screener.pullback_rank_cap_pct` (`config/settings.yaml`). `output/screener_last.tsv`·CLI 표에 고점낙폭·거래량건조 열 추가 (`gui.py`, `main.py`).
 - **데이터 (`data_loader.py`):** `ensure_datetime_index` 재도입 및 `fetch_listing_market_cap_krw_by_code` 에 잘못 붙어 있던 무효 분기 제거 — `stock_screener`/`metrics` 임포트 복구.
 
+### 2026-05-22 (GUI: 검색·스크리너 비동기)
+- **`gui.py`:** `screen_universe`·`fetch_filtered_universe` 를 `threading.Thread` 워커에서 실행하고, 완료 시 `after(0, …)` 로 리스트박스만 메인 스레드에서 채워 **탐색 시 창 응답 없음 현상 완화**. 진행 중 `self._busy` 로 이중 검색·백테스트 동시 시작 방지.
+
+### 2026-05-22 (GUI·YAML: 005930 기본 종목 제거 및 차트 패닝 종목 고정)
+- **`config/settings.yaml`:** 기본 `universe.selected_code` 를 비움 → 특정 종목 하드코딩 없음.
+- **`gui.py`:** 성공 시 `_last_active_stock_code` 갱신·`current_code` 프로퍼티. 기간 패닝 재실행은 `period_nav=True` 로 YAML/빈 리스트에 의한 종목 전환 방지, 기존 OHLCV 캐시로 API 재호출 최소화.
+- **`gui_helpers.try_build_config`:** `period_nav` 및 **「종목을 선택하세요」** 안내로 미선택 백테스트 차단.
+
 ### 2026-05-22 (통합 지시서: 스크리너 하드필터·차트 네비 캐시·Harness 매수 AND 옵션)
 - **스크리너 (`stock_screener.py`, `data_loader.py`):** 스코어링 전 FDR 상장표 `Marcap` 기준 `min_market_cap_krw`(기본 3000억 원 근사) 필터 · 일봉 MA20 대 MA120·이평 OLS 우상향 OR 필터(`hard_ma_pair_trend_filter`). ETF 시장은 시총 필터 생략.
 - **GUI (`gui.py`):** 일반 백테스트 시 종목·기간별 일봉 장기 버퍼 캐시 → 차트 패닝 시 `run_backtest_detailed(..., ohlcv_preloaded_daily=…)`로 재다운 최소화(시작 warmup·종료 포함 커버 검증).

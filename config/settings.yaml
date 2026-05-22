@@ -7,10 +7,10 @@ period:
 universe:
   market: "KOSPI"
   search_keyword: ""   # GUI 최초 표시 및 시장 후보 목록 필터("" = 전체 검색 허용, 스크리너 미사용 시에는 GUI에서 종목명 입력 필요)
-  selected_code: "005930"
+  selected_code: ""   # GUI는 검색 결과·이력 선택을 기본으로 함. 빈 값이면 특정 종목 하드코딩 없음
   # 종목 스크리너: GUI 체크박스 또는 batch CLI 시 활성. 종료일(end_date)까지의 일봉만 보고 과거 참조 금지.
   screener:
-    enabled: false
+    enabled: true
     lookback_trading_days: 20
     top_n: 30
     volatility_metric: "atr14"   # atr14 | std_return — 일봉 기준 평균 ATR%/거래량×종가 합 순위 또는 일간 수익률 표준편차
@@ -41,8 +41,8 @@ strategy:
   # v4.0 매수 진입 필터 (시뮬 엔진 simulate_single.entry_filters)
   filter_trend_slope: false
   slope_threshold: 0.01
-  filter_breakout_strength: false
-  filter_time_buffer: false
+  filter_breakout_strength: true
+  filter_time_buffer: true
   # v4.4 가변 고점 대비 낙폭 매도 (보유 중, 다음 봉 시가 청산)
   trailing_stop_enabled: false
   trailing_reference_pct: 10.0      # 피크 수익률 기준 %

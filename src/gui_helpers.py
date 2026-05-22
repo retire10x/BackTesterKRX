@@ -413,6 +413,7 @@ def try_build_config(
     *,
     silent: bool = False,
     selected_code_override: str | None = None,
+    period_nav: bool = False,
 ) -> dict | None:
     base = load_config()
     cfg = copy.deepcopy(base)
@@ -469,19 +470,23 @@ def try_build_config(
     if ov and ov != "000000":
         code = ov
     else:
-        sel = ui.list_codes.curselection()
-        if sel:
-            line = ui.list_codes.get(sel[0])
-            code = line.split()[0].strip()
+        # 차트 기간 패닝: 리스트/YAML 우회 없이 활성 종목 오버라이드만 허용(삼성 등 YAML 기본값 오염 방지)
+        if period_nav:
+            code = ""
         else:
-            code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-            # deepcopy 초기값이 비어 있는 경우 원본 YAML의 selected_code 재시도
-            if (not code or code == "000000") and screener_on:
-                fallback = (
-                    str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
-                )
-                if fallback and fallback != "000000":
-                    code = fallback
+            sel = ui.list_codes.curselection()
+            if sel:
+                line = ui.list_codes.get(sel[0])
+                code = line.split()[0].strip()
+            else:
+                code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
+                # deepcopy 초기값이 비어 있는 경우 원본 YAML의 selected_code 재시도
+                if (not code or code == "000000") and screener_on:
+                    fallback = (
+                        str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
+                    )
+                    if fallback and fallback != "000000":
+                        code = fallback
 
     code = code.zfill(6) if code else ""
 
@@ -489,12 +494,18 @@ def try_build_config(
         if not silent:
             hint = ""
             if screener_on:
-                hint = " 종목 스크리너 사용 시에는 config/settings.yaml 의 universe.selected_code 또는 검색·선택을 준비하세요."
+                hint = (
+                    "\n\n종목 스크리너 모드에서는 스크린 결과에서 종목을 고르거나, "
+                    "settings 의 universe.selected_code 에 6자리 코드가 있어야 합니다."
+                )
             messagebox.showwarning(
                 "알림",
-                "종목 검색 후 리스트에서 종목 1개를 선택하거나, 이력 더블클릭 또는 "
-                "config/settings.yaml 의 universe.selected_code 를 설정하세요." + hint,
+                "종목을 선택하세요.\n검색 결과 목록에서 한 줄을 선택하거나, 이력에서 종목을 고르거나, "
+                "필요 시 config/settings.yaml 의 universe.selected_code 에 코드를 입력하세요."
+                + hint,
             )
+            if hasattr(ui, "set_status_message"):
+                ui.set_status_message("종목을 선택한 뒤 백테스트를 실행하세요.")
         return None
 
     cfg["universe"]["selected_code"] = code

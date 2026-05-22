@@ -137,7 +137,7 @@ class ScreenerEntry:
 def default_screener_config() -> dict:
     """settings.yaml 우선 병합용 기본 블록."""
     return {
-        "enabled": False,
+        "enabled": True,
         "lookback_trading_days": 20,
         "top_n": 30,
         "volatility_metric": "atr14",
