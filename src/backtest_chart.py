@@ -58,7 +58,7 @@ def _chart_rc_params() -> dict:
 
 
 def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
-    """보고서 PNG: 저장 직전 tight_layout + subplots_adjust + bbox/pad로 상단·사방 흰 여백 최소화 및 하단 잘림 방지."""
+    """보고서 PNG: tight_layout → subplots_adjust → 무인자 autofmt_xdate 로 라벨·가장자리 clipping 완화."""
     dn = os.path.dirname(out_path)
     if dn:
         os.makedirs(dn, exist_ok=True)
@@ -73,15 +73,17 @@ def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
         except Exception:
             pass
         try:
-            # 하단·상단 라벨 잘림 및 멀티패널 간격 안정화
-            fig.subplots_adjust(bottom=0.16, top=0.94, left=0.07, right=0.97, hspace=0.32)
+            fig.subplots_adjust(
+                left=0.05, right=0.92, top=0.93, bottom=0.12, hspace=0.34
+            )
         except Exception:
             pass
         try:
-            fig.autofmt_xdate(bottom=0.21, rotation=22)
+            fig.autofmt_xdate()
         except Exception:
             pass
-    fig.savefig(out_path, dpi=dpi, bbox_inches="tight", pad_inches=0.08)
+    # bbox_inches='tight' 는 본 레이아웃을 덮어 잘림을 유발할 수 있어 figure bbox 기준 저장
+    fig.savefig(out_path, dpi=dpi)
 
 
 def _trade_resolve_bar_index(t: dict, idx: pd.DatetimeIndex) -> int | None:
@@ -292,7 +294,7 @@ def _share_x_axes(fig: Figure, ax_primary) -> None:
 
 
 def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
-    """세로 격자 + 날짜 라벨: 기울기(회전) 없음, 패널마다 동일 날짜 표기."""
+    """세로 격자 + 날짜 눈금·포매터. 라벨 회전은 적용하지 않음(저장 시 `save_figure_as_png` 의 `autofmt_xdate` 에 맡김)."""
     n = len(idx)
     if n == 0:
         return
@@ -310,14 +312,10 @@ def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
             axis="x",
             which="major",
             labelsize=8.5,
-            labelrotation=0,
             bottom=True,
             labelbottom=True,
         )
         ax.tick_params(axis="x", which="minor", bottom=True)
-        for lbl in ax.get_xticklabels():
-            lbl.set_rotation(0)
-            lbl.set_horizontalalignment("center")
         ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.55, color="#cfcfcf")
         ax.grid(
             True,
@@ -502,10 +500,10 @@ def make_backtest_figure(
         volume=show_volume,
         panel_ratios=panel_ratios,
         returnfig=True,
-        figsize=(12, 8.2),
+        figsize=(12, 8.4),
         title=title,
-        tight_layout=True,
-        scale_padding=0.92,
+        tight_layout=False,
+        scale_padding=1.04,
     )
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
     ax_price = axlist[0]
@@ -515,7 +513,7 @@ def make_backtest_figure(
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
     _draw_trend_ma_lines_and_legend(ax_price, idx, trend_ma, bar_label)
     _autoscale_price_panel_y_with_trends(ax_price, odata, trend_ma, idx)
-    # sharex 시 상단 패널 라벨 겹침 방지용 — 회전과 최종 여백은 save 단계(autofmt_xdate+tight_layout)에서 보정.
+    # sharex 시 상단 패널 라벨 겹침 완화 — 최종 회전·여백은 save_figure_as_png(autofmt_xdate·subplots_adjust)에서 처리.
     for ax in fig.axes:
         plt.setp(ax.get_xticklabels(), visible=True)
     return fig

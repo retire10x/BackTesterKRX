@@ -97,6 +97,18 @@ def run_screener_batch_cli(cfg: dict) -> bool:
     lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
     tn = max(1, min(200, int(scr.get("top_n", 30))))
     metric = str(scr.get("volatility_metric") or "atr14").strip()
+    ds = default_screener_config()
+    try:
+        mc_kw = float(scr.get("min_market_cap_krw", ds["min_market_cap_krw"]))
+    except (TypeError, ValueError):
+        mc_kw = float(ds["min_market_cap_krw"])
+    hf_pair = bool(
+        scr.get("hard_ma_pair_trend_filter", ds["hard_ma_pair_trend_filter"])
+    )
+    try:
+        pb_cap = float(scr.get("pullback_rank_cap_pct", ds["pullback_rank_cap_pct"]))
+    except (TypeError, ValueError):
+        pb_cap = float(ds["pullback_rank_cap_pct"])
 
     picks = screen_universe(
         market=str(uni.get("market") or "KOSPI"),
@@ -106,6 +118,9 @@ def run_screener_batch_cli(cfg: dict) -> bool:
         top_n=tn,
         volatility_metric=metric,
         progress_cb=None,
+        min_market_cap_krw=mc_kw,
+        hard_ma_pair_trend_filter=hf_pair,
+        pullback_rank_cap_pct=pb_cap,
     )
     if not picks:
         print("[오류] 스크리너 후보 없음.", file=sys.stderr)
@@ -120,11 +135,22 @@ def run_screener_batch_cli(cfg: dict) -> bool:
                 e.name[:16],
                 f"{e.volatility_raw:.6g}",
                 int(round(e.turnover_krw_sum)),
+                f"{e.pullback_from_high_pct:.2f}",
+                f"{e.volume_contract_pct:.1f}",
                 f"{e.combined_score:.4f}",
             ]
             for i, e in enumerate(picks, start=1)
         ],
-        headers=["순위", "코드", "종목명", "vol_raw", "거래대금합(원)", "score"],
+        headers=[
+            "순위",
+            "코드",
+            "종목명",
+            "vol_raw",
+            "거래대금합(원)",
+            "고점낙폭%",
+            "거래량건조%",
+            "score",
+        ],
         tablefmt="grid",
     ))
 
@@ -133,11 +159,15 @@ def run_screener_batch_cli(cfg: dict) -> bool:
     tsv = out_dir / "screener_last.tsv"
     try:
         with open(tsv, "w", encoding="utf-8") as fh:
-            fh.write("rank\tcode\tname\tvol_metric\tamount_krw_sum\tscore_pct_mean\n")
+            fh.write(
+                "rank\tcode\tname\tvol_metric\tamount_krw_sum\tpullback_hi_pct\tvol_contract_pct\tscore_pct_mean\n"
+            )
             for i, ent in enumerate(picks, start=1):
                 fh.write(
                     f"{i}\t{ent.code}\t{ent.name}\t{ent.volatility_raw:.12g}"
-                    f"\t{int(round(ent.turnover_krw_sum))}\t{ent.combined_score:.6g}\n"
+                    f"\t{int(round(ent.turnover_krw_sum))}\t"
+                    f"{ent.pullback_from_high_pct:.12g}\t{ent.volume_contract_pct:.12g}\t"
+                    f"{ent.combined_score:.6g}\n"
                 )
     except OSError as e:
         print(f"[경고] screener TSV 저장 실패: {e}", file=sys.stderr)

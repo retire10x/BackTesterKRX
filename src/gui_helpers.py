@@ -304,7 +304,8 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
             mv = "KOSPI"
         ui.var_market.set(mv)
     if uni.get("search_keyword") is not None:
-        ui.var_keyword.set(str(uni["search_keyword"]))
+        # 빈 문자열도 허용(시장 전체 후보 목록 등). 문자열 타입 고정 및 앞뒤 공백 제거.
+        ui.var_keyword.set(str(uni["search_keyword"]).strip())
     scr_yaml = uni.get("screener")
     if isinstance(scr_yaml, dict) and hasattr(ui, "var_screener_enabled"):
         if "enabled" in scr_yaml:
@@ -374,6 +375,39 @@ def _parse_pct_fee_field(s: str, label: str) -> float | None:
     return v / 100.0
 
 
+def _has_explicit_stock_selection(
+    ui: "BacktestGUI",
+    *,
+    selected_code_override: str | None,
+    universe_cfg: dict,
+) -> bool:
+    """
+    검색어 없이 단일 종목 실행이 가능한지(코드 오버라이드·결과 목록 선택·YAML selected_code 등).
+    """
+    ov = ""
+    if selected_code_override:
+        ov = str(selected_code_override).strip().zfill(6)
+        if ov and ov != "000000":
+            return True
+
+    sel = getattr(ui, "list_codes", None)
+    try:
+        cur = sel.curselection() if sel is not None else ()
+    except tk.TclError:
+        cur = ()
+    if cur:
+        try:
+            line = sel.get(cur[0])  # type: ignore[union-attr]
+            c = str(line).split()[0].strip().zfill(6)
+        except (tk.TclError, IndexError):
+            c = ""
+        if c and c != "000000":
+            return True
+
+    yaml_cd = str(universe_cfg.get("selected_code") or "").strip().zfill(6)
+    return bool(yaml_cd and yaml_cd != "000000")
+
+
 def try_build_config(
     ui: "BacktestGUI",
     *,
@@ -405,6 +439,26 @@ def try_build_config(
             scr_merged["volatility_metric"] = mv
     uni_block["screener"] = scr_merged
     screener_on = bool(scr_merged.get("enabled"))
+
+    if (
+        not silent
+        and not screener_on
+        and not kw
+        and not _has_explicit_stock_selection(
+            ui,
+            selected_code_override=selected_code_override,
+            universe_cfg=uni_block,
+        )
+    ):
+        if hasattr(ui, "set_status_message"):
+            ui.set_status_message(
+                "오류: 스크리너 미사용 시 검색할 종목명을 입력해야 합니다."
+            )
+        messagebox.showwarning(
+            "입력 오류",
+            "종목명을 입력하거나 종목 스크리너를 선택해 주세요.",
+        )
+        return None
 
     code: str
     ov = (
@@ -555,3 +609,19 @@ def try_build_config(
     cfg.setdefault("strategy", {})["trailing_drop_above_pct"] = t_above
 
     return cfg
+
+
+def refresh_search_listbox_from_screener_entries(
+    ui: "BacktestGUI",
+    entries: list[object],
+    *,
+    announce: bool = True,
+) -> None:
+    """
+    스크리너 백엔드가 산출한 종목 목록을 검색 결과 리스트박스·`_candidates`와 동기화한다.
+
+    Tkinter 메인 스레드에서만 호출해야 한다(일반적으로 `after`(0, …) 콜백 내부).
+    """
+    fn = getattr(ui, "update_gui_with_screener_results", None)
+    if callable(fn):
+        fn(entries, announce=announce)

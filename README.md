@@ -13,7 +13,7 @@
 BackTesterKRX/
 ├── src/
 │   ├── __init__.py
-│   ├── gui.py          # 창·레이아웃·차트 패널(v4.1 시간축 등)
+│   ├── gui.py          # 반응형 그리드·차트 패널(실측 리사이즈), 기간 패닝 등
 │   ├── gui_helpers.py  # YAML 반영·설정 dict·툴팁 (엔진과 분리)
 │   ├── backtest_constants.py  # 추세 이평 상수·마커 색 (순환 참조 방지)
 │   ├── backtest_chart.py # mplfinance 정적 PNG (`make_backtest_figure`)
@@ -21,7 +21,7 @@ BackTesterKRX/
 │   ├── strategy.py     # 골든/데드크로스 시그널
 │   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
 │   ├── metrics.py      # 성과 지표·PNG 보고서·run_backtest_detailed
-│   └── stock_screener.py  # 일봉 종목 스크리너(변동성·거래대금 상위 필터)
+│   └── stock_screener.py  # 종목 스크리너(MA120 역배열 제외·변동성·거래대금·낙폭·거래량건조 순위 융합)
 ├── output/             # backtest_report.png
 ├── config/             # settings.yaml (기본 설정)
 ├── main.py             # GUI/CLI 공통 진입
@@ -53,8 +53,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면: **시장·종목·검색** 한 줄, 기간 기본 **6개월 전~오늘**, 추세선 기본 **20·120일**, **가상 원금**은 **시작일·종료일과 같은 줄**(3열). 우측 차트 **730px**, 매매 이평 **5·10·20**, 캘린더로 기간 선택.)  
-검색 → 리스트에서 **종목 1개 선택** → 일/주봉·기간·원금·**매매 이평(5/10/20)**·추세선·차트 지표 → **백테스트 실행**.
+(화면: **시장·종목·검색** 및 옵션 **종목 스크리너**, 기간 기본 **6개월 전~오늘**. 우측 차트는 창에 맞춰 **가변 확장**(최소 크기 약 **960×540**, 폴백 **1280×840**)·실측 `chart_overlay_host` 기준 PNG 리사이즈. 매매 기준 이평 **5·10·20**(내부 변수), 추세선 **20·120** 기본, 캘린더 선택.)  
+검색 → 리스트에서 **종목 1개 선택** → 기간·원금 등 → **백테스트 실행**.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (`watchdog`, Node 불필요)
 
@@ -86,7 +86,7 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 (`--ma120` / `--ma200` 은 YAML 의 `show_trend_ma120` / `show_trend_ma200` 을 켭니다.)
 
-**종목 스크리너 배치:** 종료일(`--end` 또는 YAML `period.end_date`)까지의 **일봉만**으로 최근 `universe.screener.lookback_trading_days` 거래일의 변동성·거래대금 상위 `top_n` 종목만 순차 백테스트합니다.
+**종목 스크리너 배치:** 종료일(`--end` 또는 YAML `period.end_date`)까지의 **일봉만** 사용. 후보별 데이터는 **캘린더 약 400일**(MA120·ATR 워밍업)까지 당김. **종가\<120일 단순이평(역배열)** 인 종목은 **랭킹 산출 전 제외**. 스코어는 최근 lookback 내 **변동성·거래대금·고점 대비 낙폭·거래량 건조(말단/직전 평균 거래량 비율)** 를 각각 순위분위화한 뒤 평균(낙폭은 `pullback_rank_cap_pct` 클램프 후 순위화)합니다. 상위 `top_n` 종목만 순차 백테스트합니다.
 
 ```powershell
 python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
@@ -105,12 +105,12 @@ python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
 | 경로 | 역할 |
 |------|------|
 | `main.py` | 인자 없음 → GUI; `--watch` → GUI+코드 변경 시 재시작; 그 외 → CLI |
-| `src/gui.py` | CustomTkinter 창·레이아웃; `gui_helpers` 에 설정 조립 위임 |
+| `src/gui.py` | CustomTkinter 창·**반응형 grid(weight)·차트 오버레이 실측 리사이즈**; 설정은 `gui_helpers` |
 | `src/gui_helpers.py` | YAML→위젯·`try_build_config`·툴팁 |
 | `src/backtest_constants.py` | `TREND_MA_PERIODS` 등 차트·GUI 공유 상수 |
-| `src/backtest_chart.py` | mplfinance 멀티패널·타점·PNG 저장 |
+| `src/backtest_chart.py` | mplfinance 멀티패널·타점·PNG 저장(`tight_layout`/`subplots_adjust` 후 저장 시점 `autofmt_xdate` 로 날짜 라벨 자동 회전) |
 | `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘)·`ohlcv_warm_start_date` |
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 |
 | `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) |
-| `src/stock_screener.py` | 일봉 기준 종목 스크리너(변동성·거래대금 상위 선별, GUI·CLI 공용) |
+| `src/stock_screener.py` | 일봉 스크리너(MA120 역배열 하드 필터·변동성·거래대금·낙폭·거래량건조 순위 융합·GUI·CLI 공용) |

@@ -13,17 +13,41 @@
 - [x] 시장 선택 ETF(KR) 상장 종목 검색 및 백테스트 연동 (`data_loader.fdr_stock_listing`)
 - [x] 좌측 패널 수수료 입력·종목 실행 이력(FIFO 최대 30)·검색/이력 리스트 더블클릭 즉시 백테스트 (`gui.py`, `gui_helpers.try_build_config`)
 - [x] 백테스트 종목 이력 `output/backtest_history.json` 저장·재실행 시 자동 불러오기 (`gui.py`)
-- [x] 일봉 기준 종목 스크리너(종료일 이전 확정 분만 이용, 최근 N거래일 변동성+거래대금 상위 M개) 후 일괄 백테스트 (`stock_screener.py`, GUI·CLI·`settings.yaml` `universe.screener`)
+- [x] 일봉 기준 종목 스크리너(종료일 이전 확정 분만 이용, 최근 N거래일 변동성·거래대금·고점대비 낙폭·거래량건조 순위분위 융합 상위 M개) 후 일괄 백테스트 (`stock_screener.py`, GUI·CLI·`settings.yaml` `universe.screener`)
 - [x] 스크리너 하드 필터: 종료일 종가 기준 120일선 역배열 종목 제외 (`stock_screener.py`)
+- [x] 스크리너 시총(상장표 Marcap)·MA20/120 추세 하드 게이트, 차트 패닝 일봉 캐시, Harness 매수 세 조건 동시 적용 YAML 옵션
 - [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈로 저해상도 대응 (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-22 (스크리너: 눌림목형 랭킹 — 고점 낙폭·거래량 건조 지표 융합)
+- **스크리너 (`stock_screener.py`):** 후보별 최근 lookback 내 **고점 대비 종가 낙폭(%)**, 말단 대 직전 구간 **평균 거래량 비율**로부터 **거래량 건조(%)** 계산 후, 변동성·거래대금과 함께 **백분위 순위 4개 평균**으로 `combined_score`. 낙폭은 `pullback_rank_cap_pct`(기본 35) 클램프 후 순위화해 과도 낙폭에 상대 패널티.
+- **설정·출력:** `universe.screener.pullback_rank_cap_pct` (`config/settings.yaml`). `output/screener_last.tsv`·CLI 표에 고점낙폭·거래량건조 열 추가 (`gui.py`, `main.py`).
+- **데이터 (`data_loader.py`):** `ensure_datetime_index` 재도입 및 `fetch_listing_market_cap_krw_by_code` 에 잘못 붙어 있던 무효 분기 제거 — `stock_screener`/`metrics` 임포트 복구.
+
+### 2026-05-22 (통합 지시서: 스크리너 하드필터·차트 네비 캐시·Harness 매수 AND 옵션)
+- **스크리너 (`stock_screener.py`, `data_loader.py`):** 스코어링 전 FDR 상장표 `Marcap` 기준 `min_market_cap_krw`(기본 3000억 원 근사) 필터 · 일봉 MA20 대 MA120·이평 OLS 우상향 OR 필터(`hard_ma_pair_trend_filter`). ETF 시장은 시총 필터 생략.
+- **GUI (`gui.py`):** 일반 백테스트 시 종목·기간별 일봉 장기 버퍼 캐시 → 차트 패닝 시 `run_backtest_detailed(..., ohlcv_preloaded_daily=…)`로 재다운 최소화(시작 warmup·종료 포함 커버 검증).
+- **메트릭·시뮬 (`metrics.py`, `simulator.py`):** `strategy.harness_buy_all_three_and`(기본 false) 시 골든 후 대세·돌파강도·시간버퍼 **무조건 AND** 진입 로그 명시 매도 OR 문구 동기화.
+- **설정:** `universe.screener.min_market_cap_krw`, `hard_ma_pair_trend_filter` · `strategy.harness_buy_all_three_and` 추가.
+
+### 2026-05-21 (긴급: 스크리너 MA120 역배열 검증 순서 고정·차트 저장 여백/표시 레이아웃)
+- **스크리너 (`stock_screener.py`):** 정제·오름차순 정렬 후 `rolling(120)` 로 `MA120` 계산하고, 종료일 캘린더 마스크로 자른 다음 `dropna(["MA120","Close"])` 의 **마지막 행**으로 `종가 < MA120` 이면 `None`/콘솔 `[SCREENER INTERCEPT]` 로 탈락. 동일 종료 구간 프레임만 `_daily_metrics_slice` 재사용.
+- **차트 (`backtest_chart.py`, `gui.py`):** `save_figure_as_png` 에서 `tight_layout` 후 `subplots_adjust(left=0.05, right=0.92, top=0.93, bottom=0.12, hspace=0.34)` 및 무인자 `autofmt_xdate`, `bbox_inches='tight'` 제거로 가장자리 재잘림 방지; mplfinance 호출 시 `scale_padding↑`, `tight_layout=False`; GUI는 `ImageOps.contain` 으로 비율 유지 피팅.
+
+### 2026-05-21 (긴급: YAML 검색어로 인한 초기 검색창 ‘삼성’ 잔존 수정·스크리너 역배열 필터 재강화)
+- **`config/settings.yaml`:** 기본 `universe.search_keyword` 를 `""` 로 변경. `apply_yaml_to_widgets()` 가 시작 시 검색 입력을 채워 기존 `삼성` 문구가 Entry에 되살아나던 근본 원인을 제거했습니다 (`gui_helpers.py`).
+- **`src/stock_screener.py`:** 종료일 슬라이스 후 OHLCV 수치 강제·동일 타임스탬프 중복 인덱스 정리 (`keep='last'`). MA120 차단은 `rolling` 의존보다 **마지막 120일 종가의 산술평균 vs 종가 `<` 단일 비교**로 고정했고, ATR·거래대금은 동일하게 잘린 `z_prefetched_end` 프레임만 사용해 재슬라이스 불일치를 제거했습니다.
+
+### 2026-05-21 (스크리너 미선택 시 종목명 입력 필수 조건화 및 초기 검색어 공백 처리 완료)
+- **내용:** 프로그램 최초 실행 시 종목 검색 입력창 기본값을 비웠고, 「종목 스크리너」가 해제된 상태에서는 검색·백테스트 시 검색어가 비면 상태줄 안내 및 경고 후 진행을 막도록 했습니다. 이미 실행 종목 코드가 명확할 때(YAML selected_code·검색 결과 목록 선택·이력 오버라이드 등)는 검색어 없이도 단일 백테스트 가능합니다 (`gui.py`, `gui_helpers.py`).
 
 ### 2026-05-21 (스크리너 역배열 120선 차단 및 GUI 가변 레이아웃·PNG 축 레이블)
 - **내용:**
   - **스크리너:** 종가 확정 분 기준 종가\<MA120(일봉 120 거래일 롤링) 종목을 변동성·거래대금 랭킹 전 제외하고, 필요 시 차단을 위해 스크린용 일봉 fetch 카렌더 구간 ±400일로 확대했습니다 (`stock_screener.py`).
   - **GUI:** 메인 창 열(weight)으로 우측 차트 영역이 창 크기에 맞춰 확장되도록 하고 고정 크기 패널·과도 패딩을 줄였으며, 차트 이미지 크기를 `chart_overlay_host` 실측 기준으로 리사이즈합니다 (`gui.py`).
-  - **PNG:** `save_figure_as_png` 에 `subplots_adjust` 및 `figure.autofmt_xdate`, x틱 강제 0도 회전은 제거했습니다 (`backtest_chart.py`).
+  - **PNG:** `save_figure_as_png` 에서 `subplots_adjust` 및 `tight_layout` 처리 후 무인자 `fig.autofmt_xdate()` 로 날짜 라벨 자동 회전. `_apply_hts_style_xaxis` 에서 x축 0도 강제·라벨 루프를 제거해 저장 단계 회전과 충돌하지 않도록 조정했습니다 (`backtest_chart.py`).
+  - **문서:** `README.md` 에 스크리너 역배열·400일 로드·GUI 최소 크기 및 차트 플로트 레이아웃을 요약했습니다(epic 반영).
 
 ### 2026-05-21 (종목 스크리너: 변동성·거래대금 상위 N 자동 필터링 후 배치 백테스트)
 - **목표:** 전체 후보 종목마다 순회하기보다 종료일 기준 과거 확정 일봉만으로 최근 거래일 구간의 변동성(ATR 또는 일간 수익률 표준편차)·거래대금(Σ 거래량×종가)이 모두 상대적으로 큰 순으로 상위 M개만 선별해 순차 백테스트함(시점 왜곡 회피).

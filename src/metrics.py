@@ -45,6 +45,7 @@ def strategy_entry_filters_from_cfg(st: dict) -> dict[str, bool | float]:
         "slope_threshold": float(st.get("slope_threshold", 0.01)),
         "filter_breakout_strength": bool(st.get("filter_breakout_strength", False)),
         "filter_time_buffer": bool(st.get("filter_time_buffer", False)),
+        "harness_buy_all_three_and": bool(st.get("harness_buy_all_three_and", False)),
     }
 
 
@@ -138,6 +139,8 @@ def run_backtest_detailed(
     cfg: dict,
     override_code: str | None = None,
     embed_figure: bool = False,
+    *,
+    ohlcv_preloaded_daily: pd.DataFrame | None = None,
 ) -> BacktestResult:
     """설정 dict 기준 전체 백테스트. GUI·CLI 공용."""
     lines: list[str] = []
@@ -209,7 +212,19 @@ def run_backtest_detailed(
 
     warm = ohlcv_warm_start_date(str(start), interval=interval)
 
-    raw = load_ohlcv(selected, warm, str(end))
+    raw: pd.DataFrame | None
+    if ohlcv_preloaded_daily is not None:
+        raw_full = ensure_datetime_index(ohlcv_preloaded_daily.copy())
+        warm_ts = pd.Timestamp(str(warm))
+        end_ts = pd.Timestamp(str(end))
+        raw = raw_full.loc[
+            (raw_full.index >= warm_ts) & (raw_full.index <= end_ts)
+        ]
+        if raw.empty:
+            raw = load_ohlcv(selected, warm, str(end))
+    else:
+        raw = load_ohlcv(selected, warm, str(end))
+
     if raw is None:
         return BacktestResult(
             False, "데이터 로드 실패 또는 가격 데이터가 없습니다.", [], None, lines
@@ -231,7 +246,8 @@ def run_backtest_detailed(
         )
 
     entry_ef = strategy_entry_filters_from_cfg(st)
-    any_entry_filter = any(
+    harness_buy = bool(entry_ef.get("harness_buy_all_three_and", False))
+    any_entry_filter = harness_buy or any(
         (
             entry_ef["filter_trend_slope"],
             entry_ef["filter_breakout_strength"],
@@ -247,7 +263,9 @@ def run_backtest_detailed(
             lines,
         )
 
-    if any_entry_filter:
+    cross_flags = strategy_cross_flags_from_cfg(st)
+
+    if any_entry_filter and not harness_buy:
         parts: list[str] = []
         if entry_ef["filter_trend_slope"]:
             parts.append(f"대세기울기≥{entry_ef['slope_threshold']}")
@@ -256,8 +274,14 @@ def run_backtest_detailed(
         if entry_ef["filter_time_buffer"]:
             parts.append("시간버퍼")
         lines.append("[전략 v4.0] 매수 진입 필터(골던 후보 AND): " + ", ".join(parts))
+    elif harness_buy:
+        lines.append(
+            "[Harness 매수] 골든 후 대세·돌파·시간버퍼 세 조건 **동시 만족(AND)** (개별 필터 스위치와 무관)."
+        )
 
-    cross_flags = strategy_cross_flags_from_cfg(st)
+    lines.append(
+        "[매도] 트레일(활성 시) 종가 신호 또는 데드(옵션) 중 **어느 한쪽이라도 충족 시** 다음 봉 시가 청산 시뮬(OR)."
+    )
     if not cross_flags["golden_buy_enabled"]:
         lines.append(
             "[전략 v4.6] 골든 매수 OFF — 매매 기준 이평 골든크로스 매수 신호 없음"

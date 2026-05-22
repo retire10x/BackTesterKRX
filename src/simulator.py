@@ -103,9 +103,16 @@ def _buy_filters_pass(
     sig_bar: int,
     ef: dict[str, Any],
 ) -> bool:
-    """활성화된 매수 필터를 모두 AND 통과."""
+    """활성화된 매수 필터를 모두 AND 통과. Harness 모드에서는 세 검사 무조건 AND."""
     if sig_bar < 0 or sig_bar >= len(d):
         return False
+    if bool(ef.get("harness_buy_all_three_and", False)):
+        thr = float(ef.get("slope_threshold", 0.01))
+        return bool(
+            _pass_trend_slope_ma120(d, sig_bar, thr)
+            and _pass_breakout_strength(d, sig_bar)
+            and _pass_time_buffer(d, sig_bar)
+        )
     if bool(ef.get("filter_trend_slope", False)):
         thr = float(ef.get("slope_threshold", 0.01))
         if not _pass_trend_slope_ma120(d, sig_bar, thr):
@@ -133,7 +140,9 @@ def simulate_single(
     """봉 종가에서 신호 확정 → 다음 봉 시가 체결. 전액 매수/전액 매도.
 
     entry_filters (선택): filter_trend_slope, slope_threshold, filter_breakout_strength,
-    filter_time_buffer — 모두 False 기본.
+    filter_time_buffer, harness_buy_all_three_and(True 시 세 필터 무조건 AND) — 모두 False 기본.
+
+    매도 분기는 가변 낙폭(우선 순위 높음) 또는 데드크로스(옵션) **OR**(한쪽 충족 시 다음 봉 시가 청산).
 
     trailing_stop (v4.4, 선택): enabled, trailing_reference_pct(기준 피크 수익률 %),
     trailing_drop_below_pct(미만 구간 적용 고점 대비 하락 %),

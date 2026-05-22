@@ -9,6 +9,7 @@ import os
 from datetime import date
 
 import FinanceDataReader as fdr
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -95,7 +96,39 @@ def fetch_filtered_universe(market: str, keyword: str) -> dict[str, str]:
     return dict(zip(codes, names))
 
 
+def fetch_listing_market_cap_krw_by_code(market: str) -> dict[str, float]:
+    """
+    FDR 상장 표의 시가총액(원화 근사, 종가×상장주식수와 동일 규모).
+    Pykrx KRX 로그인 없이 스크리너 하드 필터에 사용 가능.
+    """
+    stocks = fdr_stock_listing(market)
+    if stocks is None or stocks.empty:
+        return {}
+    mku = str(market or "").strip().upper()
+    if mku == "ETF":
+        sym_c = stocks.get("Symbol")
+        mc = stocks.get("MarCap") if sym_c is not None else None
+        if sym_c is None or mc is None:
+            return {}
+        codes = sym_c.astype(str).str.strip().str.zfill(6)
+    else:
+        if "Code" not in stocks.columns:
+            return {}
+        codes = stocks["Code"].astype(str).str.strip().str.zfill(6)
+        mc = stocks.get("Marcap")
+        if mc is None:
+            return {}
+    vals = pd.to_numeric(mc, errors="coerce")
+    out: dict[str, float] = {}
+    for cd, mv in zip(codes, vals):
+        if mv is None or (isinstance(mv, float) and not np.isfinite(mv)):
+            continue
+        out[str(cd)] = float(mv)
+    return out
+
+
 def ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
+    """인덱스를 DatetimeIndex로 맞춘 뒤 과거→현재 순으로 정렬."""
     out = df.copy()
     if not isinstance(out.index, pd.DatetimeIndex):
         out.index = pd.to_datetime(out.index)
