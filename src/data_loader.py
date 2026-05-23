@@ -149,8 +149,17 @@ def resample_weekly_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     return w.dropna(how="any", subset=["Open", "High", "Low", "Close"])
 
 
+def normalize_krx_listing_market(raw: object) -> str | None:
+    """KOSPI/KOSDAQ/ETF 허용. 그 외·빈 값은 None."""
+    m = str(raw or "").strip().upper()
+    return m if m in ("KOSPI", "KOSDAQ", "ETF") else None
+
+
 def load_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame | None:
-    """FinanceDataReader 로 OHLCV. 실패·빈 데이터 시 None."""
+    """FinanceDataReader 로 OHLCV 티커 조회.(시장 인자 불필요 — KRX 코드 기준 로드.)
+
+    v4.8: 게이트 검증 시 상장 시장 선택은 호출측(metrics·GUI 설정) 책임. 본 함수는 코드만 받는다.
+    """
     try:
         df = fdr.DataReader(symbol, start=start, end=end)
         if df is None or df.empty:

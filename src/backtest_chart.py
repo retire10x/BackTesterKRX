@@ -1,7 +1,8 @@
 """
 정적 백테스트 리포트 차트 (matplotlib Agg · mplfinance 멀티패널).
 GUI 비의존. metrics.run_backtest_detailed 가 조립한 인자로 Figure·PNG 를 만든다.
-v4.6: 패널 세로 레이블(Price·Volume 등) 숨김 후 거래량·누적수익률 패널은 좌상단 뱃지.ax.text 로 표시.
+v4.6: 패널 세로 레이블(Price·Volume 등) 숨김 후 거래량 패널은 좌상단 뱃지로 표시.
+v4.7: 누적수익률 독립 하단 패널 제거. 옵션으로 가격 패널 twinx 배경 음영 오버레이만 지원.
 """
 from __future__ import annotations
 
@@ -96,22 +97,15 @@ def _mplfinance_primary_axes(axlist: list) -> list:
     return out
 
 
-def _assign_price_volume_return_axes(
+def _assign_price_volume_axes(
     primary_axes: list,
     *,
     show_volume: bool,
-    show_return: bool,
 ) -> tuple:
+    """가격 패널 + 선택적 거래량 패널(누적수익률 단독 패널 없음)."""
     ax_price = primary_axes[0] if primary_axes else None
-    ax_vol = None
-    ax_ret = None
-    if show_volume and show_return and len(primary_axes) >= 3:
-        ax_vol, ax_ret = primary_axes[1], primary_axes[2]
-    elif show_volume and len(primary_axes) >= 2:
-        ax_vol = primary_axes[1]
-    elif show_return and len(primary_axes) >= 2:
-        ax_ret = primary_axes[1]
-    return ax_price, ax_vol, ax_ret
+    ax_vol = primary_axes[1] if show_volume and len(primary_axes) >= 2 else None
+    return ax_price, ax_vol
 
 
 def _strip_vertical_ylabel(ax) -> None:
@@ -270,7 +264,7 @@ def _expand_mpf_vertical_panel_gaps(fig: Figure, gap_each: float = 0.024) -> Non
     """mplfinance 다패널 Figure에서 주 패널_axes 쌍 사이 세로 숨통 확보.
     
     하단 마진(0.15)과 상단 마진(0.95)을 강제 지정하고,
-    각 패널이 차지하는 세로 비율을 원래 비율(6:2:2 등)로 완벽히 등분하여 재배치합니다.
+    각 패널이 차지하는 세로 비율을 원래 비율(6:2·단일 패널 등)에 따라 등분 재배치합니다.
     """
     axes_all = fig.axes
     n_pairs = len(axes_all) // 2
@@ -397,20 +391,50 @@ def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
         )
 
 
-def _chart_panel_ratios_and_return_panel(
-    show_volume: bool, show_return: bool
-) -> tuple[tuple[int, ...], int | None]:
-    """거래량·수익률 표시 여부에 따른 mplfinance panel_ratios 및 누적수익률 패널 인덱스.
+def _chart_panel_ratios(show_volume: bool) -> tuple[int, ...]:
+    """가격+거래량 2패널만 지원(v4.7: 독립 누적수익률 서브플롯 제거)."""
+    return (6, 2) if show_volume else (1,)
 
-    가격 패널 비중을 다소 키워 캔들·추세선이 세로 중앙에 잘 보이게 함.
-    """
-    if show_volume and show_return:
-        return (6, 2, 2), 2
-    if show_volume and not show_return:
-        return (6, 2), None
-    if not show_volume and show_return:
-        return (6, 2), 1
-    return (1,), None
+
+def _draw_cumulative_return_overlay(
+    ax_price,
+    ohlc_index: pd.DatetimeIndex,
+    ret_series: pd.Series,
+) -> None:
+    """메인 가격 패널 뒤편(zorder 낮춤): 누적 수익률(%) 0선 대비 fill_between, twinx 우측 Y는 비표시."""
+    if ax_price is None:
+        return
+    n = len(ohlc_index)
+    if n == 0:
+        return
+    ret_aligned = ret_series.reindex(ohlc_index).astype(float).ffill().bfill().fillna(0.0)
+    y = ret_aligned.to_numpy(dtype=float)
+    x = np.arange(n, dtype=float)
+
+    ax_ov = ax_price.twinx()
+    ax_ov.patch.set_visible(False)
+    ax_ov.tick_params(axis="y", length=0, labelleft=False, labelright=False, left=False, right=False)
+    for spine in ax_ov.spines.values():
+        spine.set_visible(False)
+    ymin_d = float(np.nanmin(y)) if y.size else 0.0
+    ymax_d = float(np.nanmax(y)) if y.size else 0.0
+    span = ymax_d - ymin_d if np.isfinite(ymax_d - ymin_d) else 0.0
+    pad = max(abs(span) * 0.12, 0.5 if span <= 1e-9 else span * 0.02)
+    lo = ymin_d - pad
+    hi = ymax_d + pad
+    if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
+        lo, hi = -1.0, 1.0
+    ax_ov.set_ylim(lo, hi)
+    ax_ov.fill_between(
+        x,
+        0.0,
+        y,
+        color="#56b4e9",
+        alpha=0.10,
+        linewidth=0,
+        zorder=-6,
+        clip_on=False,
+    )
 
 
 def _autoscale_price_panel_y_with_trends(
@@ -493,9 +517,9 @@ def make_backtest_figure(
     *,
     show_candle: bool = True,
     show_volume: bool = True,
-    show_return: bool = True,
+    show_return_overlay: bool = False,
 ) -> Figure:
-    """가격(OHLC)·거래량·누적 수익률을 지표 토글에 맞춰 mplfinance 멀티패널로 렌더."""
+    """가격(OHLC)·선택 거래량 2패널 mplfinance 렌더. 누적 수익률 독립 패널 없음; 옵션 시 가격 패널 음영."""
     import matplotlib.pyplot as plt
     import mplfinance as mpf
 
@@ -512,23 +536,7 @@ def make_backtest_figure(
 
     idx = odata.index
 
-    panel_ratios, ret_panel = _chart_panel_ratios_and_return_panel(
-        show_volume, show_return
-    )
-
-    addplots: list = []
-    if ret_panel is not None:
-        ret_aligned = ret_series.reindex(idx).astype(float)
-        if not ret_aligned.notna().any():
-            ret_aligned = pd.Series(0.0, index=idx)
-        addplots.append(
-            mpf.make_addplot(
-                ret_aligned,
-                panel=ret_panel,
-                color="royalblue",
-                width=1.6,
-            )
-        )
+    panel_ratios = _chart_panel_ratios(show_volume)
 
     mc = mpf.make_marketcolors(
         up="#e53935",
@@ -555,11 +563,11 @@ def make_backtest_figure(
         odata,
         type=plot_type,
         style=style,
-        addplot=addplots if addplots else [],
+        addplot=[],
         volume=show_volume,
         panel_ratios=panel_ratios,
         returnfig=True,
-        figsize=(12, 8.4),
+        figsize=(12, 7.0),
         title=title,
         tight_layout=False,
         scale_padding=1.04,
@@ -569,19 +577,14 @@ def make_backtest_figure(
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
 
     primary_axes = _mplfinance_primary_axes(axlist)
-    ax_price, ax_vol, ax_ret = _assign_price_volume_return_axes(
-        primary_axes, show_volume=show_volume, show_return=show_return
-    )
+    ax_price, ax_vol = _assign_price_volume_axes(primary_axes, show_volume=show_volume)
     if ax_price is None:
         raise RuntimeError("mplfinance 가격 패널 축을 찾지 못했습니다.")
 
     _strip_vertical_ylabel(ax_price)
     _strip_vertical_ylabel(ax_vol)
-    _strip_vertical_ylabel(ax_ret)
     if show_volume:
         _panel_upper_left_badge(ax_vol, "📊 Volume")
-    if show_return:
-        _panel_upper_left_badge(ax_ret, "📈 누적 수익률 (%)")
 
     _share_x_axes(fig, ax_price)
     _apply_hts_style_xaxis(fig, idx)
@@ -589,6 +592,8 @@ def make_backtest_figure(
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
     _draw_trend_ma_lines_and_legend(ax_price, idx, trend_ma, bar_label)
     _autoscale_price_panel_y_with_trends(ax_price, odata, trend_ma, idx)
+    if show_return_overlay:
+        _draw_cumulative_return_overlay(ax_price, idx, ret_series)
     # sharex 시 상단 패널 라벨 겹침 완화 — 최종 회전·여백은 save_figure_as_png(autofmt_xdate·subplots_adjust)에서 처리.
     for ax in fig.axes:
         plt.setp(ax.get_xticklabels(), visible=True)
@@ -607,7 +612,7 @@ def save_backtest_report_png(
     *,
     show_candle: bool = True,
     show_volume: bool = True,
-    show_return: bool = True,
+    show_return_overlay: bool = False,
 ) -> None:
     fig = make_backtest_figure(
         sim,
@@ -619,6 +624,6 @@ def save_backtest_report_png(
         trend_ma=trend_ma,
         show_candle=show_candle,
         show_volume=show_volume,
-        show_return=show_return,
+        show_return_overlay=show_return_overlay,
     )
     save_figure_as_png(fig, out_path)

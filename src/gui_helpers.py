@@ -15,7 +15,11 @@ import customtkinter as ctk
 import numpy as np
 
 from src.backtest_constants import TREND_MA_PERIODS
-from src.data_loader import default_backtest_period_range, load_config
+from src.data_loader import (
+    default_backtest_period_range,
+    load_config,
+    normalize_krx_listing_market,
+)
 from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
 from src.stock_screener import default_screener_config
 
@@ -53,6 +57,55 @@ def parse_gui_list_row_code(line: str) -> str:
     if len(digits) >= 6:
         return digits[-6:]
     return digits.zfill(6)
+
+
+def normalize_krx_listing_market_arg(raw: object) -> str:
+    """기본 폴백 KOSPI. settings·GUI 에서 허용 시장만 허용."""
+    m = normalize_krx_listing_market(raw)
+    return m if m is not None else "KOSPI"
+
+
+def format_gui_list_hist(
+    code: str,
+    name: str,
+    listing_market: str,
+    market_cap_krw: float | None,
+) -> str:
+    """최근 백테스트 이력 4컬럼: 티커 | 종목명 | 시장 | 시총(v4.8)."""
+    cdf = str(code or "").strip().zfill(6)
+    nm = str(name or "").strip() or cdf
+    mk = normalize_krx_listing_market_arg(listing_market)
+    mc_p = (
+        format_gui_list_triple(cdf, nm, market_cap_krw).split("|", 2)[-1].strip()
+    )
+    return f"{cdf} | {nm} | {mk} | {mc_p}"
+
+
+def history_row_normalize(
+    tup: tuple | list,
+) -> tuple[str, str, float | None, str]:
+    """디스크/메모리 이력 3튜플·4튜플 → (코드,이름,시총,시장)."""
+    if len(tup) >= 4:
+        c, n, mc_raw, mk = tup[0], tup[1], tup[2], tup[3]
+    elif len(tup) >= 3:
+        c, n, mc_raw, mk = tup[0], tup[1], tup[2], "KOSPI"
+    else:
+        return "", "", None, "KOSPI"
+    cd = str(c or "").strip().zfill(6)
+    nm = str(n or "").strip() or cd
+    try:
+        mcv = (
+            float(mc_raw)
+            if mc_raw is not None
+            and str(mc_raw) not in ("", "null", "None")
+            else None
+        )
+    except (TypeError, ValueError):
+        mcv = None
+    if mcv is not None and (not np.isfinite(mcv) or mcv <= 0):
+        mcv = None
+    lm = normalize_krx_listing_market_arg(mk)
+    return cd, nm, mcv, lm
 
 
 def format_gui_list_triple(code: str, name: str, market_cap_krw: float | None) -> str:
@@ -311,10 +364,11 @@ def trading_rules_static_text(
 
 
 def gui_summary_five_lines(res: BacktestResult) -> str:
-    """성공 시 좌측 패널 전용 5줄 성과 요약(지시서 v2.6)."""
+    """성공 시 좌측 패널 성과 요약 · v4.7 최고·최저 누적수익률 텍스트 이관 포함."""
     d = {row[0]: row[1] for row in res.summary_rows}
     final = d.get("최종 평가액", "-")
     tot = d.get("누적 수익률", "-")
+    hl = d.get("최고/최저 수익률", "-")
     cagr = d.get("연평균 수익률", "-")
     mdd = d.get("최대 손실 낙폭", "-")
     return "\n".join(
@@ -322,8 +376,9 @@ def gui_summary_five_lines(res: BacktestResult) -> str:
             f"■ 매매 횟수 : 매수 {res.n_buy}회 / 매도 {res.n_sell}회",
             f"■ 최종 평가액 : {final}",
             f"■ 누적 수익률 : {tot}",
+            f"■ 최고/최저 수익률 : {hl}",
             f"■ 연평균 수익률 : {cagr}",
-            f"■ 최대 손실 낙폭 : {mdd}",
+            f"■ 최대 손실 낙폭(MDD) : {mdd}",
         ]
     )
 
@@ -390,8 +445,10 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_show_candle.set(bool(st["show_chart_candle"]))
     if "show_chart_volume" in st:
         ui.var_show_volume.set(bool(st["show_chart_volume"]))
-    if "show_chart_return" in st:
-        ui.var_show_revenue.set(bool(st["show_chart_return"]))
+    if "show_return_overlay" in st and hasattr(ui, "var_show_return_overlay"):
+        ui.var_show_return_overlay.set(bool(st["show_return_overlay"]))
+    if "show_chart_scroll" in st and hasattr(ui, "var_chart_scroll"):
+        ui.var_chart_scroll.set(bool(st["show_chart_scroll"]))
     if "golden_buy_enabled" in st:
         ui.var_golden_buy.set(bool(st["golden_buy_enabled"]))
     if "dead_cross_sell_enabled" in st:
@@ -479,14 +536,26 @@ def try_build_config(
     silent: bool = False,
     selected_code_override: str | None = None,
     period_nav: bool = False,
+    market_override: str | None = None,
 ) -> dict | None:
     base = load_config()
     cfg = copy.deepcopy(base)
     kw = ui.var_keyword.get().strip()
-    m_raw = ui.var_market.get().strip().upper() or "KOSPI"
-    cfg.setdefault("universe", {})["market"] = (
-        m_raw if m_raw in ("KOSPI", "KOSDAQ", "ETF") else "KOSPI"
-    )
+    m_gui = ui.var_market.get().strip().upper() or "KOSPI"
+    if m_gui not in ("KOSPI", "KOSDAQ", "ETF"):
+        m_gui = "KOSPI"
+
+    mo = normalize_krx_listing_market(market_override)
+    lur = normalize_krx_listing_market(getattr(ui, "_last_run_listing_market", None))
+
+    if mo is not None:
+        effective_m = mo
+    elif period_nav and lur is not None:
+        effective_m = lur
+    else:
+        effective_m = m_gui
+
+    cfg.setdefault("universe", {})["market"] = effective_m
     cfg["universe"]["search_keyword"] = kw
 
     uni_block = cfg.setdefault("universe", {})
@@ -641,7 +710,14 @@ def try_build_config(
 
     cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
     cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
-    cfg.setdefault("strategy", {})["show_chart_return"] = bool(ui.var_show_revenue.get())
+    cfg.setdefault("strategy", {})["show_return_overlay"] = bool(
+        ui.var_show_return_overlay.get()
+    )
+    if hasattr(ui, "var_chart_scroll"):
+        cfg.setdefault("strategy", {})["show_chart_scroll"] = bool(
+            ui.var_chart_scroll.get()
+        )
+    cfg.get("strategy", {}).pop("show_chart_return", None)
 
     cfg.setdefault("strategy", {})["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
     cfg.setdefault("strategy", {})["dead_cross_sell_enabled"] = bool(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -28,6 +29,7 @@ from .data_loader import (
     ensure_datetime_index,
     fetch_filtered_universe,
     load_ohlcv,
+    normalize_krx_listing_market,
     ohlcv_warm_start_date,
     resample_weekly_ohlcv,
 )
@@ -79,6 +81,19 @@ class BacktestResult:
     n_buy: int = 0
     n_sell: int = 0
     trade_markers_skipped: int = 0
+
+
+def _listing_display_name_resolve(
+    code: str, preferred_market: object
+) -> str | None:
+    """v4.8: 우선 상장 시장에서 코드 조회 후, 교차 시장 순회(FDR 목록 한계 완화)."""
+    cdf = str(code or "").strip().zfill(6)
+    pref = normalize_krx_listing_market(preferred_market) or "KOSPI"
+    for m in (pref,) + tuple(x for x in ("KOSPI", "KOSDAQ", "ETF") if x != pref):
+        u = fetch_filtered_universe(m, "")
+        if cdf in u:
+            return str(u[cdf])
+    return None
 
 
 def normalize_interval(s: str) -> str:
@@ -157,8 +172,8 @@ def run_backtest_detailed(
         if not str(end or "").strip():
             end = e_d.strftime("%Y-%m-%d")
     uni = cfg.get("universe", {})
-    market = uni.get("market", "KOSPI")
     keyword = uni.get("search_keyword", "") or ""
+    market_key = normalize_krx_listing_market(uni.get("market", "KOSPI")) or "KOSPI"
     selected = (override_code or uni.get("selected_code") or "").strip().zfill(6)
 
     st = cfg.get("strategy", {})
@@ -167,7 +182,8 @@ def run_backtest_detailed(
     trend_flags = trend_overlay_flags_from_strategy(st)
     show_chart_candle = bool(st.get("show_chart_candle", True))
     show_chart_volume = bool(st.get("show_chart_volume", True))
-    show_chart_return = bool(st.get("show_chart_return", True))
+    # v4.7: 하단 누적수익률 패널 제거 — 레거시 show_chart_return 은 무시
+    show_return_overlay = bool(st.get("show_return_overlay", False))
 
     costs = cfg.get("trading_costs", {})
     buy_c = float(costs.get("buy_cost", 0.00015))
@@ -185,20 +201,30 @@ def run_backtest_detailed(
             lines,
         )
 
-    candidates_kw = fetch_filtered_universe(market, keyword)
+    candidates_kw = fetch_filtered_universe(market_key, keyword)
     if selected in candidates_kw:
         name = candidates_kw[selected]
     else:
-        universe_all = fetch_filtered_universe(market, "")
+        universe_all = fetch_filtered_universe(market_key, "")
         if selected not in universe_all:
-            return BacktestResult(
-                False,
-                f"코드 {selected} 는 시장 '{market}' 상장 종목 목록에 없습니다. 시장·코드를 확인하세요.",
-                [],
-                None,
-                lines,
-            )
-        name = universe_all[selected]
+            name = _listing_display_name_resolve(selected, market_key)
+            if name is None:
+                warm_probe = ohlcv_warm_start_date(str(start), interval=interval)
+                probe = load_ohlcv(selected, warm_probe, str(end))
+                if probe is None or probe.empty:
+                    return BacktestResult(
+                        False,
+                        (
+                            f"코드 {selected} 은(는) 시장 '{market_key}' 상장 목록에서 찾지 못했으며, "
+                            "가격 데이터도 로드하지 못했습니다. 종목 코드·거래 가능 여부를 확인하세요."
+                        ),
+                        [],
+                        None,
+                        lines,
+                    )
+                name = str(selected).zfill(6)
+        else:
+            name = universe_all[selected]
     bar_label = "주봉" if interval == "weekly" else "일봉"
     bars_per_year = 52.0 if interval == "weekly" else 252.0
 
@@ -336,6 +362,15 @@ def run_backtest_detailed(
         eq, initial, bars_per_year
     )
     final_eq = float(eq.iloc[-1])
+    ret_nums = pd.to_numeric(ret_series, errors="coerce").replace(
+        [np.inf, -np.inf], np.nan
+    ).dropna()
+    if ret_nums.empty:
+        hi_pct, lo_pct = 0.0, 0.0
+    else:
+        hi_pct = float(ret_nums.max())
+        lo_pct = float(ret_nums.min())
+    hl_line = f"{hi_pct:+.2f} % / {lo_pct:+.2f} %"
 
     summary = [
         ["종목", f"{name} ({selected})"],
@@ -343,6 +378,7 @@ def run_backtest_detailed(
         ["초기 자산", f"{initial:,.2f} 원"],
         ["최종 평가액", f"{final_eq:,.2f} 원"],
         ["누적 수익률", f"{total_r:.2f} %"],
+        ["최고/최저 수익률", hl_line],
         ["연평균 수익률", f"{cagr_r:.2f} %"],
         ["최대 손실 낙폭", f"{mdd_r:.2f} %"],
     ]
@@ -377,7 +413,7 @@ def run_backtest_detailed(
                 "trend_ma": trend_plot_rb,
                 "show_chart_candle": show_chart_candle,
                 "show_chart_volume": show_chart_volume,
-                "show_chart_return": show_chart_return,
+                "show_return_overlay": show_return_overlay,
             }
 
         lines.append(
@@ -417,7 +453,7 @@ def run_backtest_detailed(
         trend_ma=trend_plot,
         show_candle=show_chart_candle,
         show_volume=show_chart_volume,
-        show_return=show_chart_return,
+        show_return_overlay=show_return_overlay,
     )
     trade_markers_skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
     if trade_markers_skipped > 0:
@@ -427,6 +463,7 @@ def run_backtest_detailed(
         )
 
     save_figure_as_png(fig, out_png)
+    plt.close(fig)
 
     # 디버그 검증 로그 생성 (backtest_signal_debug.txt)
     debug_log_path = "backtest_signal_debug.txt"
@@ -511,7 +548,7 @@ def run_backtest_detailed(
             "trend_ma": trend_plot,
             "show_chart_candle": show_chart_candle,
             "show_chart_volume": show_chart_volume,
-            "show_chart_return": show_chart_return,
+            "show_return_overlay": show_return_overlay,
         }
 
     lines.append(f"[그래프] {out_png} (매수 {n_buy}회 / 매도 {n_sell}회)")

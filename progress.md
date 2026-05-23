@@ -17,8 +17,22 @@
 - [x] 스크리너 하드 필터: 종료일 종가 기준 120일선 역배열 종목 제외 (`stock_screener.py`)
 - [x] 스크리너 시총(상장표 Marcap)·MA20/120 추세 하드 게이트, 차트 패닝 일봉 캐시, Harness 매수 세 조건 동시 적용 YAML 옵션
 - [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈·검색/이력/날짜 컴팩트 배치·매수·매도 **동일 행 2열** 카드 내 필터 **2단 행**·**규칙 헤더 Refresh로 조건 반영 차트 재계산** (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
+- [x] **v4.7** 하단 독립 누적수익률 패널 제거(캔들+거래량 2단)·좌패널 **최고/최저 누적 수익률**·GUI **주가 패널 수익률 음영** 토글(`show_return_overlay`)·저장 후 `plt.close(fig)` (`backtest_chart.py`, `metrics.py`, `gui.py`, `gui_helpers.py`)
+- [x] **v4.8** 이력 **시장/시총 GUI와 독립**·`history.json` v3·이력 재실행 `silent_try_build`+`market_override`·패닝/Refresh **`_last_run_listing_market`**·네비 줄 **[ ] 수익률** 슬림
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-23 (차트 네비 v4.8·이력 독립)
+- **`gui.py`:** 차트 ⏪~기간 줄 **우측**에 **[ ] 수익률** 체크(툴팁 유지)·별도 행 제거. 최근 실행 이력 **4컬럼**(시장 포함)·메인 시장 드롭다운 변경과 **무관한 시총 표시**(행별 상장 시장으로 FDR 표 조회)·`backtest_history.json` **version 3**. 이력 더블클릭/`silent_try_build`+`market_override`로 목록 검증 우회 후 **종목폼 동기화**·패닝/Refresh 시 **`_last_run_listing_market`** 사용.
+- **`gui_helpers.try_build_config`:** `market_override`; `period_nav` 시 마지막 성공 실행 시장 우선(`_last_run_listing_market`).
+- **`metrics`:** 교차 시장 **종목명 조회 폴백**·목록 불일치 시 **OHLCV 로드 허용** 시 코드를 표시명으로 사용·`normalize_krx_listing_market`로 `universe.market` 정규화.
+- **`data_loader.normalize_krx_listing_market`**·**`load_ohlcv` 주석**(티커 로드 시장 무관)·**`simulator` 헤더** 보강.
+
+### 2026-05-23 (차트 v4.7 — 3층 패널 제거·텍스트 고저 수익률·음영 오버레이)
+- **`backtest_chart.py`:** mplfinance 패널 **가격+거래량**만 유지(`6:2`·단일 패널). 하단 독립 **누적 수익률 패널** 삭제. `show_return_overlay` 시 **`twinx` + `fill_between`**(#56b4e9, alpha 0.1, zorder 후면).
+- **`metrics.py`:** `summary_rows`에 **「최고/최저 수익률」** (`ret_series` min/max 부호 포함). 레거시 `show_chart_return` 차트 플래그는 **무시**. PNG 저장 후 **`plt.close(fig)`**.
+- **`gui.py` / `gui_helpers.py`:** 차트 버튼 아래 **`주가 차트에 수익률 음영 표시`** 체크(기본 **OFF**)·YAML `strategy.show_return_overlay`. 토글 시 **`_on_rules_refresh_chart`** 디스패치.`try_build`에서 구 `show_chart_return` 키 **제거**(`pop`).
+- **문서·`config/settings.yaml`:** `README`/`docs`/진행표 갱신.
 
 ### 2026-05-23 (GUI 종결: 차트 contain 제거 · 프레임 강제 resize · 초기 idletasks)
 - **`gui.py`:** `ImageOps.contain` 폐기. `(fw,fh)`에 PIL **`resize`(LANCZOS)** 후 `CTkImage(size=(fw,fh))`. RGB 변환. 초기 레이아웃: **`_update_chart_image`** 최상단 `self`·`chart_frame`·`chart_overlay_host` 연속 **`update_idletasks`** 후 `winfo`/리사이즈.

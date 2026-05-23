@@ -101,11 +101,11 @@ python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
 python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
 ```
 
-**그래프:** `output/backtest_report.png` — **`mplfinance`** 로 가격(**캔들** 또는 **종가선**)·**(선택) 거래량**·**(선택) 누적 수익률** 패널을 조합(비율: 전체 **50:14:21**(거래량·수익률 패널 높이 기존 대비 약 30% 축소), 거래량 끔 **15:7**, 수익률 끔 **10:3**, 가격만 **단일 패널**) + **(선택) 추세 이평 오버레이**(켜진 기간만 `TREND_MA_COLORS`, **PNG 가격 패널 좌상단 `ax.legend`(v4.5)·반투명 박스)** + **매매 타점**(v3.4~v3.5 동일)·매매 기준 이평(N일)은 **차트 선으로 그리지 않음**(시그널·체결만).
+**그래프:** `output/backtest_report.png` — **`mplfinance`** 로 **가격 패널**(캔들 또는 종가선) + **(선택) 거래량 패널**(`panel_ratios` **6:2**; 거래량 끔 시 **단일 패널**) + **(선택·GUI 체크 시) 누적 수익률(%) twinx 배경 음영**(하늘색 계열 `fill_between`, alpha 약 10%) + **(선택) 추세 이평**(PNG 좌상단 `ax.legend` v4.5) + **매매 타점**(v3.4~v3.5). 매매 기준 N일 이평은 **선으로 그리지 않음**.
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 `true`; 끄면 골든/데크 시그널·데크 신호 매도 각각 비활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글, 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
+`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 `true`; 끄면 골든/데크 시그널·데크 신호 매도 각각 비활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글(`show_chart_candle`·`show_chart_volume`·**v4.7** `show_return_overlay` 기본 ON · `show_chart_scroll` GUI 전용), 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
 
 ## 소스 역할 (파일별)
 
