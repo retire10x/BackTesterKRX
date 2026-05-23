@@ -22,9 +22,20 @@ from .data_loader import (
     fetch_listing_market_cap_krw_by_code,
     load_ohlcv,
 )
+from .metrics import (
+    MIN_BARS_FOR_ENTRY_FILTERS,
+    strategy_cross_flags_from_cfg,
+    strategy_entry_filters_from_cfg,
+)
+from .simulator import _buy_filters_pass
+from .strategy import add_entry_filter_columns, add_signals
+
 
 # 일봉 ATR·MA120·20영업일 윈도우 분석을 위해 충분히 당김(저장소 휴장일 반영)
 _SCR_FETCH_CALENDAR_DAYS = 400
+# 당일 타점 추적 스크린: 종료일 기준 역대 최근 '신호 상태' 전환(골든+진입 필터) 이후 거래일 수
+ENTRY_EVENT_RECENT_TD = 3
+
 SCREEN_MA_LOOKBACK = 120  # 종가 < MA120 역배열 종목 스크린 랭킹 단계 제외
 SCREEN_MA20_WINDOW = 20
 MA_PAIR_SLOPE_LOOKBACK = 5
@@ -143,6 +154,18 @@ class RankedUniversePick:
     code: str
     name: str
     combined_score: float
+    market_cap_krw: float | None = None
+
+
+@dataclass(frozen=True)
+class EntryEventTrackPick:
+    """v4.12_Beta: 골든+매수 진입 필터 상태가 거짓→참 으로 막 전환된 봉(최근 3영업일) 추적 결과."""
+
+    code: str
+    name: str
+    signal_age_trading_days: int
+    spread_from_signal_close_pct: float
+    combined_score: float = 0.0
     market_cap_krw: float | None = None
 
 
@@ -526,6 +549,249 @@ def rank_screener_candidates(
         )
         for a, b, c, d, pbf, vcp, sc in zipped
     ]
+
+
+def _entry_filter_any_active(entry_ef: dict[str, object]) -> bool:
+    """`simulate_single.entry_filters` 중 하나라도 활성이면 긴 역사 백테와 동일한 최소 봉 제한을 적용."""
+    if bool(entry_ef.get("harness_buy_all_three_and", False)):
+        return True
+    return any(
+        bool(entry_ef.get(k, False))
+        for k in (
+            "filter_trend_slope",
+            "filter_breakout_strength",
+            "filter_time_buffer",
+            "use_slope_acceleration",
+        )
+    )
+
+
+def _evaluate_recent_entry_signal_transition(
+    z: pd.DataFrame,
+    *,
+    ma_n: int,
+    entry_ef: dict[str, float | bool],
+    golden_buy_enabled: bool,
+    dead_cross_sell_enabled: bool,
+) -> tuple[int, float] | None:
+    """
+    종료일 포함 일봉 프레임 `z` 에서 매수 후보 상태(골든 Signal==1 + 진입 필터 AND) 기준으로
+    **가장 마지막으로 False→True 전환된 봉**을 찾는다.
+
+    차트 무결성(매수 ▲ 위치): `backtest_chart._draw_trade_markers_matplotlib` 은 체결일(bar)의
+    **직전 봉**에 마커를 찍는다. `filter_time_buffer` 가 꺼져 있으면 골든 일자와 같은 봉이 되고,
+    켜져 있으면 시뮌의 지연 만큼 골든 봉에서 오른쪽으로 밀릴 수 있다(스크리너는 골든+필터 기준 일자 고정).
+
+    반환:
+        `(신호_경과_거래일수, 종료일종가대비타점종가변동률%)` 또는 범위 밖 미포착 시 None.
+        경과 거래일 = len(z)-1 - tau (포함 간격 동일 카운터).
+    """
+    sig_df = add_entry_filter_columns(
+        add_signals(
+            z,
+            int(ma_n),
+            golden_buy_enabled=bool(golden_buy_enabled),
+            dead_cross_sell_enabled=bool(dead_cross_sell_enabled),
+        )
+    )
+
+    ef_ok = dict(entry_ef)
+    min_need = max(int(ma_n) + 5, SCREEN_MA_LOOKBACK)
+    if _entry_filter_any_active(ef_ok):
+        min_need = max(min_need, int(MIN_BARS_FOR_ENTRY_FILTERS))
+
+    n = len(sig_df)
+    if n < min_need:
+        return None
+
+    close_s = pd.to_numeric(sig_df["Close"], errors="coerce")
+    sig_s = pd.to_numeric(sig_df["Signal"], errors="coerce").fillna(0).to_numpy(dtype=int)
+
+    def _qualified(bar_i: int) -> bool:
+        if bar_i < 0 or bar_i >= n:
+            return False
+        if not golden_buy_enabled:
+            return False
+        if int(sig_s[bar_i]) != 1:
+            return False
+        try:
+            return bool(_buy_filters_pass(sig_df, bar_i, ef_ok))
+        except Exception:
+            return False
+
+    t_last = n - 1
+    scan_lo = max(1, t_last - int(ENTRY_EVENT_RECENT_TD))
+    tau: int | None = None
+    # 가장 최근 전환축(종료일 방향부터 스캔)
+    for t in range(t_last, scan_lo - 1, -1):
+        if not _qualified(t):
+            continue
+        if not _qualified(t - 1):
+            tau = t
+            break
+
+    if tau is None:
+        return None
+
+    age = int(t_last - tau)
+    if age > ENTRY_EVENT_RECENT_TD:
+        return None
+
+    c_sig = float(close_s.iloc[tau])
+    c_now = float(close_s.iloc[t_last])
+    if not (np.isfinite(c_sig) and np.isfinite(c_now) and c_sig > 0):
+        return None
+    spread_pct = 100.0 * (c_now / c_sig - 1.0)
+    return age, spread_pct
+
+
+def _load_one_entry_event(
+    pair: tuple[str, str],
+    *,
+    fetch_start: str,
+    end_date: str,
+    ma_n: int,
+    entry_ef: dict[str, float | bool],
+    golden_buy_enabled: bool,
+    dead_cross_sell_enabled: bool,
+    marcap_krw_map: dict[str, float] | None,
+    min_market_cap_krw: float,
+) -> EntryEventTrackPick | None:
+    code, name = pair
+    cdf = code.strip().zfill(6)
+    mc_use: float | None = None
+    if marcap_krw_map is not None and min_market_cap_krw > 0:
+        mr = marcap_krw_map.get(cdf)
+        if mr is None or not np.isfinite(float(mr)) or float(mr) < float(
+            min_market_cap_krw
+        ):
+            return None
+        mc_use = float(mr)
+
+    df = load_ohlcv(code, fetch_start, end_date)
+    if df is None or df.empty:
+        return None
+
+    zw = _slice_ohlcv_through_end_calendar(df, end_date_str=str(end_date).strip()[:10])
+    if zw is None or zw.empty:
+        return None
+
+    ev = _evaluate_recent_entry_signal_transition(
+        zw,
+        ma_n=ma_n,
+        entry_ef=entry_ef,
+        golden_buy_enabled=golden_buy_enabled,
+        dead_cross_sell_enabled=dead_cross_sell_enabled,
+    )
+    if ev is None:
+        return None
+    age, spr = ev
+    return EntryEventTrackPick(
+        code=cdf,
+        name=str(name),
+        signal_age_trading_days=age,
+        spread_from_signal_close_pct=spr,
+        combined_score=float(-age),
+        market_cap_krw=mc_use,
+    )
+
+
+def screen_universe_entry_event(
+    *,
+    market: str,
+    keyword: str,
+    end_date: str,
+    top_n: int,
+    strategy_st: dict[str, object] | None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    max_workers: int = MAX_SCREEN_WORKERS,
+    min_market_cap_krw: float | None = None,
+) -> list[EntryEventTrackPick]:
+    """
+    독립형 파이프라인(v4.12_Beta): `screen_universe` 랭킹과 무관하게
+    종료 직전 3영업일 내 매수 규칙 False→True 전환 종목만 수집·정렬.
+
+    전략은 YAML `strategy` 블록(골든 on/off·MA 주기·`simulate_single` 진입 필터)와 정합해야
+    사용자가 결과를 같은 설정으로 차트 검증할 때 일치한다.
+
+    차트 시간버퍼 ON 시 실제 mpl 매수 마커 봉은 골든 봉과 다를 수 있음(코드 레벨 무결 리포트 docstring 참고).
+    """
+    st_raw = dict(strategy_st or {})
+    xf = strategy_cross_flags_from_cfg(st_raw)
+    if not bool(xf.get("golden_buy_enabled", True)):
+        return []
+
+    cand = fetch_filtered_universe(market, keyword or "")
+    if not cand:
+        return []
+
+    mc_raw = SCREEN_MIN_MARKET_CAP_KRW_DEFAULT if min_market_cap_krw is None else float(min_market_cap_krw)
+
+    entry_ef_any = strategy_entry_filters_from_cfg(st_raw)
+    mkt_upper = str(market).strip().upper()
+    if mkt_upper == "ETF":
+        marcap_krw_map = None
+        min_mc_eff = 0.0
+    elif mc_raw > 0:
+        marcap_krw_map = fetch_listing_market_cap_krw_by_code(market)
+        marcap_krw_map = marcap_krw_map or {}
+        min_mc_eff = mc_raw
+    else:
+        marcap_krw_map = None
+        min_mc_eff = 0.0
+
+    fetch_start = _screen_fetch_start(end_date)
+
+    try:
+        ma_n = int(st_raw.get("ma_period", 20))
+    except (TypeError, ValueError):
+        ma_n = 20
+
+    gb = bool(xf["golden_buy_enabled"])
+    dex = bool(xf["dead_cross_sell_enabled"])
+    ef = strategy_entry_filters_from_cfg(st_raw)
+
+    items = sorted(cand.items(), key=lambda x: x[0])
+    total = len(items)
+    out: list[EntryEventTrackPick] = []
+    done = 0
+
+    def _one(p: tuple[str, str]) -> EntryEventTrackPick | None:
+        return _load_one_entry_event(
+            p,
+            fetch_start=fetch_start,
+            end_date=str(end_date),
+            ma_n=max(5, ma_n),
+            entry_ef=dict(ef),
+            golden_buy_enabled=gb,
+            dead_cross_sell_enabled=dex,
+            marcap_krw_map=marcap_krw_map,
+            min_market_cap_krw=min_mc_eff,
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 12))) as ex:
+        futures = {ex.submit(_one, pair): pair[0] for pair in items}
+        for fut in as_completed(futures):
+            done += 1
+            c = futures[fut]
+            if progress_cb is not None:
+                progress_cb(done, total, c)
+            try:
+                hit = fut.result()
+            except Exception:
+                hit = None
+            if hit is not None:
+                out.append(hit)
+
+    cap = max(1, min(200, int(top_n)))
+    out.sort(
+        key=lambda e: (
+            e.signal_age_trading_days,
+            abs(float(e.spread_from_signal_close_pct)),
+            str(e.code),
+        )
+    )
+    return out[:cap]
 
 
 def _load_one_candidate(

@@ -8,7 +8,7 @@ universe:
   market: "KOSPI"
   search_keyword: ""   # GUI 최초 표시 및 시장 후보 필터
   selected_code: ""
-  # GUI 스크리너 모드: whole | screener | mcap_top30 | breakout_energy (미지정 시 screener.enabled 로 폴백)
+  # GUI 스크리너 모드: whole | screener | mcap_top30 | breakout_energy | entry_event_track (미지정 시 screener.enabled 로 폴백)
   screener_mode: "whole"
   # 스크리너(랭킹) CLI·YAML: 변동성 지표는 atr14(14일 ATR/종가 %)로 엔진 고정 — 아래 키는 하위 호환만
   screener:

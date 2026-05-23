@@ -39,12 +39,14 @@ from src.data_loader import (
 )
 from src.gui_helpers import (
     GUI_SCREENER_MODE_BREAKOUT,
+    GUI_SCREENER_MODE_ENTRY_EVENT,
     GUI_SCREENER_MODE_MCAP_TOP,
     GUI_SCREENER_MODE_SCREENER,
     GUI_SCREENER_MODE_WHOLE,
     HoverTooltip,
     apply_yaml_to_widgets,
     date_entry_theme_kw,
+    format_gui_list_entry_event,
     format_gui_list_hist,
     format_gui_list_triple,
     gui_body_font,
@@ -64,11 +66,13 @@ from src.metrics import (
     run_backtest_detailed,
 )
 from src.stock_screener import (
+    EntryEventTrackPick,
     RankedUniversePick,
     ScreenerEntry,
     default_screener_config,
     screen_universe,
     screen_universe_breakout_energy,
+    screen_universe_entry_event,
     screen_universe_mcap_top,
 )
 
@@ -79,6 +83,10 @@ from src.stock_screener import (
 
 def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float] | None:
     """임의 객체/딕셔너리/시퀀스에서 (종목코드, 종목명, 정렬용 점수) 추출."""
+    if isinstance(item, EntryEventTrackPick):
+        c = str(item.code).strip().zfill(6)
+        n = str(item.name).strip()
+        return (c, n, float(-item.signal_age_trading_days))
     if isinstance(item, RankedUniversePick):
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
@@ -161,7 +169,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.11")
+        self.title("BackTesterKRX v4.12_Beta")
 
         self._apply_initial_window_geometry()
 
@@ -264,6 +272,7 @@ class BacktestGUI(ctk.CTk):
             ("스크리너 · 랭킹 필터", GUI_SCREENER_MODE_SCREENER),
             ("시총 상위 필터", GUI_SCREENER_MODE_MCAP_TOP),
             ("돌파 에너지 계산", GUI_SCREENER_MODE_BREAKOUT),
+            ("당일 타점(Event) 추적", GUI_SCREENER_MODE_ENTRY_EVENT),
         ]
         for txt, mid in radios:
             ctk.CTkRadioButton(
@@ -1296,7 +1305,8 @@ class BacktestGUI(ctk.CTk):
         announce: bool = True,
     ) -> None:
         """
-        스크리너·자동 스캔 결과를 리스트박스에 반영(티커 | 종목명 | 시총).
+        스크리너·자동 스캔 결과를 리스트박스에 반영(티커 | 종목명 | 시총 —
+        「당일 타점(Event) 추적」 선택 시 신호경과일·타점이격도 2컬럼 추가).
         """
         try:
             self.list_codes.delete(0, tk.END)
@@ -1320,6 +1330,16 @@ class BacktestGUI(ctk.CTk):
         m_use = m_raw if m_raw in ("KOSPI", "KOSDAQ", "ETF") else "KOSPI"
         mcap_fallback = fetch_listing_market_cap_krw_by_code(m_use)
 
+        try:
+            gui_sm_evt = (
+                str(self.var_screener_mode.get()).strip()
+                if hasattr(self, "var_screener_mode")
+                else ""
+            )
+        except Exception:
+            gui_sm_evt = ""
+        row_event_cols = gui_sm_evt == GUI_SCREENER_MODE_ENTRY_EVENT
+
         packed: list[tuple[object, str, str, str, float, float | None]] = []
         for item in final_top_n_list:
             row = _screener_gui_item_to_code_name_score(item)
@@ -1339,10 +1359,28 @@ class BacktestGUI(ctk.CTk):
                             mc = v
                     except (TypeError, ValueError):
                         mc = None
-            line = format_gui_list_triple(code, name, mc)
+            if row_event_cols and isinstance(item, EntryEventTrackPick):
+                line = format_gui_list_entry_event(
+                    code,
+                    name,
+                    mc,
+                    signal_age_td=item.signal_age_trading_days,
+                    spread_pct=item.spread_from_signal_close_pct,
+                )
+            else:
+                line = format_gui_list_triple(code, name, mc)
             packed.append((item, line, code, name, float(sc), mc))
 
-        packed.sort(key=lambda z: (-z[4], z[2]))
+        if row_event_cols:
+            packed.sort(
+                key=lambda z: (
+                    z[0].signal_age_trading_days,
+                    abs(z[0].spread_from_signal_close_pct),
+                    z[2],
+                )
+            )
+        else:
+            packed.sort(key=lambda z: (-z[4], z[2]))
         total_raw = len(packed)
         truncated = packed[:limit]
         self._last_batch_picks = [r[0] for r in truncated]
@@ -1984,6 +2022,7 @@ class BacktestGUI(ctk.CTk):
                 GUI_SCREENER_MODE_SCREENER,
                 GUI_SCREENER_MODE_MCAP_TOP,
                 GUI_SCREENER_MODE_BREAKOUT,
+                GUI_SCREENER_MODE_ENTRY_EVENT,
             )
             else GUI_SCREENER_MODE_WHOLE
         )
@@ -2114,6 +2153,24 @@ class BacktestGUI(ctk.CTk):
                     ]
                 else:
                     picks = plist
+            elif mode == GUI_SCREENER_MODE_ENTRY_EVENT:
+                if screener_params is None:
+                    raise ValueError(
+                        "당일 타점 추적: 종료일·설정을 읽지 못했습니다."
+                    )
+                p = screener_params
+                lc = load_config()
+                st_blob = lc.get("strategy") if isinstance(lc.get("strategy"), dict) else {}
+                et_list = screen_universe_entry_event(
+                    market=market,
+                    keyword=keyword,
+                    end_date=str(p["end_date"]),
+                    top_n=int(p["top_n"]),
+                    strategy_st=st_blob,
+                    progress_cb=None,
+                    min_market_cap_krw=float(p["min_market_cap_krw"]),
+                )
+                picks = et_list
             else:
                 picks = []
 

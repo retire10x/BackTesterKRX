@@ -21,8 +21,15 @@
 - [x] **v4.10** 백테스트 고속 경로: `data_loader` 상장표 TTL·OHLCV LRU, `metrics.defer_chart_render` + `materialize_backtest_chart_png` 로 통계/차트 분리(GUI), `simulator` ndarray 루프, 수익률 오버레이 기본 OFF (`gui.py`·`metrics.py`·`data_loader.py`·`simulator.py`)
 - [x] **v4.11** 차트 교체 시 캔버스 `PhotoImage` 스왑(`itemconfig`)·PNG 생성 대기 중 이전 이미지 유지·차트 툴바 Braille 로딩·연타 시 materialize 티켓 필터 (`gui.py`)
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
+- [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-23 (스크리너 당일 타점 추적 v4.12_Beta)
+- **`stock_screener.py`:** 독립 함수 `screen_universe_entry_event`(기존 랭킹 루틴 비침범)·`EntryEventTrackPick`(신호 경과일·종가대비 이격도·시총). 엔진 `metrics.strategy_entry_filters_from_cfg` / `simulate._buy_filters_pass` 재사용.
+- **`gui_helpers.py`:** `GUI_SCREENER_MODE_ENTRY_EVENT`(`entry_event_track`)·리스트 줄 `format_gui_list_entry_event(...)`.
+- **`gui.py`:** 라디오「당일 타점(Event) 추적」·검색 워커 분기·스크린 결과 정렬·2열 표시 조건 분기·`parse_gui_list_row_code` 호환 유지.
+- **`config/settings.yaml`:** `universe.screener_mode` 허용 값 주석 확장.
 
 ### 2026-05-23 (백테스트 속도·차트 분리 v4.10)
 - **`data_loader.py`:** `fdr_stock_listing` 결과 메모리 캐시(TTL)·`load_ohlcv` LRU(최대 96건); `clear_ohlcv_cache()`.

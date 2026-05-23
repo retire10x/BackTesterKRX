@@ -31,6 +31,8 @@ GUI_SCREENER_MODE_WHOLE = "whole"
 GUI_SCREENER_MODE_SCREENER = "screener"
 GUI_SCREENER_MODE_MCAP_TOP = "mcap_top30"
 GUI_SCREENER_MODE_BREAKOUT = "breakout_energy"
+# v4.12_Beta: 매수 규칙(골든+진입 필터) 전환일 추적 스크린
+GUI_SCREENER_MODE_ENTRY_EVENT = "entry_event_track"
 
 VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
     {
@@ -38,6 +40,7 @@ VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
         GUI_SCREENER_MODE_SCREENER,
         GUI_SCREENER_MODE_MCAP_TOP,
         GUI_SCREENER_MODE_BREAKOUT,
+        GUI_SCREENER_MODE_ENTRY_EVENT,
     }
 )
 
@@ -126,6 +129,21 @@ def format_gui_list_triple(code: str, name: str, market_cap_krw: float | None) -
                 eok = int(round(x / 1e8))
                 mcap_disp = f"{eok:,d} 억원"
     return f"{cdf} | {nm} | {mcap_disp}"
+
+
+def format_gui_list_entry_event(
+    code: str,
+    name: str,
+    market_cap_krw: float | None,
+    *,
+    signal_age_td: int,
+    spread_pct: float,
+) -> str:
+    """당일 타점(Event) 추적 모드 전용 — 기본 3열 + 신호 경과일 + 타점 이격도(%)."""
+    base = format_gui_list_triple(code, name, market_cap_krw)
+    age_s = "당일" if signal_age_td == 0 else str(int(signal_age_td))
+    spread_s = f"{float(spread_pct):+.2f}%"
+    return f"{base} | {age_s} | {spread_s}"
 
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
