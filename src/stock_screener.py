@@ -39,6 +39,8 @@ ENTRY_EVENT_RECENT_TD = 3
 KIM_1BAR_BODY_MIN_RATIO = 0.07
 KIM_1BAR_VOL_WINDOW = 20
 KIM_1BAR_MIN_BARS = 21  # 20일 거래량 max 판별에 t-1, 당일 t 필요
+# 퀀트 파이프라인 시총 스텝 고정 규격 (v4.14)
+PIPELINE_MC_TOP_N_DEFAULT = 100
 
 SCREEN_MA_LOOKBACK = 120  # 종가 < MA120 역배열 종목 스크린 랭킹 단계 제외
 SCREEN_MA20_WINDOW = 20
@@ -185,12 +187,24 @@ class KimLineOneBarPick:
     combined_score: float = 0.0
     market_cap_krw: float | None = None
 
+
+@dataclass(frozen=True)
+class PipelineScreenerPick:
+    """v4.14: 조립식 AND 파이프라인 결과 — 단일 출력 스키마."""
+
+    code: str
+    name: str
+    market_cap_krw: float | None
+    entry_match_flag: str
+    candle_pattern: str
+    spread_from_ref_pct: float | None
+    combined_score: float = 0.0
 def default_screener_config() -> dict:
     """settings.yaml 우선 병합용 기본 블록."""
     return {
         "enabled": True,
         "lookback_trading_days": 20,
-        "top_n": 30,
+        "top_n": 100,
         # 변동성 지표 GUI 제거 후 엔진은 atr14(14일 평균 등락 폭 %)만 사용
         "volatility_metric": "atr14",
         "combine": "sum_rank_pct",
@@ -734,7 +748,7 @@ def screen_universe_entry_event(
     """
     st_raw = dict(strategy_st or {})
     xf = strategy_cross_flags_from_cfg(st_raw)
-    if not bool(xf.get("golden_buy_enabled", True)):
+    if not bool(xf["golden_buy_enabled"]):
         return []
 
     cand = fetch_filtered_universe(market, keyword or "")
@@ -896,6 +910,281 @@ def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, flo
     if not np.isfinite(turnover) or turnover <= 0:
         return None
     return label, turnover, spread_pct
+
+
+def _market_mcap_rank_top_codes(market: str, top_n: int) -> frozenset[str]:
+    tn = max(1, min(5000, int(top_n)))
+    cmap = fetch_listing_market_cap_krw_by_code(market) or {}
+    if not cmap:
+        return frozenset()
+    ranked: list[tuple[str, float]] = []
+    for code_raw, mr in cmap.items():
+        cdf = str(code_raw).strip().zfill(6)
+        try:
+            fv = float(mr)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(fv) or fv <= 0:
+            continue
+        ranked.append((cdf, fv))
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return frozenset(c for c, _ in ranked[:tn])
+
+
+def _narrow_universe_by_mcap_top(
+    candidates: dict[str, str],
+    *,
+    market: str,
+    top_n: int,
+) -> dict[str, str]:
+    allow = _market_mcap_rank_top_codes(market, top_n)
+    if not allow:
+        return dict(candidates)
+    out: dict[str, str] = {}
+    for k, v in candidates.items():
+        ck = str(k).strip().zfill(6)
+        if ck in allow:
+            out[ck] = str(v)
+    return out
+
+
+def _pipeline_buy_rules_terminal_qualifies(
+    zw: pd.DataFrame,
+    *,
+    strategy_block: dict[str, object],
+) -> bool:
+    """
+    종료일 종가 확정 시점(마지막 봉)에서 매수 후보 규격: Signal==1(골든) + 활성 진입 필터 통과.
+    """
+    xf = strategy_cross_flags_from_cfg(strategy_block)
+    if not bool(xf["golden_buy_enabled"]):
+        return False
+    try:
+        ma_n = max(5, int(strategy_block.get("ma_period", 20)))
+    except (TypeError, ValueError):
+        ma_n = 20
+    entry_ef = dict(strategy_entry_filters_from_cfg(strategy_block))
+    sig_df = add_entry_filter_columns(
+        add_signals(
+            zw,
+            ma_n,
+            golden_buy_enabled=bool(xf["golden_buy_enabled"]),
+            dead_cross_sell_enabled=bool(xf["dead_cross_sell_enabled"]),
+        )
+    )
+
+    ef_ok = entry_ef
+    min_need = max(int(ma_n) + 5, SCREEN_MA_LOOKBACK)
+    if _entry_filter_any_active(ef_ok):
+        min_need = max(min_need, int(MIN_BARS_FOR_ENTRY_FILTERS))
+
+    n = len(sig_df)
+    if n < min_need:
+        return False
+    t_last = n - 1
+    sig_arr = (
+        pd.to_numeric(sig_df["Signal"], errors="coerce").fillna(0).to_numpy(dtype=int)
+    )
+    if int(sig_arr[t_last]) != 1:
+        return False
+    try:
+        return bool(_buy_filters_pass(sig_df, t_last, ef_ok))
+    except Exception:
+        return False
+
+
+def execute_pipelined_screening(
+    *,
+    market: str,
+    keyword: str,
+    end_date: str,
+    strategy_st: dict[str, object] | None,
+    stage_mcap_top100: bool,
+    stage_buy_rules: bool,
+    stage_kim_candle: bool,
+    top_display_n: int = 100,
+    mcap_cutoff_n: int = PIPELINE_MC_TOP_N_DEFAULT,
+    min_market_cap_krw: float | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    max_workers: int = MAX_SCREEN_WORKERS,
+) -> list[PipelineScreenerPick]:
+    """
+    v4.14 조립식 파이프라인: 후보(dict) 로드 후 체크된 단계를 순차 AND 적용한다.
+    순서: 유니버스 → (선택)시총 상위 컷오프 → 종목별 OHLC 필요 시 일괄 스레드 → 매수 규칙 → 김직선 패턴.
+
+    `min_market_cap_krw`(레거시)는 하위 호환 인자만 유지하며 파이프라인 후보 필터링에는 사용하지 않는다.
+
+    결과는 단일 행 타입 PipelineScreenerPick 으로 정규화한다.
+    """
+    _ = min_market_cap_krw  # API 호환 유지(v4.14_Fix: 파이프라인에서는 시총 하한 미적용)
+    cand = fetch_filtered_universe(market, keyword or "")
+    if not cand:
+        return []
+
+    if stage_mcap_top100:
+        cand = _narrow_universe_by_mcap_top(
+            cand, market=str(market), top_n=max(1, int(mcap_cutoff_n))
+        )
+        if not cand:
+            return []
+
+    st_blob = dict(strategy_st or {})
+
+    xf0 = strategy_cross_flags_from_cfg(st_blob)
+    golden_on = bool(xf0["golden_buy_enabled"])
+    # 체크박스 2단계 ON이어도 골든 매수 OFF면 종봉 필터는 적용하지 않음(바이패스).
+    effective_buy_rules = bool(stage_buy_rules) and golden_on
+
+    mkt_upper = str(market).strip().upper()
+    # 레거시 3000억 하한은 파이프라인 후보 소거에 사용하지 않음(1단계 Top-N만 게이트).
+    if mkt_upper == "ETF":
+        marcap_krw_map = None
+    else:
+        marcap_krw_map = fetch_listing_market_cap_krw_by_code(market) or {}
+
+    need_ohlc = bool(stage_kim_candle) or bool(effective_buy_rules)
+
+    disp_cap = max(1, min(200, int(top_display_n)))
+    # 1단계 시총 Top-N은 mcap_cutoff_n(기본 100); 표시 건수는 YAML top_display_n 과의 max.
+    if stage_mcap_top100:
+        disp_cap = max(disp_cap, min(200, max(1, int(mcap_cutoff_n))))
+
+    def _pick_with_fields(
+        code: str,
+        name: str,
+        *,
+        mc: float | None,
+        entry_f: str,
+        candle_lbl: str,
+        spr_pct: float | None,
+    ) -> PipelineScreenerPick:
+        sc_sort = (
+            float(mc)
+            if mc is not None and np.isfinite(float(mc)) and float(mc) > 0
+            else float("-inf")
+        )
+        return PipelineScreenerPick(
+            code=str(code).strip().zfill(6),
+            name=str(name),
+            market_cap_krw=mc if mc is None or (np.isfinite(float(mc)) and float(mc) > 0) else None,
+            entry_match_flag=str(entry_f),
+            candle_pattern=str(candle_lbl),
+            spread_from_ref_pct=(
+                float(spr_pct)
+                if spr_pct is not None and np.isfinite(float(spr_pct))
+                else None
+            ),
+            combined_score=sc_sort,
+        )
+
+    items = sorted(cand.items(), key=lambda x: x[0])
+
+    if not need_ohlc:
+        picks: list[PipelineScreenerPick] = []
+        for cdf, nm in items:
+            cd = cdf.strip().zfill(6)
+            mc_use: float | None = None
+            if isinstance(marcap_krw_map, dict):
+                mr = marcap_krw_map.get(cd)
+                if mr is not None:
+                    try:
+                        mv = float(mr)
+                        if np.isfinite(mv) and mv > 0:
+                            mc_use = mv
+                    except (TypeError, ValueError):
+                        mc_use = None
+            picks.append(
+                _pick_with_fields(
+                    cd,
+                    nm,
+                    mc=mc_use,
+                    entry_f=(
+                        "미적용"
+                        if not effective_buy_rules
+                        else "—"
+                    ),
+                    candle_lbl=("미적용" if not stage_kim_candle else "—"),
+                    spr_pct=None,
+                )
+            )
+        picks.sort(key=lambda z: (-(z.combined_score or float("-inf")), z.code))
+        return picks[:disp_cap]
+
+    fetch_start = _screen_fetch_start(end_date)
+    out: list[PipelineScreenerPick] = []
+    total = len(items)
+    done = 0
+
+    def _one(pair: tuple[str, str]) -> PipelineScreenerPick | None:
+        code, name = pair
+        cdf = code.strip().zfill(6)
+        mc_use: float | None = None
+        if isinstance(marcap_krw_map, dict):
+            mr = marcap_krw_map.get(cdf)
+            if mr is not None:
+                try:
+                    mv = float(mr)
+                    if np.isfinite(mv) and mv > 0:
+                        mc_use = mv
+                except (TypeError, ValueError):
+                    mc_use = None
+
+        df = load_ohlcv(code, fetch_start, end_date)
+        if df is None or df.empty:
+            return None
+
+        zw = _slice_ohlcv_through_end_calendar(
+            df, end_date_str=str(end_date).strip()[:10]
+        )
+        if zw is None or zw.empty:
+            return None
+
+        if effective_buy_rules:
+            if not _pipeline_buy_rules_terminal_qualifies(zw, strategy_block=st_blob):
+                return None
+
+        hk: tuple[str, float, float] | None = None
+        if stage_kim_candle:
+            hk = _evaluate_kim_line_one_bar_pattern(zw)
+            if hk is None:
+                return None
+
+        lbl = "미적용"
+        spread_v: float | None = None
+        if hk is not None:
+            lbl, _tv, spread_v = hk
+
+        entry_label = "Y" if effective_buy_rules else "미적용"
+
+        return _pick_with_fields(
+            cdf,
+            name,
+            mc=mc_use,
+            entry_f=entry_label,
+            candle_lbl=lbl if stage_kim_candle else "미적용",
+            spr_pct=(
+                spread_v
+                if stage_kim_candle and spread_v is not None and np.isfinite(spread_v)
+                else None
+            ),
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 12))) as ex:
+        futures = {ex.submit(_one, pair): pair[0] for pair in items}
+        for fut in as_completed(futures):
+            done += 1
+            cid = futures[fut]
+            if progress_cb is not None:
+                progress_cb(done, total, cid)
+            try:
+                row = fut.result()
+            except Exception:
+                row = None
+            if row is not None:
+                out.append(row)
+
+    out.sort(key=lambda z: (-float(z.combined_score or float("-inf")), z.code))
+    return out[:disp_cap]
 
 
 def _load_one_kim_line_one_bar(

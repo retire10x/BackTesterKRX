@@ -24,7 +24,7 @@ from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
 from src.stock_screener import default_screener_config
 
 # =========================================================================
-# 스크리너 모드(GUI 라디오) 및 검색 결과 리스트 포맷 (티커 | 종목명 | 시총)
+# 레거시 screener_mode 문자열 마이그레이션 및 검색 결과 포맷(티커 | 종목명 | 시총 · v4.14 파이프라인 확장 컬럼)
 # =========================================================================
 
 GUI_SCREENER_MODE_WHOLE = "whole"
@@ -46,6 +46,35 @@ VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
         GUI_SCREENER_MODE_KIM_LINE_1BAR,
     }
 )
+
+
+def migrate_legacy_screener_mode_to_pipeline(
+    legacy_mode_raw: object,
+) -> tuple[bool, bool, bool]:
+    """
+    예전 라디오 `universe.screener_mode` → 파이프라인 3단계 (시총·매수규칙·김직선) 체크 초기값.
+    ATR 랭킹·돌파 전용 라디오는 신규 UI에 없음 — 필요 시 사용자가 새 체크박스로 조합(v4.14).
+    """
+    if legacy_mode_raw is None:
+        return (False, False, False)
+    m = str(legacy_mode_raw).strip().lower()
+    if not m:
+        return (False, False, False)
+    if m == str(GUI_SCREENER_MODE_MCAP_TOP).lower():
+        return (True, False, False)
+    if m == str(GUI_SCREENER_MODE_ENTRY_EVENT).lower():
+        return (False, True, False)
+    if m == str(GUI_SCREENER_MODE_KIM_LINE_1BAR).lower():
+        return (False, False, True)
+    return (False, False, False)
+
+
+def default_screener_pipeline_dict() -> dict[str, bool]:
+    return {
+        "stage_mcap_top100": False,
+        "stage_buy_rules": False,
+        "stage_kim_line_1bar": False,
+    }
 
 
 def parse_gui_list_row_code(line: str) -> str:
@@ -170,6 +199,32 @@ def format_gui_list_kim_candle(
         tv_disp = "N/A"
     spread_s = f"{float(spread_pct):+.2f}%"
     return f"{base} | {pattern_label} | {tv_disp} | {spread_s}"
+
+
+def format_gui_list_pipeline(
+    code: str,
+    name: str,
+    market_cap_krw: float | None,
+    *,
+    entry_match_flag: str,
+    candle_pattern: str,
+    spread_from_ref_pct: float | None,
+) -> str:
+    """v4.14 통합 파이프라인 — 티커·종목명·시총 · 매수조건 플래그 · 캔들 패턴 · 이격도."""
+    base = format_gui_list_triple(code, name, market_cap_krw)
+    spread_s = (
+        "—"
+        if spread_from_ref_pct is None
+        or (
+            isinstance(spread_from_ref_pct, float)
+            and not np.isfinite(spread_from_ref_pct)
+        )
+        else f"{float(spread_from_ref_pct):+.2f}%"
+    )
+    return (
+        f"{base} | {str(entry_match_flag)} | "
+        f"{str(candle_pattern)} | {spread_s}"
+    )
 
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
@@ -464,7 +519,28 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         # 빈 문자열도 허용(시장 전체 후보 목록 등). 문자열 타입 고정 및 앞뒤 공백 제거.
         ui.var_keyword.set(str(uni["search_keyword"]).strip())
     scr_yaml = uni.get("screener") if isinstance(uni.get("screener"), dict) else {}
-    if hasattr(ui, "var_screener_mode"):
+    if hasattr(ui, "var_pf_mcap_top100"):
+        defs = default_screener_pipeline_dict()
+        pip = uni.get("screener_pipeline")
+        applied = False
+        if isinstance(pip, dict):
+            ui.var_pf_mcap_top100.set(
+                bool(pip.get("stage_mcap_top100", defs["stage_mcap_top100"]))
+            )
+            ui.var_pf_buy_rules.set(
+                bool(pip.get("stage_buy_rules", defs["stage_buy_rules"]))
+            )
+            ui.var_pf_kim_candle.set(
+                bool(pip.get("stage_kim_line_1bar", defs["stage_kim_line_1bar"]))
+            )
+            applied = True
+        if not applied:
+            sm_raw = uni.get("screener_mode")
+            s1, s2, s3 = migrate_legacy_screener_mode_to_pipeline(sm_raw)
+            ui.var_pf_mcap_top100.set(s1)
+            ui.var_pf_buy_rules.set(s2)
+            ui.var_pf_kim_candle.set(s3)
+    elif hasattr(ui, "var_screener_mode"):
         sm_raw = uni.get("screener_mode")
         if isinstance(sm_raw, str) and sm_raw.strip() in VALID_GUI_SCREENER_MODES_FROZEN:
             ui.var_screener_mode.set(sm_raw.strip())
@@ -572,6 +648,48 @@ def _has_explicit_stock_selection(
     return bool(yaml_cd and yaml_cd != "000000")
 
 
+def live_strategy_blob_for_pipeline_search(ui: "BacktestGUI") -> dict:
+    """
+    `execute_pipelined_screening` 에 넘길 strategy 블록.
+
+    디스크 `settings.yaml` 의 strategy 딥카피를 기준으로, 우측 **매매 규칙** 위젯
+    (`golden_buy`·진입 필터·이평·주기 등)으로 덮어쓴다. 검색 버튼이 YAML 저장 없이
+    동작하므로 스냅샷 없이 `load_config()` 만 쓰면 GUI 변경이 종봉 필터에 반영되지 않는다.
+
+    **Tk 변수 읽기**이므로 **메인/UI 스레드에서만** 호출할 것(워커에서 호출 금지).
+    """
+    base = load_config()
+    st = copy.deepcopy(dict(base.get("strategy") or {}))
+    interval = ui.var_interval.get()
+    if isinstance(interval, str) and interval.strip():
+        st["interval"] = str(interval).strip().lower()
+    try:
+        ma_n = int(ui.var_ma_period.get())
+    except ValueError:
+        ma_n = 20
+    if ma_n not in (5, 10, 20):
+        ma_n = 20
+    st["ma_period"] = ma_n
+
+    st["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
+    st["dead_cross_sell_enabled"] = bool(ui.var_dead_sell.get())
+
+    try:
+        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
+    except ValueError:
+        slope_thr = float(st.get("slope_threshold", 0.01))
+    st["slope_threshold"] = slope_thr
+    st["filter_trend_slope"] = bool(ui.var_filter_trend.get())
+    st["filter_breakout_strength"] = bool(ui.var_filter_breakout.get())
+    st["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
+
+    if hasattr(ui, "check_slope_accel_var"):
+        st["use_slope_acceleration"] = bool(ui.check_slope_accel_var.get())
+
+    # `harness_buy_all_three_and` 등 YAML 전용 플래그는 deepcopy 상태 유지
+    return st
+
+
 def try_build_config(
     ui: "BacktestGUI",
     *,
@@ -611,22 +729,43 @@ def try_build_config(
         if isinstance(yaml_uni.get("screener"), dict)
         else {}
     )
-    gui_mode = GUI_SCREENER_MODE_WHOLE
-    if hasattr(ui, "var_screener_mode"):
+    pf_mcap = False
+    pf_buy = False
+    pf_kim = False
+    gui_mode_placeholder = GUI_SCREENER_MODE_WHOLE
+    if hasattr(ui, "var_pf_mcap_top100"):
+        try:
+            pf_mcap = bool(ui.var_pf_mcap_top100.get())
+            pf_buy = bool(ui.var_pf_buy_rules.get())
+            pf_kim = bool(ui.var_pf_kim_candle.get())
+        except (tk.TclError, AttributeError):
+            pf_mcap, pf_buy, pf_kim = False, False, False
+    elif hasattr(ui, "var_screener_mode"):
         gmv = str(ui.var_screener_mode.get()).strip()
-        gui_mode = (
+        gui_mode_placeholder = (
             gmv if gmv in VALID_GUI_SCREENER_MODES_FROZEN else GUI_SCREENER_MODE_WHOLE
+        )
+        pf_mcap, pf_buy, pf_kim = migrate_legacy_screener_mode_to_pipeline(
+            gui_mode_placeholder
         )
 
     scr_merged = {**default_screener_config(), **yaml_scr}
     scr_merged["volatility_metric"] = "atr14"
-    scr_merged["enabled"] = gui_mode == GUI_SCREENER_MODE_SCREENER
+    # GUI v4.14 라디오 제거 후에도 YAML `enabled` 로 CLI 배치 스크린 동작 유지
     uni_block["screener"] = scr_merged
-    uni_block["screener_mode"] = gui_mode
+
+    uni_block["screener_pipeline"] = {
+        "stage_mcap_top100": pf_mcap,
+        "stage_buy_rules": pf_buy,
+        "stage_kim_line_1bar": pf_kim,
+    }
+    uni_block["screener_mode"] = "pipeline_and_v414"
+
+    any_pf = pf_mcap or pf_buy or pf_kim
 
     if (
         not silent
-        and gui_mode == GUI_SCREENER_MODE_WHOLE
+        and not any_pf
         and not kw
         and not _has_explicit_stock_selection(
             ui,
@@ -636,11 +775,12 @@ def try_build_config(
     ):
         if hasattr(ui, "set_status_message"):
             ui.set_status_message(
-                "오류: 「전체」 모드에서는 검색할 종목명을 입력하거나 목록에서 종목을 고르세요."
+                "오류: 검색 종목명을 입력하거나, 필터 단계 중 하나 이상을 켠 뒤 검색하세요."
             )
         messagebox.showwarning(
             "입력 오류",
-            "「전체」 모드에서는 상단 종목 검색창을 채워 검색하거나, 검색 결과·이력에서 종목을 선택하세요.",
+            "상단 종목 검색창을 입력하거나, 퀀트 필터 파이프라인 체크를 하나 이상 켠 뒤 검색할 수 있습니다.\n"
+            "또는 검색 결과·이력에서 종목을 먼저 선택하세요.",
         )
         return None
 
@@ -663,9 +803,7 @@ def try_build_config(
                 code = parse_gui_list_row_code(str(line)).strip().zfill(6)
             else:
                 code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-                if (not code or code == "000000") and (
-                    gui_mode != GUI_SCREENER_MODE_WHOLE
-                ):
+                if (not code or code == "000000") and any_pf:
                     fallback = (
                         str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
                     )
@@ -677,7 +815,7 @@ def try_build_config(
     if not code or code == "000000":
         if not silent:
             hint = ""
-            if gui_mode != GUI_SCREENER_MODE_WHOLE:
+            if any_pf:
                 hint = (
                     "\n\n자동 스캔 모드에서는 검색 결과에서 종목을 고르거나, "
                     "settings 의 universe.selected_code 에 6자리 코드가 있어야 합니다."

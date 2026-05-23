@@ -71,8 +71,8 @@ def strategy_trailing_stop_from_cfg(st: dict) -> dict[str, bool | float]:
 def strategy_cross_flags_from_cfg(st: dict) -> dict[str, bool]:
     """기본 크로스 스위치 — `strategy.add_signals`·`simulate_single` 데크 매도 실행과 동기화."""
     return {
-        "golden_buy_enabled": bool(st.get("golden_buy_enabled", True)),
-        "dead_cross_sell_enabled": bool(st.get("dead_cross_sell_enabled", True)),
+        "golden_buy_enabled": bool(st.get("golden_buy_enabled", False)),
+        "dead_cross_sell_enabled": bool(st.get("dead_cross_sell_enabled", False)),
     }
 
 

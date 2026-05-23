@@ -23,8 +23,36 @@
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 - [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 - [x] **v4.13** 스크리너 「김직선 1봉 캔들 추적」: 장대양봉+20일 최대 거래량 기준봉 후 당일 고가돌파/중심선지지(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
-
+- [x] **v4.14** GUI 라디오 폐지·**순차 AND 파이프라인** 체크(시총 Top100·매수 규칙 종봉·김직선 1봉); `execute_pipelined_screening`·`PipelineScreenerPick`·통합 목록 포맷; YAML `universe.screener_pipeline`
+- [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한·골든 OFF 시 **2단계 바이패스**
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-24 (**v4.14_Patch** 스크리너 2단계 strategy 누수 수정)
+- **원인:** `execute_pipelined_screening(..., strategy_st=load_config()['strategy'])` 만 사용해 **디스크 YAML** 기준으로 종봉·골든·진입 필터를 평가함. 사용자가 우측 패널에서 체크를 바꿔도 검색 결과(특히 1단계+2단계)가 거의 안 바뀌는 **GUI↔백엔드 단절**이었음(.py 내 `_buy_filters_pass` 무조건 True 버그 아님).
+- **`gui_helpers.py`:** `live_strategy_blob_for_pipeline_search(ui)` — YAML strategy 딥카피 + `[골든/데드, MA 주기·interval, 대세·돌파·시간·OLS 가속]` 위젯 오버레이. **Tk 읽기 → 메인 스레드 전용**.
+- **`gui.py`:** 검색 시작 직전 스냅샷 후 워커에 `strategy_st` 전달. 창 제목 v4.14_Patch.
+- **`stock_screener.py`:** `strategy_cross_flags_from_cfg` 결과에 대해 `golden_buy_enabled` 를 **`.get(..., True)` 없이 명시 불리언**으로 사용(폴백 혼선 제거).
+
+### 2026-05-24 (GUI: 검색 결과 100건 재잘림 제거 · 파이프라인 체크 인터락 해제)
+- **원인:** `execute_pipelined_screening` 은 시총 1단계만 켠 경우 `disp_cap`≥100으로 반환했으나, `update_gui_with_screener_results` 가 YAML `top_n`(예: 30)으로 `_screener_display_cap` 을 두고 `packed[:limit]` 재슬라이스해 목록을 30으로 맞춤.
+- **`gui.py`:** 엔진이 돌려준 픽 리스트 전량 표시(**GUI 재상한 폐기**), `_screener_display_cap` 속성 및 `_search_screen_universe_params` 대입 삭제. 파이프 체크 3개 `trace` 에서 검색 결과 지우던 `_on_pipeline_filter_changed` **제거**(체크만 바꿔도 기존 리스트 유지).
+- **`config/settings.yaml` · `stock_screener.default_screener_config`:** `universe.screener.top_n` 기본 **100**(1단계 Top 100 레이블·`PIPELINE_MC_TOP_N_DEFAULT` 와 정합).
+- **`main.py`:** CLI 스크리너 배치 시 `top_n` 폴백 리터럴 100.
+
+### 2026-05-24 (GUI·YAML: 매매 규칙 체크박스 전부 기본 OFF)
+- **`gui.py`:** 우측 매매 규칙 패널 — 골든/데드·대세·돌파·시간버퍼 BooleanVar 초기값 `false`. 초기화 말미 `var_filter_trend.set(True)` 제거로 `apply_yaml_to_widgets` 가 설정한 `filter_trend_slope` 가 더 이상 덮어쓰이지 않음; 인터락은 `_sync_buy_filters_interlock()` 만 호출.
+- **`config/settings.yaml`:** `golden_buy_enabled`·`dead_cross_sell_enabled`·`filter_breakout_strength`·`filter_time_buffer` 기본 `false` (트레일·곡선 가속도는 기존대로 `false`).
+- **`metrics.py`:** `strategy_cross_flags_from_cfg` 에서 위 스위치 키 생략 시 폴백을 `False` 로 통일.
+
+### 2026-05-23 (퀀트 파이프라인 패치 v4.14_Fix)
+- **`stock_screener.py` (`execute_pipelined_screening`):** 레거시 **시총 3000억 하한**으로 OHLC 단계 후보 탈락 제거. `stage_mcap_top100`일 때 YAML `top_n`(기본 30)만으로 결과가 상단 슬라이스 되던 버그 수정. 2단계 체크+**골든 매수 OFF** 시 빈 결과·무의미 조기종료 제거 — **골든 ON일 때만** 종봉 매수 규칙 게이트(`effective_buy_rules`) 적용·그 외 바이패스.
+- **`gui.py`:** 창 제목 v4.14_Fix.
+
+### 2026-05-23 (퀀트 필터 파이프라인 통합 v4.14)
+- **`stock_screener.py`:** `execute_pipelined_screening` — 유니버스 후 (선택)`_narrow_universe_by_mcap_top`(Marcap 순위와 교집합)→(선택) 스레드 풀 OHLC·터미널 매수 규칙(`_pipeline_buy_rules_terminal_qualifies`)→(선택)`_evaluate_kim_line_one_bar_pattern`; 결과는 `PipelineScreenerPick` 로 정규화.
+- **`gui.py`:** 스크리너 라디오 제거·3단계 체크박스; 검색 데몬 스레드는 위 함수 단일 호출·`format_gui_list_pipeline`; 창 제목 v4.14.
+- **`gui_helpers.py`:** `universe.screener_pipeline` 저장/로드·레거시 `screener_mode` 마이그레이션.
+- **`config/settings.yaml`:** `screener_pipeline` 블록·`screener_mode` 주석 갱신.
 
 ### 2026-05-23 (김직선 1봉 캔들 스크리너 v4.13)
 - **`stock_screener.py`:** `screen_universe_kim_line_one_bar`·`_evaluate_kim_line_one_bar_pattern`·`KimLineOneBarPick`(고가돌파/중심선지지·기준봉 거래대금·기준선 대비 이격도).

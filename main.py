@@ -101,7 +101,7 @@ def run_screener_batch_cli(cfg: dict) -> bool:
     scr = {**default_screener_config(), **raw_scr}
 
     lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
-    tn = max(1, min(200, int(scr.get("top_n", 30))))
+    tn = max(1, min(200, int(scr.get("top_n", 100))))
     metric = "atr14"  # 엔진 고정(구 YAML volatility_metric 과 무관)
     ds = default_screener_config()
     try:

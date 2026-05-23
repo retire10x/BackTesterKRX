@@ -8,13 +8,18 @@ universe:
   market: "KOSPI"
   search_keyword: ""   # GUI 최초 표시 및 시장 후보 필터
   selected_code: ""
-  # GUI 스크리너 모드: whole | screener | mcap_top30 | breakout_energy | entry_event_track | kim_line_1bar (미지정 시 screener.enabled 로 폴백)
+  # 저장 시 고정 문자열(pipeline_and_v414). 예전 레거시 값(whole 등)도 로드 시 파이프라인 체크로 마이그레이션됨.
   screener_mode: "whole"
-  # 스크리너(랭킹) CLI·YAML: 변동성 지표는 atr14(14일 ATR/종가 %)로 엔진 고정 — 아래 키는 하위 호환만
+  # GUI v4.14: 검색 결과는 순차 AND — 시총 상위 컷(step1)·매수 규칙 터미널(step2)·김직선 1봉(step3)
+  screener_pipeline:
+    stage_mcap_top100: false    # 해당 시장 Marc 기준 상위 100종(키워드·유니버스와 교집합 후)
+    stage_buy_rules: false      # 종료일 종봉: 골든+진입 필터 AND
+    stage_kim_line_1bar: false  # 김직선 1봉 패턴(고가돌파·중심선지지)
+  # 스크리너(랭킹) CLI 배치 등: 변동성 지표는 atr14(14일 ATR/종가 %)로 엔진 고정 — 아래 키는 하위 호환만
   screener:
     enabled: false
     lookback_trading_days: 20
-    top_n: 30
+    top_n: 100
     volatility_metric: "atr14"
     combine: "sum_rank_pct"
     min_market_cap_krw: 300000000000   # 최소 시가총액(원), 예: 3000억=3e11. FDR 상장표 근사. ETF 시장은 무시됨.
@@ -31,9 +36,9 @@ universe:
 strategy:
   interval: "daily"       # daily = 일봉, weekly = 주봉 (또는 일봉/주봉)
   ma_period: 20          # 매매 시그널 이평: 5, 10, 20 중 권장 (GUI 라디오와 동일)
-  # v4.6 기본 크로스 스위치 (strategy.add_signals / simulate 데드 매도 실행)
-  golden_buy_enabled: true
-  dead_cross_sell_enabled: true
+  # v4.6 기본 크로스 스위치 (strategy.add_signals / simulate 데드 매도 실행). GUI 초기 선택은 모두 끔.
+  golden_buy_enabled: false
+  dead_cross_sell_enabled: false
   # 추세선 오버레이 (차트 PNG) — 체크한 기간만 표시 (매매 기준 N과 차트상 독립)
   show_trend_ma5: false
   show_trend_ma10: false
@@ -49,8 +54,8 @@ strategy:
   # v4.0 매수 진입 필터 (시뮬 엔진 simulate_single.entry_filters)
   filter_trend_slope: false
   slope_threshold: 0.01
-  filter_breakout_strength: true
-  filter_time_buffer: true
+  filter_breakout_strength: false
+  filter_time_buffer: false
   # v4.4 가변 고점 대비 낙폭 매도 (보유 중, 다음 봉 시가 청산)
   trailing_stop_enabled: false
   trailing_reference_pct: 10.0      # 피크 수익률 기준 %
