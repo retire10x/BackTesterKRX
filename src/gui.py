@@ -1,9 +1,9 @@
 """
 데스크톱 GUI (CustomTkinter).
-차트: output/backtest_report.png → CTkImage (매매 규칙 패널 + 차트; 추세 이평 범례는 PNG 내장).
+차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측은 Row0·1(weight=0) 규칙·플레이어, Row2(weight=1) 차트 행.`chart_overlay_host`는 pack(`fill=both`,`expand`). 차트 PNG는 호스트 픽셀(fw,fh)에 **비율 무시 `.resize`(LANCZOS)** 로 맞춤.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)` 로 그리드 할당 면적을 유지(v4.9). 차트는 **정적 PNG**(`FigureCanvasTkAgg` 미사용) — mpl `figsize`/DPI 는 GUI가 넘기는 `chart_render_px` 와 동기, 표시는 호스트 실측(fw,fh)·**지연 리페인트**로 초기 클립 방지.
 """
 from __future__ import annotations
 
@@ -140,10 +140,6 @@ CHART_IMG_INNER_MARGIN_Y = 40
 CHART_IMG_MIN_FW = 300
 CHART_IMG_MIN_FH = 200
 
-# 레이아웃 직후 winfo=0 등일 때 contain 추정 크기 (노트북 저해상도 대응)
-CHART_IMG_FALLBACK_W = 800
-CHART_IMG_FALLBACK_H = 500
-
 # 최근 실행 종목 이력: 메모리·디스크 모두 최대 이 개수 (FIFO)
 BACKTEST_HISTORY_MAX = 30
 BACKTEST_HISTORY_FILE = os.path.join("output", "backtest_history.json")
@@ -160,7 +156,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.8")
+        self.title("BackTesterKRX v4.9")
 
         self._apply_initial_window_geometry()
 
@@ -174,7 +170,7 @@ class BacktestGUI(ctk.CTk):
         self._last_run_listing_market: str | None = None
         self._chart_ohlcv_cache_df = None  # 타입: pd.DataFrame | None
         self._chart_ohlcv_cache_code = ""
-        self._img_ref: ctk.CTkImage | None = None
+        self._img_flat_ref: ImageTk.PhotoImage | None = None
         self._last_chart_path: str | None = None
         self._chart_resize_after_id: str | None = None
         self._shift_auto_run_after_id: str | None = None
@@ -188,7 +184,6 @@ class BacktestGUI(ctk.CTk):
         self.var_show_candle = ctk.BooleanVar(value=True)
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_show_return_overlay = ctk.BooleanVar(value=True)
-        self.var_chart_scroll = ctk.BooleanVar(value=False)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.18")
         self.var_cash = ctk.StringVar(value="5000000")
@@ -432,8 +427,10 @@ class BacktestGUI(ctk.CTk):
         self.var_trailing_drop_above_pct = ctk.StringVar(value="5.0")
 
         right = ctk.CTkFrame(self, corner_radius=10)
+        self._right_panel = right
         right.grid(row=0, column=1, sticky="nsew", padx=(4, 8), pady=(8, 8))
-        right.grid_propagate(True)
+        # True 면 자식 요구 최소 높이만큼만 커져 Row2(weight=1) 차트행이 실제 화면에서 압축·클립됨
+        right.grid_propagate(False)
         # Row0·1: 규칙·플레이어 — 세로 확장(weight=0)으로 고정 높이만 차지 → 남은 공간 전부 차트행으로.
         right.grid_rowconfigure(0, weight=0)
         right.grid_rowconfigure(1, weight=0)
@@ -849,19 +846,6 @@ class BacktestGUI(ctk.CTk):
         )
         self.lbl_current_period.pack(side="left", padx=(18, 6))
 
-        self.cb_chart_scroll = ctk.CTkCheckBox(
-            btn_container,
-            text="스크롤",
-            variable=self.var_chart_scroll,
-            font=gui_body_font(),
-            width=38,
-            checkbox_width=14,
-            checkbox_height=14,
-            command=lambda: None,
-        )
-        self.cb_chart_scroll.pack(side="right", padx=(8, 2), pady=0)
-        HoverTooltip(self.cb_chart_scroll, "차트 미리보기에 가로·세로 스크롤 표시 (잘린 축 레이블 확인용)")
-
         self.cb_return_overlay = ctk.CTkCheckBox(
             btn_container,
             text="수익률",
@@ -884,26 +868,19 @@ class BacktestGUI(ctk.CTk):
         )
         self.chart_overlay_host.pack(fill="both", expand=True, padx=5, pady=5)
 
-        self.chart_scroll_outer = ctk.CTkFrame(
-            self.chart_overlay_host, fg_color="transparent"
-        )
-        # 스크롤 모드 전용 (tk.Canvas+Scrollbar); 초기에는 pack 하지 않음
-        self._chart_scroll_canvas: tk.Canvas | None = None
-        self._img_tk_scroll_ref: ImageTk.PhotoImage | None = None
-        self._chart_scroll_wheel_bound = False
-
         self.chart_plain_frame = ctk.CTkFrame(
             self.chart_overlay_host, fg_color="transparent"
         )
         self.chart_plain_frame.pack(fill="both", expand=True)
 
-        self.lbl_chart = ctk.CTkLabel(
+        _flat_bg = "#2b2b2b" if ctk.get_appearance_mode() == "Dark" else "#e8ecef"
+        self._chart_flat_canvas = tk.Canvas(
             self.chart_plain_frame,
-            text="백테스트 실행 후 차트가 표시됩니다.",
-            fg_color="transparent",
-            font=gui_body_font(),
+            highlightthickness=0,
+            bd=0,
+            bg=_flat_bg,
         )
-        self.lbl_chart.pack(fill="both", expand=True)
+        self._chart_flat_canvas.pack(fill="both", expand=True)
 
         self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
@@ -935,10 +912,6 @@ class BacktestGUI(ctk.CTk):
         self.var_show_return_overlay.trace_add(
             "write",
             lambda *_: self.after(0, self._on_rules_refresh_chart),
-        )
-        self.var_chart_scroll.trace_add(
-            "write",
-            lambda *_: self.after(0, self._on_chart_scroll_toggle),
         )
 
         self.lbl_status = ctk.CTkLabel(
@@ -974,87 +947,45 @@ class BacktestGUI(ctk.CTk):
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
+        self._chart_flat_show_message("백테스트 실행 후 차트가 표시됩니다.")
         self.protocol("WM_DELETE_WINDOW", self._on_user_close)
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
         """우측 매매 규칙 패널(읽기 전용 텍스트) - 제거됨."""
         pass
 
-    def _on_chart_scroll_toggle(self, *_args: object) -> None:
-        """차트 스크롤 모드 전환 시 레이아웃 갱신 후 이미지 재배치."""
-        self._sync_chart_display_mode(use_scroll=bool(self.var_chart_scroll.get()))
-        pth = getattr(self, "_last_chart_path", None)
-        if pth and os.path.isfile(pth):
-            self.after(75, lambda q=pth: self._update_chart_image(q))
+    def _chart_canvas_bg_plain(self) -> str:
+        """차트 배경색(테마와 맞춤)."""
+        return "#2b2b2b" if ctk.get_appearance_mode() == "Dark" else "#e8ecef"
 
-    def _ensure_chart_scroll_widgets(self) -> None:
-        """tk Canvas + 가로·세로 스크롤바(차트 이미지 확대 표시용)."""
-        if self._chart_scroll_canvas is not None:
+    def _chart_flat_show_message(self, message: str) -> None:
+        """PNG 없을 때·오류 메시지 — CTkImage 없이 순수 tk.Canvas 텍스트."""
+        self._img_flat_ref = None
+        c = getattr(self, "_chart_flat_canvas", None)
+        if c is None:
             return
-        dark = ctk.get_appearance_mode() == "Dark"
-        bg = "#2b2b2b" if dark else "#e8ecef"
-        so = self.chart_scroll_outer
-        cvs = tk.Canvas(so, highlightthickness=0, bd=0, bg=bg)
-        vsb = tk.Scrollbar(so, orient=tk.VERTICAL, command=cvs.yview)
-        hsb = tk.Scrollbar(so, orient=tk.HORIZONTAL, command=cvs.xview)
-        cvs.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        cvs.grid(row=0, column=0, sticky="nsew")
-        vsb.grid(row=0, column=1, sticky="ns")
-        hsb.grid(row=1, column=0, sticky="ew")
-        so.grid_rowconfigure(0, weight=1)
-        so.grid_columnconfigure(0, weight=1)
-
-        def _wheel(e: tk.Event) -> None:
-            if getattr(e, "delta", 0):
-                cvs.yview_scroll(int(-e.delta / 120), "units")
-
-        cvs.bind("<MouseWheel>", _wheel)
-
-        self._chart_scroll_canvas = cvs
-        self._chart_scroll_vsb = vsb
-        self._chart_scroll_hsb = hsb
-
-    def _sync_chart_display_mode(self, *, use_scroll: bool) -> None:
-        """스크롤 ON: Canvas+스크롤바. OFF: CTkLabel 플랫(기본)."""
-        if use_scroll:
-            self._ensure_chart_scroll_widgets()
-            try:
-                self.chart_plain_frame.pack_forget()
-            except tk.TclError:
-                pass
-            try:
-                self.lbl_chart.pack_forget()
-            except tk.TclError:
-                pass
-            self.chart_scroll_outer.pack(fill="both", expand=True)
-        else:
-            try:
-                self.chart_scroll_outer.pack_forget()
-            except tk.TclError:
-                pass
-            self.chart_plain_frame.pack(fill="both", expand=True)
-            try:
-                self.lbl_chart.pack(fill="both", expand=True)
-            except tk.TclError:
-                pass
-
-    def _chart_image_size_for_scroll_mode(
-        self,
-        pil_w: int,
-        pil_h: int,
-    ) -> tuple[int, int]:
-        """뷰포트보다 약간 크게 스케일 — 잘림 검사·스크롤 이동 가능."""
-        vw, vh = self._chart_overlay_host_inner_pixel_size()
-        vw = max(vw, CHART_IMG_MIN_FW)
-        vh = max(vh, CHART_IMG_MIN_FH)
-        cov_w = vw / max(1, pil_w)
-        cov_h = vh / max(1, pil_h)
-        scale = max(cov_w, cov_h, 1.0) * 1.12
-        pad_w = max(64, vw // 14)
-        pad_h = max(64, vh // 14)
-        tw = max(int(round(pil_w * scale)), vw + pad_w)
-        th = max(int(round(pil_h * scale)), vh + pad_h)
-        return tw, th
+        try:
+            c.delete("all")
+            c.configure(bg=self._chart_canvas_bg_plain())
+            self.chart_overlay_host.update_idletasks()
+            c.update_idletasks()
+            w = max(160, int(c.winfo_width()))
+            h = max(100, int(c.winfo_height()))
+        except tk.TclError:
+            return
+        fill = "#d0d0d0" if ctk.get_appearance_mode() == "Dark" else "#333333"
+        try:
+            c.create_text(
+                w // 2,
+                h // 2,
+                text=str(message),
+                justify=tk.CENTER,
+                font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+                fill=fill,
+                width=max(120, w - 48),
+            )
+        except tk.TclError:
+            pass
 
     def _apply_initial_window_geometry(self) -> None:
         """
@@ -1102,6 +1033,90 @@ class BacktestGUI(ctk.CTk):
             self.after_cancel(self._chart_resize_after_id)
         self._chart_resize_after_id = self.after(75, self._deferred_repaint_chart)
 
+    def _raw_chart_overlay_measured_size(self) -> tuple[int, int]:
+        """chart_overlay_host 패딩 반영 전 논리 크기. winfo 미결정 시 차트 프레임·우패널에서 추정."""
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+
+        ow = oh = 0
+        try:
+            ow = int(self.chart_overlay_host.winfo_width())
+            oh = int(self.chart_overlay_host.winfo_height())
+        except tk.TclError:
+            pass
+        if ow > 16 and oh > 16:
+            return ow, oh
+
+        try:
+            cw = int(self.chart_frame.winfo_width())
+            ch = int(self.chart_frame.winfo_height())
+            if cw > 24 and ch > 28:
+                return max(ow, cw - 10), max(oh, ch - 10)
+        except tk.TclError:
+            pass
+
+        cp = self._chart_configure_px
+        if cp and cp[0] > 20 and cp[1] > 20:
+            return int(cp[0]), int(cp[1])
+
+        try:
+            rw = int(self._right_panel.winfo_width())
+            rh = int(self._right_panel.winfo_height())
+            if rw > 64 and rh > 110:
+                reserved = min(max(220, int(rh * 0.40)), 560)
+                est_h = max(CHART_IMG_MIN_FH, rh - reserved)
+                est_w = max(CHART_IMG_MIN_FW, rw - 24)
+                return est_w, est_h
+        except (tk.TclError, AttributeError):
+            pass
+
+        try:
+            ww = int(self.winfo_width())
+            wh = int(self.winfo_height())
+            est_w = max(CHART_IMG_MIN_FW, ww - FIXED_LEFT_W - 72)
+            est_h = max(CHART_IMG_MIN_FH, wh - 380)
+            if est_w > 80 and est_h > 80:
+                return est_w, est_h
+        except tk.TclError:
+            pass
+
+        try:
+            sw = int(self.winfo_screenwidth())
+            sh = int(self.winfo_screenheight())
+            return (
+                max(CHART_IMG_MIN_FW, int(sw * 0.44)),
+                max(CHART_IMG_MIN_FH, int(sh * 0.36)),
+            )
+        except tk.TclError:
+            return (CHART_IMG_MIN_FW * 2, int(CHART_IMG_MIN_FH * 1.5))
+
+    def _defer_chart_image_paint(self, image_path: str | None, attempt: int = 0) -> None:
+        """초기 레이아웃에서 winfo 미수령 시에도 실측 후 리페인트."""
+        if not image_path or not os.path.isfile(image_path):
+            self._update_chart_image(image_path)
+            return
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+
+        ow, oh = self._raw_chart_overlay_measured_size()
+
+        tiny = ow < 90 or oh < 90
+        if tiny and attempt < 14:
+            self.after(42, lambda: self._defer_chart_image_paint(image_path, attempt + 1))
+            return
+        self._update_chart_image(image_path)
+
+    def _chart_render_targets_for_engine(self) -> tuple[int, int] | None:
+        """백테스트 워커에 전달할 PNG 타깃 픽셀(메인 스레드에서만)."""
+        try:
+            return self._chart_overlay_host_inner_pixel_size()
+        except tk.TclError:
+            return None
+
     def _deferred_repaint_chart(self) -> None:
         self._chart_resize_after_id = None
         if self._last_chart_path:
@@ -1109,24 +1124,12 @@ class BacktestGUI(ctk.CTk):
 
     def _chart_overlay_host_inner_pixel_size(self) -> tuple[int, int]:
         """
-        chart_overlay_host 실측 픽셀에서 마진 차감한 타깃 (프레임 100% 맞춤 resize용).
+        chart_overlay_host 실측 픽셀에서 마진 차감한 타깃 (프레임 맞춤 resize·PNG 동기 기준).
 
         호출 전 `_update_chart_image` 에서 메인 레이아웃용 `update_idletasks` 가 선행된다.
         """
-        try:
-            self.chart_overlay_host.update_idletasks()
-        except tk.TclError:
-            pass
-        measured_width = int(self.chart_overlay_host.winfo_width())
-        measured_height = int(self.chart_overlay_host.winfo_height())
-        if measured_width <= 10 or measured_height <= 10:
-            cp = self._chart_configure_px
-            if cp and cp[0] > 16 and cp[1] > 16:
-                measured_width, measured_height = cp
+        measured_width, measured_height = self._raw_chart_overlay_measured_size()
 
-        if measured_width <= 10 or measured_height <= 10:
-            measured_width = CHART_IMG_FALLBACK_W
-            measured_height = CHART_IMG_FALLBACK_H
         fw = max(
             CHART_IMG_MIN_FW, measured_width - CHART_IMG_INNER_MARGIN_X
         )
@@ -1136,24 +1139,14 @@ class BacktestGUI(ctk.CTk):
         return fw, fh
 
     def _update_chart_image(self, image_path: str | None) -> None:
-        """엔진 PNG 표시. 기본: 프레임 맞춤 resize. 스크롤 모드: 확대 + Canvas+스크롤바."""
+        """엔진 PNG 표시 — tk.Canvas(CTk 라벨 클립 없음)."""
         if not image_path or not os.path.isfile(image_path):
             self._last_chart_path = None
-            self._img_ref = None
-            self._img_tk_scroll_ref = None
-            if self._chart_scroll_canvas is not None:
-                try:
-                    self._chart_scroll_canvas.delete("all")
-                except tk.TclError:
-                    pass
-            self._sync_chart_display_mode(use_scroll=False)
-            self.lbl_chart.configure(
-                image=None, text="그래프 파일을 찾을 수 없습니다."
-            )
+            self._img_flat_ref = None
+            self._chart_flat_show_message("그래프 파일을 찾을 수 없습니다.")
             return
 
         self._last_chart_path = image_path
-        use_scroll = bool(self.var_chart_scroll.get())
         try:
             try:
                 self.update_idletasks()
@@ -1162,55 +1155,25 @@ class BacktestGUI(ctk.CTk):
             except tk.TclError:
                 pass
 
-            self._sync_chart_display_mode(use_scroll=use_scroll)
-
             fw, fh = self._chart_overlay_host_inner_pixel_size()
             if fw <= 0 or fh <= 0:
                 return
 
             with Image.open(image_path) as pil_img:
                 rgb = pil_img.convert("RGB")
-                pil_w, pil_h = pil_img.size
-                if use_scroll:
-                    tw, th = self._chart_image_size_for_scroll_mode(pil_w, pil_h)
-                    resized = rgb.resize((tw, th), Image.Resampling.LANCZOS)
-                    self._img_ref = None
-                    self._img_tk_scroll_ref = ImageTk.PhotoImage(resized)
-                    cvs = self._chart_scroll_canvas
-                    if cvs is None:
-                        return
-                    cvs.delete("all")
-                    cvs.create_image(
-                        0,
-                        0,
-                        anchor=tk.NW,
-                        image=self._img_tk_scroll_ref,
-                    )
-                    bbox = cvs.bbox("all")
-                    if bbox:
-                        cvs.configure(scrollregion=bbox)
-                    cvs.xview_moveto(0)
-                    cvs.yview_moveto(0)
-                    self.lbl_chart.configure(image=None, text="")
-                else:
-                    self._img_tk_scroll_ref = None
-                    if self._chart_scroll_canvas is not None:
-                        try:
-                            self._chart_scroll_canvas.delete("all")
-                        except tk.TclError:
-                            pass
-                    resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
-                    self._img_ref = ctk.CTkImage(
-                        light_image=resized,
-                        dark_image=resized,
-                        size=(fw, fh),
-                    )
-                    self.lbl_chart.configure(image=self._img_ref, text="")
+                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(resized)
+                self._img_flat_ref = photo
+                cvs_f = self._chart_flat_canvas
+                try:
+                    cvs_f.configure(bg=self._chart_canvas_bg_plain())
+                    cvs_f.delete("all")
+                    cvs_f.create_image(0, 0, anchor=tk.NW, image=photo)
+                except tk.TclError:
+                    pass
         except Exception as e:
-            self._img_ref = None
-            self._img_tk_scroll_ref = None
-            self._sync_chart_display_mode(use_scroll=False)
-            self.lbl_chart.configure(image=None, text=f"이미지 로드 실패: {e}")
+            self._img_flat_ref = None
+            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
 
     def _set_summary(self, text: str):
         self.text_summary.configure(state="normal")
@@ -1465,6 +1428,12 @@ class BacktestGUI(ctk.CTk):
             pass
         self.lbl_status.configure(text="백테스트 계산 중…")
 
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        chart_px = self._chart_render_targets_for_engine()
+
         def work():
             try:
                 preload = None
@@ -1524,6 +1493,7 @@ class BacktestGUI(ctk.CTk):
                 res = run_backtest_detailed(
                     cfg,
                     ohlcv_preloaded_daily=preload if preload is not None else None,
+                    chart_render_px=chart_px,
                 )
                 self.after(0, lambda r=res: self._finish_run(r))
             except Exception as e:
@@ -1553,10 +1523,9 @@ class BacktestGUI(ctk.CTk):
         self,
         code: str,
         *,
-        name_for_keyword: str = "",
-        set_keyword_if_name: bool = False,
         listing_market_override: str | None = None,
         silent_try_build: bool = False,
+        search_keyword_override: str | None = None,
     ) -> None:
         """
         검색 결과 더블클릭·「백테스트 실행」·이력 라우팅 공통 진입점.
@@ -1565,13 +1534,12 @@ class BacktestGUI(ctk.CTk):
         cdf = str(code or "").strip().zfill(6)
         if not cdf or cdf == "000000":
             return
-        if set_keyword_if_name and str(name_for_keyword or "").strip():
-            self.var_keyword.set(str(name_for_keyword).strip())
         cfg = try_build_config(
             self,
             silent=silent_try_build,
             selected_code_override=cdf,
             market_override=listing_market_override,
+            search_keyword_override=search_keyword_override,
         )
         if cfg is None:
             return
@@ -1591,9 +1559,10 @@ class BacktestGUI(ctk.CTk):
                 raw = self.list_codes.get(cs[0])
             except (tk.TclError, IndexError):
                 raw = ""
-            cd, nm = self._split_codes_list_line(str(raw))
+            cd, _nm = self._split_codes_list_line(str(raw))
             self._run_single_with_code(
-                cd, name_for_keyword=nm, set_keyword_if_name=bool(nm.strip())
+                cd,
+                search_keyword_override="",
             )
             return
 
@@ -1607,19 +1576,16 @@ class BacktestGUI(ctk.CTk):
             except (TypeError, ValueError, IndexError):
                 idx_h = -1
             if 0 <= idx_h < len(self._history_deque):
-                c_h, n_h, _mh, k_h = history_row_normalize(
+                c_h, _n_h, _mh, k_h = history_row_normalize(
                     list(self._history_deque)[idx_h]
                 )
                 mv = normalize_krx_listing_market(k_h)
                 self.var_market.set(mv if mv is not None else k_h)
-                if n_h and str(n_h).strip():
-                    self.var_keyword.set(str(n_h).strip())
                 self._run_single_with_code(
                     c_h,
-                    name_for_keyword=n_h or "",
-                    set_keyword_if_name=False,
                     listing_market_override=k_h,
                     silent_try_build=True,
+                    search_keyword_override="",
                 )
             return
 
@@ -1807,10 +1773,8 @@ class BacktestGUI(ctk.CTk):
             raw = self.list_codes.get(sel[0])
         except (tk.TclError, IndexError):
             return
-        cd, nm = self._split_codes_list_line(str(raw))
-        self._run_single_with_code(
-            cd, name_for_keyword=nm, set_keyword_if_name=bool(nm.strip())
-        )
+        cd, _nm = self._split_codes_list_line(str(raw))
+        self._run_single_with_code(cd, search_keyword_override="")
 
     def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
         sel = self.list_history.curselection()
@@ -1822,21 +1786,18 @@ class BacktestGUI(ctk.CTk):
             return
         if not (0 <= idx_h < len(self._history_deque)):
             return
-        cd, nm, _mc, mk = history_row_normalize(list(self._history_deque)[idx_h])
+        cd, _nm_hist, _mc, mk = history_row_normalize(list(self._history_deque)[idx_h])
         if not cd:
             return
         # UI 동기화: 이력에 기록된 상장 시장·종목명을 메인 폼에 반영
         k_h = mk
         mv = normalize_krx_listing_market(mk)
         self.var_market.set(mv if mv is not None else k_h)
-        if nm and str(nm).strip():
-            self.var_keyword.set(str(nm).strip())
         self._run_single_with_code(
             cd,
-            name_for_keyword=nm or "",
-            set_keyword_if_name=False,
             listing_market_override=k_h,
             silent_try_build=True,
+            search_keyword_override="",
         )
 
     def _search_screen_universe_params(self) -> dict[str, object] | None:
@@ -2105,8 +2066,8 @@ class BacktestGUI(ctk.CTk):
             pass
         if not res.ok:
             self._last_chart_path = None
-            self._img_ref = None
-            self.lbl_chart.configure(image=None, text=res.error or "오류")
+            self._img_flat_ref = None
+            self._chart_flat_show_message(res.error or "오류")
             self._set_summary(res.error or "알 수 없는 오류")
             self.lbl_status.configure(text="오류로 종료됨.")
             messagebox.showerror("백테스트 실패", res.error or "알 수 없는 오류")
@@ -2141,7 +2102,7 @@ class BacktestGUI(ctk.CTk):
         )
 
         self.update_idletasks()
-        self._update_chart_image(res.report_path)
+        self.after_idle(lambda p=res.report_path: self._defer_chart_image_paint(p))
         self._update_period_label()
         if res.trade_markers_skipped > 0:
             self.lbl_status.configure(

@@ -1,10 +1,13 @@
 """
 정적 백테스트 리포트 차트 (matplotlib Agg · mplfinance 멀티패널).
 GUI 비의존. metrics.run_backtest_detailed 가 조립한 인자로 Figure·PNG 를 만든다.
+v4.9: `figsize`·저장 DPI·`layout_preset`(report/gui_target) 선택 — GUI 패널 픽셀에 맞춘 렌더.
 v4.6: 패널 세로 레이블(Price·Volume 등) 숨김 후 거래량 패널은 좌상단 뱃지로 표시.
 v4.7: 누적수익률 독립 하단 패널 제거. 옵션으로 가격 패널 twinx 배경 음영 오버레이만 지원.
 """
 from __future__ import annotations
+
+import math
 
 import matplotlib
 
@@ -58,8 +61,42 @@ def _chart_rc_params() -> dict:
     }
 
 
-def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
-    """보고서 PNG: tight_layout → subplots_adjust → 무인자 autofmt_xdate 로 라벨·가장자리 clipping 완화."""
+# CLI/report 기준 캔버스(평균 디스플레이·고해상도 PNG 재샘플용)
+DEFAULT_CLI_FIGSIZE_IN = (12.0, 7.0)
+DEFAULT_CLI_SAVE_DPI = 300
+
+
+def _scaled_rc_for_figure_inches(fig_w_in: float, fig_h_in: float) -> dict:
+    """표준 12×7 대비 축 비율에 맞춰 폰트·틱 크기 소폭 스케일(저해상도 gui_target 과대/과소 글자 완충)."""
+    ref_w, ref_h = DEFAULT_CLI_FIGSIZE_IN
+    area_ratio = max(1e-6, (fig_w_in * fig_h_in) / (ref_w * ref_h))
+    sf = math.sqrt(area_ratio)
+    sf = max(0.70, min(1.07, sf))
+    fsz = max(7.5, min(11.25, 9.25 * sf))
+    return {
+        **_chart_rc_params(),
+        "font.size": fsz,
+        "axes.titlesize": max(10.0, fsz + 2.25),
+        "axes.labelsize": fsz,
+        "xtick.labelsize": max(7.85, fsz - 1.0),
+        "ytick.labelsize": max(7.85, fsz - 1.0),
+        "legend.fontsize": max(7.5, fsz - 1.05),
+    }
+
+
+def save_figure_as_png(
+    fig: Figure,
+    out_path: str,
+    dpi: int = DEFAULT_CLI_SAVE_DPI,
+    *,
+    layout_preset: str = "report",
+) -> None:
+    """
+    layout_preset:
+      - ``report``: 기존 고해상도 보고서용 여백(기본 DPI 300 등).
+      - ``gui_target``: GUI 패널 폭에 대응한 좁폭 레이아웃(좌우·하단 라벨 클립 완화).
+    bbox_inches='tight' 는 mplfinance 패널에서 잘림을 유발할 수 있어 figure bbox 기준 저장을 유지.
+    """
     dn = os.path.dirname(out_path)
     if dn:
         os.makedirs(dn, exist_ok=True)
@@ -74,16 +111,25 @@ def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
         except Exception:
             pass
         try:
-            fig.subplots_adjust(
-                left=0.05, right=0.92, top=0.93, bottom=0.12, hspace=0.34
-            )
+            if layout_preset == "gui_target":
+                dual_ret = bool(getattr(fig, "_btkrx_return_dual_y", False))
+                fig.subplots_adjust(
+                    left=0.07,
+                    right=0.82 if dual_ret else 0.90,
+                    top=0.91,
+                    bottom=0.15,
+                    hspace=0.38,
+                )
+            else:
+                fig.subplots_adjust(
+                    left=0.05, right=0.92, top=0.93, bottom=0.12, hspace=0.34
+                )
         except Exception:
             pass
         try:
             fig.autofmt_xdate()
         except Exception:
             pass
-    # bbox_inches='tight' 는 본 레이아웃을 덮어 잘림을 유발할 수 있어 figure bbox 기준 저장
     fig.savefig(out_path, dpi=dpi)
 
 
@@ -401,7 +447,7 @@ def _draw_cumulative_return_overlay(
     ohlc_index: pd.DatetimeIndex,
     ret_series: pd.Series,
 ) -> None:
-    """메인 가격 패널 뒤편(zorder 낮춤): 누적 수익률(%) 0선 대비 fill_between, twinx 우측 Y는 비표시."""
+    """가격 패널 twinx: 누적 수익률 배경(fill) + 우측 Y축 눈금·레이블(%). 저장 시 우측 여백 확보용 플래그 설정."""
     if ax_price is None:
         return
     n = len(ohlc_index)
@@ -413,9 +459,16 @@ def _draw_cumulative_return_overlay(
 
     ax_ov = ax_price.twinx()
     ax_ov.patch.set_visible(False)
-    ax_ov.tick_params(axis="y", length=0, labelleft=False, labelright=False, left=False, right=False)
-    for spine in ax_ov.spines.values():
-        spine.set_visible(False)
+    for side, sp in ax_ov.spines.items():
+        sp.set_visible(side == "right")
+    try:
+        sp_r = ax_ov.spines["right"]
+        sp_r.set_linewidth(0.8)
+        sp_r.set_alpha(0.55)
+        sp_r.set_color("#6a89b5")
+    except Exception:
+        pass
+    clr = "#3d6dad"
     ymin_d = float(np.nanmin(y)) if y.size else 0.0
     ymax_d = float(np.nanmax(y)) if y.size else 0.0
     span = ymax_d - ymin_d if np.isfinite(ymax_d - ymin_d) else 0.0
@@ -425,6 +478,35 @@ def _draw_cumulative_return_overlay(
     if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
         lo, hi = -1.0, 1.0
     ax_ov.set_ylim(lo, hi)
+
+    lbl_fs = float(matplotlib.rcParams.get("axes.labelsize", 9.0))
+    ax_ov.tick_params(
+        axis="y",
+        which="major",
+        labelleft=False,
+        labelright=True,
+        left=False,
+        right=True,
+        length=3,
+        pad=2,
+        labelsize=max(7.35, lbl_fs - 1.05),
+        colors=clr,
+        labelcolor=clr,
+    )
+    ax_ov.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5, prune=None))
+    ax_ov.yaxis.set_major_formatter(
+        mticker.FuncFormatter(lambda val, _: f"{val:.1f}")
+    )
+    ax_ov.yaxis.set_label_position("right")
+    ax_ov.set_ylabel(
+        "누적 수익률 (%)",
+        fontsize=max(8.35, lbl_fs * 0.93),
+        color=clr,
+        labelpad=8,
+        rotation=270,
+        va="center",
+    )
+
     ax_ov.fill_between(
         x,
         0.0,
@@ -435,6 +517,11 @@ def _draw_cumulative_return_overlay(
         zorder=-6,
         clip_on=False,
     )
+
+    try:
+        setattr(ax_price.figure, "_btkrx_return_dual_y", True)
+    except Exception:
+        pass
 
 
 def _autoscale_price_panel_y_with_trends(
@@ -518,12 +605,17 @@ def make_backtest_figure(
     show_candle: bool = True,
     show_volume: bool = True,
     show_return_overlay: bool = False,
+    figsize: tuple[float, float] | None = None,
 ) -> Figure:
     """가격(OHLC)·선택 거래량 2패널 mplfinance 렌더. 누적 수익률 독립 패널 없음; 옵션 시 가격 패널 음영."""
     import matplotlib.pyplot as plt
     import mplfinance as mpf
 
-    chart_rc = _chart_rc_params()
+    inch_w, inch_h = figsize if figsize is not None else DEFAULT_CLI_FIGSIZE_IN
+    if figsize is None:
+        chart_rc = _chart_rc_params()
+    else:
+        chart_rc = _scaled_rc_for_figure_inches(inch_w, inch_h)
     plt.rcParams.update(chart_rc)
     buys = [t for t in trades if t["side"] == "BUY"]
     sells = [t for t in trades if t["side"] == "SELL"]
@@ -567,7 +659,7 @@ def make_backtest_figure(
         volume=show_volume,
         panel_ratios=panel_ratios,
         returnfig=True,
-        figsize=(12, 7.0),
+        figsize=(inch_w, inch_h),
         title=title,
         tight_layout=False,
         scale_padding=1.04,
@@ -613,6 +705,9 @@ def save_backtest_report_png(
     show_candle: bool = True,
     show_volume: bool = True,
     show_return_overlay: bool = False,
+    figsize: tuple[float, float] | None = None,
+    save_dpi: int = DEFAULT_CLI_SAVE_DPI,
+    layout_preset: str = "report",
 ) -> None:
     fig = make_backtest_figure(
         sim,
@@ -625,5 +720,6 @@ def save_backtest_report_png(
         show_candle=show_candle,
         show_volume=show_volume,
         show_return_overlay=show_return_overlay,
+        figsize=figsize,
     )
-    save_figure_as_png(fig, out_path)
+    save_figure_as_png(fig, out_path, dpi=save_dpi, layout_preset=layout_preset)

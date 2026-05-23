@@ -18,15 +18,20 @@
 - [x] 스크리너 시총(상장표 Marcap)·MA20/120 추세 하드 게이트, 차트 패닝 일봉 캐시, Harness 매수 세 조건 동시 적용 YAML 옵션
 - [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈·검색/이력/날짜 컴팩트 배치·매수·매도 **동일 행 2열** 카드 내 필터 **2단 행**·**규칙 헤더 Refresh로 조건 반영 차트 재계산** (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
 - [x] **v4.7** 하단 독립 누적수익률 패널 제거(캔들+거래량 2단)·좌패널 **최고/최저 누적 수익률**·GUI **주가 패널 수익률 음영** 토글(`show_return_overlay`)·저장 후 `plt.close(fig)` (`backtest_chart.py`, `metrics.py`, `gui.py`, `gui_helpers.py`)
-- [x] **v4.8** 이력 **시장/시총 GUI와 독립**·`history.json` v3·이력 재실행 `silent_try_build`+`market_override`·패닝/Refresh **`_last_run_listing_market`**·네비 줄 **[ ] 수익률** 슬림
+- [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-05-23 (반응형 차트 패널 v4.9)
+- **`gui.py`:** 우패널 `grid_propagate(False)` 로 Row2(weight=1) 차트 높이가 규칙 패널의 요구 높이에만 종속되지 않도록 교정 `_raw_chart_overlay_measured_size` 로 픽셀 다단 추정 `_defer_chart_image_paint` 로 초기 한 번 재리페인트 백테스트 시작 직전 `chart_render_px` 를 `run_backtest_detailed(..., chart_render_px=...)`.
+- **`metrics.py`:** `chart_render_px` / `chart_render_dpi`(기본 100) 시 mpl 인치=`px`/dpi 저장 `layout_preset=gui_target`. 미지정이면 기존 12×7 inch 및 300 DPI.
+- **`backtest_chart.py`:** 선택 `figsize`·인치별 폰트 RC 스케일 `save_figure_as_png(..., layout_preset=report|gui_target)`.
+
 ### 2026-05-23 (차트 네비 v4.8·이력 독립)
-- **`gui.py`:** 차트 ⏪~기간 줄 **우측**에 **[ ] 수익률** 체크(툴팁 유지)·별도 행 제거. 최근 실행 이력 **4컬럼**(시장 포함)·메인 시장 드롭다운 변경과 **무관한 시총 표시**(행별 상장 시장으로 FDR 표 조회)·`backtest_history.json` **version 3**. 이력 더블클릭/`silent_try_build`+`market_override`로 목록 검증 우회 후 **종목폼 동기화**·패닝/Refresh 시 **`_last_run_listing_market`** 사용.
+- **`gui.py`:** 차트 ⏪~기간 줄 **우측**에 **[ ] 수익률** 체크(툴팁 유지)·별도 행 제거. 최근 실행 이력 **4컬럼**(시장 포함)·메인 시장 드롭다운 변경과 **무관한 시총 표시**(행별 상장 시장으로 FDR 표 조회)·`backtest_history.json` **version 3**. 이력 더블클릭/`silent_try_build`+`market_override`로 목록 검증 우회 후 **종목폼 동기화**·패닝/Refresh 시 **`_last_run_listing_market`** 사용。
 - **`gui_helpers.try_build_config`:** `market_override`; `period_nav` 시 마지막 성공 실행 시장 우선(`_last_run_listing_market`).
-- **`metrics`:** 교차 시장 **종목명 조회 폴백**·목록 불일치 시 **OHLCV 로드 허용** 시 코드를 표시명으로 사용·`normalize_krx_listing_market`로 `universe.market` 정규화.
-- **`data_loader.normalize_krx_listing_market`**·**`load_ohlcv` 주석**(티커 로드 시장 무관)·**`simulator` 헤더** 보강.
+- **`metrics`:** 교차 시장 **종목명 조회 폴백**·목록 불일치 시 **OHLCV 로드 허용** 시 코드를 표시명으로 사용·`normalize_krx_listing_market`로 `universe.market` 정규화。
+- **`data_loader.normalize_krx_listing_market`**·**`load_ohlcv` 주석**(티커 로드 시장 무관)·**`simulator` 헤더** 보강。
 
 ### 2026-05-23 (차트 v4.7 — 3층 패널 제거·텍스트 고저 수익률·음영 오버레이)
 - **`backtest_chart.py`:** mplfinance 패널 **가격+거래량**만 유지(`6:2`·단일 패널). 하단 독립 **누적 수익률 패널** 삭제. `show_return_overlay` 시 **`twinx` + `fill_between`**(#56b4e9, alpha 0.1, zorder 후면).

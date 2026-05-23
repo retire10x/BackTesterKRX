@@ -5,6 +5,7 @@
 v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
 v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
+v4.9: GUI 선택 시 `chart_render_px` 로 mpl `figsize`/저장 DPI 동기 — `backtest_chart` 의 `gui_target` 레이아웃 프리셋;
 v4.6: 매매 규칙 분리(`golden_buy_enabled`·`dead_cross_sell_enabled`) — 매수 후보 필터 AND·매도 트레일/데크 OR(strategy·simulator);
 v4.5: 차트 내 `ax.legend` 범례 매립·GUI 외부 범례 제거;
 v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.
@@ -19,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from .backtest_chart import (
+    DEFAULT_CLI_SAVE_DPI,
     make_backtest_figure,
     save_backtest_report_png,
     save_figure_as_png,
@@ -38,6 +40,9 @@ from .strategy import add_entry_filter_columns, add_signals
 
 # v4.0 매수 필터 사용 시 MA120·회귀 창 등 최소 봉 수 가드
 MIN_BARS_FOR_ENTRY_FILTERS = 130
+
+# GUI 가 `chart_render_px` 를 넘길 때 mpl Figure 인치 = px / dpi (v4.9)
+GUI_CHART_RENDER_DPI_DEFAULT = 100
 
 
 def strategy_entry_filters_from_cfg(st: dict) -> dict[str, bool | float]:
@@ -158,6 +163,8 @@ def run_backtest_detailed(
     *,
     ohlcv_preloaded_daily: pd.DataFrame | None = None,
     omit_report_artifacts: bool = False,
+    chart_render_px: tuple[int, int] | None = None,
+    chart_render_dpi: int | None = None,
 ) -> BacktestResult:
     """설정 dict 기준 전체 백테스트. GUI·CLI 공용."""
     lines: list[str] = []
@@ -172,7 +179,6 @@ def run_backtest_detailed(
         if not str(end or "").strip():
             end = e_d.strftime("%Y-%m-%d")
     uni = cfg.get("universe", {})
-    keyword = uni.get("search_keyword", "") or ""
     market_key = normalize_krx_listing_market(uni.get("market", "KOSPI")) or "KOSPI"
     selected = (override_code or uni.get("selected_code") or "").strip().zfill(6)
 
@@ -201,30 +207,27 @@ def run_backtest_detailed(
             lines,
         )
 
-    candidates_kw = fetch_filtered_universe(market_key, keyword)
-    if selected in candidates_kw:
-        name = candidates_kw[selected]
+    # 이름 표시만 필요하므로 검색어 필터 없이 상장표 1회 조회(search_keyword 무시).
+    universe_all = fetch_filtered_universe(market_key, "")
+    if selected in universe_all:
+        name = universe_all[selected]
     else:
-        universe_all = fetch_filtered_universe(market_key, "")
-        if selected not in universe_all:
-            name = _listing_display_name_resolve(selected, market_key)
-            if name is None:
-                warm_probe = ohlcv_warm_start_date(str(start), interval=interval)
-                probe = load_ohlcv(selected, warm_probe, str(end))
-                if probe is None or probe.empty:
-                    return BacktestResult(
-                        False,
-                        (
-                            f"코드 {selected} 은(는) 시장 '{market_key}' 상장 목록에서 찾지 못했으며, "
-                            "가격 데이터도 로드하지 못했습니다. 종목 코드·거래 가능 여부를 확인하세요."
-                        ),
-                        [],
-                        None,
-                        lines,
-                    )
-                name = str(selected).zfill(6)
-        else:
-            name = universe_all[selected]
+        name = _listing_display_name_resolve(selected, market_key)
+        if name is None:
+            warm_probe = ohlcv_warm_start_date(str(start), interval=interval)
+            probe = load_ohlcv(selected, warm_probe, str(end))
+            if probe is None or probe.empty:
+                return BacktestResult(
+                    False,
+                    (
+                        f"코드 {selected} 은(는) 시장 '{market_key}' 상장 목록에서 찾지 못했으며, "
+                        "가격 데이터도 로드하지 못했습니다. 종목 코드·거래 가능 여부를 확인하세요."
+                    ),
+                    [],
+                    None,
+                    lines,
+                )
+            name = str(selected).zfill(6)
     bar_label = "주봉" if interval == "weekly" else "일봉"
     bars_per_year = 52.0 if interval == "weekly" else 252.0
 
@@ -443,6 +446,24 @@ def run_backtest_detailed(
     )
 
     out_png = os.path.join("output", "backtest_report.png")
+
+    dpi_save = DEFAULT_CLI_SAVE_DPI
+    figsize_inch: tuple[float, float] | None = None
+    layout_preset = "report"
+
+    if chart_render_px is not None:
+        gx, gy = int(chart_render_px[0]), int(chart_render_px[1])
+        gx = max(320, gx)
+        gy = max(200, gy)
+        dpi_save = int(chart_render_dpi) if chart_render_dpi is not None else GUI_CHART_RENDER_DPI_DEFAULT
+        dpi_save = max(72, min(dpi_save, 300))
+        iw = max(4.0, gx / float(dpi_save))
+        ih = max(2.85, gy / float(dpi_save))
+        figsize_inch = (iw, ih)
+        layout_preset = "gui_target"
+    else:
+        dpi_save = DEFAULT_CLI_SAVE_DPI
+
     fig = make_backtest_figure(
         sim,
         trades,
@@ -454,6 +475,7 @@ def run_backtest_detailed(
         show_candle=show_chart_candle,
         show_volume=show_chart_volume,
         show_return_overlay=show_return_overlay,
+        figsize=figsize_inch,
     )
     trade_markers_skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
     if trade_markers_skipped > 0:
@@ -462,7 +484,7 @@ def run_backtest_detailed(
             "체결일·차트 구간·타임존·normalize 를 재점검하세요."
         )
 
-    save_figure_as_png(fig, out_png)
+    save_figure_as_png(fig, out_png, dpi=dpi_save, layout_preset=layout_preset)
     plt.close(fig)
 
     # 디버그 검증 로그 생성 (backtest_signal_debug.txt)

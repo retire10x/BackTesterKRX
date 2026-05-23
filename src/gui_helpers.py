@@ -447,8 +447,6 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_show_volume.set(bool(st["show_chart_volume"]))
     if "show_return_overlay" in st and hasattr(ui, "var_show_return_overlay"):
         ui.var_show_return_overlay.set(bool(st["show_return_overlay"]))
-    if "show_chart_scroll" in st and hasattr(ui, "var_chart_scroll"):
-        ui.var_chart_scroll.set(bool(st["show_chart_scroll"]))
     if "golden_buy_enabled" in st:
         ui.var_golden_buy.set(bool(st["golden_buy_enabled"]))
     if "dead_cross_sell_enabled" in st:
@@ -537,10 +535,14 @@ def try_build_config(
     selected_code_override: str | None = None,
     period_nav: bool = False,
     market_override: str | None = None,
+    search_keyword_override: str | None = None,
 ) -> dict | None:
     base = load_config()
     cfg = copy.deepcopy(base)
-    kw = ui.var_keyword.get().strip()
+    if search_keyword_override is not None:
+        kw = str(search_keyword_override).strip()
+    else:
+        kw = ui.var_keyword.get().strip()
     m_gui = ui.var_market.get().strip().upper() or "KOSPI"
     if m_gui not in ("KOSPI", "KOSDAQ", "ETF"):
         m_gui = "KOSPI"
@@ -713,11 +715,8 @@ def try_build_config(
     cfg.setdefault("strategy", {})["show_return_overlay"] = bool(
         ui.var_show_return_overlay.get()
     )
-    if hasattr(ui, "var_chart_scroll"):
-        cfg.setdefault("strategy", {})["show_chart_scroll"] = bool(
-            ui.var_chart_scroll.get()
-        )
     cfg.get("strategy", {}).pop("show_chart_return", None)
+    cfg.get("strategy", {}).pop("show_chart_scroll", None)
 
     cfg.setdefault("strategy", {})["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
     cfg.setdefault("strategy", {})["dead_cross_sell_enabled"] = bool(
