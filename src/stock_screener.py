@@ -35,6 +35,10 @@ from .strategy import add_entry_filter_columns, add_signals
 _SCR_FETCH_CALENDAR_DAYS = 400
 # 당일 타점 추적 스크린: 종료일 기준 역대 최근 '신호 상태' 전환(골든+진입 필터) 이후 거래일 수
 ENTRY_EVENT_RECENT_TD = 3
+# 김직선식 1봉 패턴(v4.13): 장대양봉 최소 몸통 비율(종가-시가)/시가, 거래량 윈도우
+KIM_1BAR_BODY_MIN_RATIO = 0.07
+KIM_1BAR_VOL_WINDOW = 20
+KIM_1BAR_MIN_BARS = 21  # 20일 거래량 max 판별에 t-1, 당일 t 필요
 
 SCREEN_MA_LOOKBACK = 120  # 종가 < MA120 역배열 종목 스크린 랭킹 단계 제외
 SCREEN_MA20_WINDOW = 20
@@ -168,6 +172,18 @@ class EntryEventTrackPick:
     combined_score: float = 0.0
     market_cap_krw: float | None = None
 
+
+@dataclass(frozen=True)
+class KimLineOneBarPick:
+    """v4.13: 전일 장대양봉(몸통≥7%·20일 최대 거래량) + 당일 고가돌파 또는 중심선 지지."""
+
+    code: str
+    name: str
+    pattern_label: str
+    base_bar_turnover_krw: float
+    spread_from_ref_line_pct: float
+    combined_score: float = 0.0
+    market_cap_krw: float | None = None
 
 def default_screener_config() -> dict:
     """settings.yaml 우선 병합용 기본 블록."""
@@ -788,6 +804,211 @@ def screen_universe_entry_event(
         key=lambda e: (
             e.signal_age_trading_days,
             abs(float(e.spread_from_signal_close_pct)),
+            str(e.code),
+        )
+    )
+    return out[:cap]
+
+
+def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, float] | None:
+    """
+    유튜버 김직선식 일봉 1봉 후속 패턴(종료일=t, 전일=t-1).
+
+    기준봉 t-1: 양봉, 몸통 (종가-시가)/시가 ≥ 7%, 거래량이 그날 포함 최근 20거래일 중 최대.
+    당일 t: 패턴1 종가 > 전일 고가 / 패턴2 저가≥전일 몸통 중심선·당일 양봉. 둘 다면 고가돌파 우선.
+
+    `z` 는 `_slice_ohlcv_through_end_calendar` 등으로 이미 정제된 OHLCV(과거→현재)를 기대한다.
+
+    반환: (패턴명, 전일 거래대금 원, 종가 기준선 대비 변동률 %).
+    차트: 엔진 매수 ▲ 는 이평 골든 기준이라 본 패턴과 무관 — 어제·오늘 캔들은 목록 종료일 두 봉으로 육안 확인.
+    """
+    if z is None or z.empty or not _OHLCV_COLS_REQ.issubset(set(z.columns)):
+        return None
+    pz = z
+    n = len(pz)
+    if n < KIM_1BAR_MIN_BARS:
+        return None
+
+    o = pd.to_numeric(pz["Open"], errors="coerce").to_numpy(dtype=np.float64)
+    h = pd.to_numeric(pz["High"], errors="coerce").to_numpy(dtype=np.float64)
+    l = pd.to_numeric(pz["Low"], errors="coerce").to_numpy(dtype=np.float64)
+    c = pd.to_numeric(pz["Close"], errors="coerce").to_numpy(dtype=np.float64)
+    v = pd.to_numeric(pz["Volume"], errors="coerce").to_numpy(dtype=np.float64)
+
+    i_tm1 = n - 2
+    i_t = n - 1
+
+    o1, h1, c1, v1 = o[i_tm1], h[i_tm1], c[i_tm1], v[i_tm1]
+    o0, l0, c0 = o[i_t], l[i_t], c[i_t]
+
+    if not (
+        np.isfinite(o1)
+        and np.isfinite(h1)
+        and np.isfinite(c1)
+        and np.isfinite(v1)
+        and np.isfinite(o0)
+        and np.isfinite(l0)
+        and np.isfinite(c0)
+    ):
+        return None
+    if o1 <= 0 or o0 <= 0:
+        return None
+    if c1 <= o1:
+        return None
+    body_ratio = (c1 - o1) / o1
+    if body_ratio < KIM_1BAR_BODY_MIN_RATIO:
+        return None
+
+    lo = i_tm1 - (KIM_1BAR_VOL_WINDOW - 1)
+    if lo < 0:
+        return None
+    win_v = v[lo : i_tm1 + 1]
+    if not np.all(np.isfinite(win_v)):
+        return None
+    max_v = float(np.max(win_v))
+    if max_v <= 0 or not np.isfinite(max_v):
+        return None
+    tol_v = max(max_v * 1e-9, 1.0)
+    if v1 + tol_v < max_v:
+        return None
+
+    h_prev = float(h[i_tm1])
+    center = 0.5 * (o1 + c1)
+    if not np.isfinite(h_prev) or not np.isfinite(center) or center <= 0:
+        return None
+
+    pat1 = c0 > h_prev
+    pat2 = (l0 >= center - max(abs(center) * 1e-12, 1e-9)) and (c0 > o0)
+
+    if pat1:
+        label = "고가돌파"
+        ref = h_prev
+    elif pat2:
+        label = "중심선지지"
+        ref = center
+    else:
+        return None
+
+    if ref <= 0 or not np.isfinite(c0):
+        return None
+    spread_pct = 100.0 * (float(c0) / ref - 1.0)
+    turnover = float(v1) * float(c1)
+    if not np.isfinite(turnover) or turnover <= 0:
+        return None
+    return label, turnover, spread_pct
+
+
+def _load_one_kim_line_one_bar(
+    pair: tuple[str, str],
+    *,
+    fetch_start: str,
+    end_date: str,
+    marcap_krw_map: dict[str, float] | None,
+    min_market_cap_krw: float,
+) -> KimLineOneBarPick | None:
+    code, name = pair
+    cdf = code.strip().zfill(6)
+    mc_use: float | None = None
+    if marcap_krw_map is not None and min_market_cap_krw > 0:
+        mr = marcap_krw_map.get(cdf)
+        if mr is None or not np.isfinite(float(mr)) or float(mr) < float(
+            min_market_cap_krw
+        ):
+            return None
+        mc_use = float(mr)
+
+    df = load_ohlcv(code, fetch_start, end_date)
+    if df is None or df.empty:
+        return None
+
+    zw = _slice_ohlcv_through_end_calendar(df, end_date_str=str(end_date).strip()[:10])
+    if zw is None or zw.empty:
+        return None
+
+    hit = _evaluate_kim_line_one_bar_pattern(zw)
+    if hit is None:
+        return None
+    label, turnover, spr = hit
+    pat_rank = 0.0 if label == "고가돌파" else 1.0
+    return KimLineOneBarPick(
+        code=cdf,
+        name=str(name),
+        pattern_label=label,
+        base_bar_turnover_krw=turnover,
+        spread_from_ref_line_pct=spr,
+        combined_score=-pat_rank,
+        market_cap_krw=mc_use,
+    )
+
+
+def screen_universe_kim_line_one_bar(
+    *,
+    market: str,
+    keyword: str,
+    end_date: str,
+    top_n: int,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    max_workers: int = MAX_SCREEN_WORKERS,
+    min_market_cap_krw: float | None = None,
+) -> list[KimLineOneBarPick]:
+    """
+    v4.13 독립 파이프라인: 장대양봉+당일 1봉 패턴만 필터(지표·랭킹 융합 없음, 벡터화 소량 연산).
+    """
+    cand = fetch_filtered_universe(market, keyword or "")
+    if not cand:
+        return []
+
+    mc_raw = (
+        SCREEN_MIN_MARKET_CAP_KRW_DEFAULT
+        if min_market_cap_krw is None
+        else float(min_market_cap_krw)
+    )
+    mkt_upper = str(market).strip().upper()
+    if mkt_upper == "ETF":
+        marcap_krw_map = None
+        min_mc_eff = 0.0
+    elif mc_raw > 0:
+        marcap_krw_map = fetch_listing_market_cap_krw_by_code(market)
+        marcap_krw_map = marcap_krw_map or {}
+        min_mc_eff = mc_raw
+    else:
+        marcap_krw_map = None
+        min_mc_eff = 0.0
+
+    fetch_start = _screen_fetch_start(end_date)
+    items = sorted(cand.items(), key=lambda x: x[0])
+    total = len(items)
+    out: list[KimLineOneBarPick] = []
+    done = 0
+
+    def _one(p: tuple[str, str]) -> KimLineOneBarPick | None:
+        return _load_one_kim_line_one_bar(
+            p,
+            fetch_start=fetch_start,
+            end_date=str(end_date),
+            marcap_krw_map=marcap_krw_map,
+            min_market_cap_krw=min_mc_eff,
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 12))) as ex:
+        futures = {ex.submit(_one, pair): pair[0] for pair in items}
+        for fut in as_completed(futures):
+            done += 1
+            c = futures[fut]
+            if progress_cb is not None:
+                progress_cb(done, total, c)
+            try:
+                hit = fut.result()
+            except Exception:
+                hit = None
+            if hit is not None:
+                out.append(hit)
+
+    cap = max(1, min(200, int(top_n)))
+    out.sort(
+        key=lambda e: (
+            0 if e.pattern_label == "고가돌파" else 1,
+            -float(e.base_bar_turnover_krw),
             str(e.code),
         )
     )

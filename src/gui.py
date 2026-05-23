@@ -40,6 +40,7 @@ from src.data_loader import (
 from src.gui_helpers import (
     GUI_SCREENER_MODE_BREAKOUT,
     GUI_SCREENER_MODE_ENTRY_EVENT,
+    GUI_SCREENER_MODE_KIM_LINE_1BAR,
     GUI_SCREENER_MODE_MCAP_TOP,
     GUI_SCREENER_MODE_SCREENER,
     GUI_SCREENER_MODE_WHOLE,
@@ -47,6 +48,7 @@ from src.gui_helpers import (
     apply_yaml_to_widgets,
     date_entry_theme_kw,
     format_gui_list_entry_event,
+    format_gui_list_kim_candle,
     format_gui_list_hist,
     format_gui_list_triple,
     gui_body_font,
@@ -67,12 +69,14 @@ from src.metrics import (
 )
 from src.stock_screener import (
     EntryEventTrackPick,
+    KimLineOneBarPick,
     RankedUniversePick,
     ScreenerEntry,
     default_screener_config,
     screen_universe,
     screen_universe_breakout_energy,
     screen_universe_entry_event,
+    screen_universe_kim_line_one_bar,
     screen_universe_mcap_top,
 )
 
@@ -87,6 +91,15 @@ def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
         return (c, n, float(-item.signal_age_trading_days))
+    if isinstance(item, KimLineOneBarPick):
+        c = str(item.code).strip().zfill(6)
+        n = str(item.name).strip()
+        tier = 0.0 if item.pattern_label == "고가돌파" else 1.0
+        return (
+            c,
+            n,
+            float(-tier * 1e15 - float(item.base_bar_turnover_krw)),
+        )
     if isinstance(item, RankedUniversePick):
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
@@ -169,7 +182,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.12_Beta")
+        self.title("BackTesterKRX v4.13")
 
         self._apply_initial_window_geometry()
 
@@ -273,6 +286,7 @@ class BacktestGUI(ctk.CTk):
             ("시총 상위 필터", GUI_SCREENER_MODE_MCAP_TOP),
             ("돌파 에너지 계산", GUI_SCREENER_MODE_BREAKOUT),
             ("당일 타점(Event) 추적", GUI_SCREENER_MODE_ENTRY_EVENT),
+            ("김직선 1봉 캔들 추적", GUI_SCREENER_MODE_KIM_LINE_1BAR),
         ]
         for txt, mid in radios:
             ctk.CTkRadioButton(
@@ -1306,7 +1320,7 @@ class BacktestGUI(ctk.CTk):
     ) -> None:
         """
         스크리너·자동 스캔 결과를 리스트박스에 반영(티커 | 종목명 | 시총 —
-        「당일 타점(Event) 추적」 선택 시 신호경과일·타점이격도 2컬럼 추가).
+        「당일 타점(Event) 추적」「김직선 1봉」 선택 시 전용 확장 컬럼 포함).
         """
         try:
             self.list_codes.delete(0, tk.END)
@@ -1339,6 +1353,7 @@ class BacktestGUI(ctk.CTk):
         except Exception:
             gui_sm_evt = ""
         row_event_cols = gui_sm_evt == GUI_SCREENER_MODE_ENTRY_EVENT
+        row_kim_cols = gui_sm_evt == GUI_SCREENER_MODE_KIM_LINE_1BAR
 
         packed: list[tuple[object, str, str, str, float, float | None]] = []
         for item in final_top_n_list:
@@ -1367,6 +1382,15 @@ class BacktestGUI(ctk.CTk):
                     signal_age_td=item.signal_age_trading_days,
                     spread_pct=item.spread_from_signal_close_pct,
                 )
+            elif row_kim_cols and isinstance(item, KimLineOneBarPick):
+                line = format_gui_list_kim_candle(
+                    code,
+                    name,
+                    mc,
+                    pattern_label=item.pattern_label,
+                    base_turnover_krw=item.base_bar_turnover_krw,
+                    spread_pct=item.spread_from_ref_line_pct,
+                )
             else:
                 line = format_gui_list_triple(code, name, mc)
             packed.append((item, line, code, name, float(sc), mc))
@@ -1376,6 +1400,14 @@ class BacktestGUI(ctk.CTk):
                 key=lambda z: (
                     z[0].signal_age_trading_days,
                     abs(z[0].spread_from_signal_close_pct),
+                    z[2],
+                )
+            )
+        elif row_kim_cols:
+            packed.sort(
+                key=lambda z: (
+                    0 if z[0].pattern_label == "고가돌파" else 1,
+                    -float(z[0].base_bar_turnover_krw),
                     z[2],
                 )
             )
@@ -2023,6 +2055,7 @@ class BacktestGUI(ctk.CTk):
                 GUI_SCREENER_MODE_MCAP_TOP,
                 GUI_SCREENER_MODE_BREAKOUT,
                 GUI_SCREENER_MODE_ENTRY_EVENT,
+                GUI_SCREENER_MODE_KIM_LINE_1BAR,
             )
             else GUI_SCREENER_MODE_WHOLE
         )
@@ -2171,6 +2204,20 @@ class BacktestGUI(ctk.CTk):
                     min_market_cap_krw=float(p["min_market_cap_krw"]),
                 )
                 picks = et_list
+            elif mode == GUI_SCREENER_MODE_KIM_LINE_1BAR:
+                if screener_params is None:
+                    raise ValueError(
+                        "김직선 1봉 캔들: 종료일·설정을 읽지 못했습니다."
+                    )
+                p = screener_params
+                picks = screen_universe_kim_line_one_bar(
+                    market=market,
+                    keyword=keyword,
+                    end_date=str(p["end_date"]),
+                    top_n=int(p["top_n"]),
+                    progress_cb=None,
+                    min_market_cap_krw=float(p["min_market_cap_krw"]),
+                )
             else:
                 picks = []
 

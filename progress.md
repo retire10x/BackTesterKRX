@@ -22,8 +22,15 @@
 - [x] **v4.11** 차트 교체 시 캔버스 `PhotoImage` 스왑(`itemconfig`)·PNG 생성 대기 중 이전 이미지 유지·차트 툴바 Braille 로딩·연타 시 materialize 티켓 필터 (`gui.py`)
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 - [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
+- [x] **v4.13** 스크리너 「김직선 1봉 캔들 추적」: 장대양봉+20일 최대 거래량 기준봉 후 당일 고가돌파/중심선지지(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-23 (김직선 1봉 캔들 스크리너 v4.13)
+- **`stock_screener.py`:** `screen_universe_kim_line_one_bar`·`_evaluate_kim_line_one_bar_pattern`·`KimLineOneBarPick`(고가돌파/중심선지지·기준봉 거래대금·기준선 대비 이격도).
+- **`gui_helpers.py`:** `GUI_SCREENER_MODE_KIM_LINE_1BAR`·`format_gui_list_kim_candle`.
+- **`gui.py`:** 라디오·검색 워커·확장 컬럼·정렬. 창 제목 v4.13.
+- **`config/settings.yaml`:** `screener_mode` 주석에 `kim_line_1bar`.
 
 ### 2026-05-23 (스크리너 당일 타점 추적 v4.12_Beta)
 - **`stock_screener.py`:** 독립 함수 `screen_universe_entry_event`(기존 랭킹 루틴 비침범)·`EntryEventTrackPick`(신호 경과일·종가대비 이격도·시총). 엔진 `metrics.strategy_entry_filters_from_cfg` / `simulate._buy_filters_pass` 재사용.

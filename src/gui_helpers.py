@@ -33,6 +33,8 @@ GUI_SCREENER_MODE_MCAP_TOP = "mcap_top30"
 GUI_SCREENER_MODE_BREAKOUT = "breakout_energy"
 # v4.12_Beta: 매수 규칙(골든+진입 필터) 전환일 추적 스크린
 GUI_SCREENER_MODE_ENTRY_EVENT = "entry_event_track"
+# v4.13 김직선식 일봉 1봉 패턴 스크린
+GUI_SCREENER_MODE_KIM_LINE_1BAR = "kim_line_1bar"
 
 VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
     {
@@ -41,6 +43,7 @@ VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
         GUI_SCREENER_MODE_MCAP_TOP,
         GUI_SCREENER_MODE_BREAKOUT,
         GUI_SCREENER_MODE_ENTRY_EVENT,
+        GUI_SCREENER_MODE_KIM_LINE_1BAR,
     }
 )
 
@@ -144,6 +147,29 @@ def format_gui_list_entry_event(
     age_s = "당일" if signal_age_td == 0 else str(int(signal_age_td))
     spread_s = f"{float(spread_pct):+.2f}%"
     return f"{base} | {age_s} | {spread_s}"
+
+
+def format_gui_list_kim_candle(
+    code: str,
+    name: str,
+    market_cap_krw: float | None,
+    *,
+    pattern_label: str,
+    base_turnover_krw: float,
+    spread_pct: float,
+) -> str:
+    """김직선 1봉 캔들 모드 — 티커|종목명|시총 + 패턴 + 기준봉 거래대금(억) + 타점 이격도(%)."""
+    base = format_gui_list_triple(code, name, market_cap_krw)
+    try:
+        tv = float(base_turnover_krw)
+        if not np.isfinite(tv) or tv <= 0:
+            tv_disp = "N/A"
+        else:
+            tv_disp = f"{int(round(tv / 1e8)):,d} 억"
+    except (TypeError, ValueError):
+        tv_disp = "N/A"
+    spread_s = f"{float(spread_pct):+.2f}%"
+    return f"{base} | {pattern_label} | {tv_disp} | {spread_s}"
 
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
