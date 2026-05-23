@@ -3,7 +3,7 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 엔진에서 시뮬·지표를 먼저 마치고(`defer_chart_render`) PNG는 별도 스레드의 `materialize_backtest_chart_png` 로 생성·표시.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다.
 """
 from __future__ import annotations
 
@@ -161,7 +161,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.10")
+        self.title("BackTesterKRX v4.11")
 
         self._apply_initial_window_geometry()
 
@@ -177,9 +177,16 @@ class BacktestGUI(ctk.CTk):
         self._chart_ohlcv_cache_code = ""
         self._img_flat_ref: ImageTk.PhotoImage | None = None
         self._last_chart_path: str | None = None
+        # v4.11: 캔버스 단일 image item — itemconfig 로 스왑해 선삭제 백색 플래시 방지
+        self._chart_canvas_image_item: int | None = None
         self._chart_resize_after_id: str | None = None
         self._shift_auto_run_after_id: str | None = None
         self._chart_configure_px: tuple[int, int] | None = None
+        # 백그라운드 materialize 가장 최신 요청만 화면에 반영(연타 대비)
+        self._chart_materialize_ticket: int = 0
+        self._chart_spinner_after_id: str | None = None
+        self._chart_spinner_active: bool = False
+        self._chart_spinner_idx: int = 0
 
         self.var_interval = ctk.StringVar(value="daily")
         self.var_ma_period = ctk.StringVar(value="20")
@@ -851,6 +858,15 @@ class BacktestGUI(ctk.CTk):
         )
         self.lbl_current_period.pack(side="left", padx=(18, 6))
 
+        self.lbl_chart_loading = ctk.CTkLabel(
+            inner_btns,
+            text="",
+            width=18,
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 2),
+            text_color=("gray40", "gray60"),
+        )
+        self.lbl_chart_loading.pack(side="left", padx=(4, 0))
+
         self.cb_return_overlay = ctk.CTkCheckBox(
             btn_container,
             text="수익률",
@@ -963,9 +979,47 @@ class BacktestGUI(ctk.CTk):
         """차트 배경색(테마와 맞춤)."""
         return "#2b2b2b" if ctk.get_appearance_mode() == "Dark" else "#e8ecef"
 
+    def _start_chart_loading_spinner(self) -> None:
+        """차트 패널 인접 라벨 — 백그라운드 렌더 중 조용히 표시(v4.11)."""
+        aid = getattr(self, "_chart_spinner_after_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+            self._chart_spinner_after_id = None
+        self._chart_spinner_active = True
+        self._pulse_chart_loading_spinner()
+
+    def _pulse_chart_loading_spinner(self) -> None:
+        if not self._chart_spinner_active:
+            return
+        glyphs = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        self._chart_spinner_idx = (self._chart_spinner_idx + 1) % len(glyphs)
+        try:
+            self.lbl_chart_loading.configure(text=glyphs[self._chart_spinner_idx])
+        except tk.TclError:
+            return
+        self._chart_spinner_after_id = self.after(100, self._pulse_chart_loading_spinner)
+
+    def _stop_chart_loading_spinner(self) -> None:
+        self._chart_spinner_active = False
+        aid = getattr(self, "_chart_spinner_after_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+            self._chart_spinner_after_id = None
+        try:
+            self.lbl_chart_loading.configure(text="")
+        except tk.TclError:
+            pass
+
     def _chart_flat_show_message(self, message: str) -> None:
         """PNG 없을 때·오류 메시지 — CTkImage 없이 순수 tk.Canvas 텍스트."""
         self._img_flat_ref = None
+        self._chart_canvas_image_item = None
         c = getattr(self, "_chart_flat_canvas", None)
         if c is None:
             return
@@ -1144,14 +1198,14 @@ class BacktestGUI(ctk.CTk):
         return fw, fh
 
     def _update_chart_image(self, image_path: str | None) -> None:
-        """엔진 PNG 표시 — tk.Canvas(CTk 라벨 클립 없음)."""
+        """엔진 PNG 표시 — tk.Canvas. v4.11: 같은 image item 에 itemconfig 스왑(선 delete 금지)."""
         if not image_path or not os.path.isfile(image_path):
             self._last_chart_path = None
+            self._chart_canvas_image_item = None
             self._img_flat_ref = None
             self._chart_flat_show_message("그래프 파일을 찾을 수 없습니다.")
             return
 
-        self._last_chart_path = image_path
         try:
             try:
                 self.update_idletasks()
@@ -1168,15 +1222,35 @@ class BacktestGUI(ctk.CTk):
                 rgb = pil_img.convert("RGB")
                 resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
                 photo = ImageTk.PhotoImage(resized)
-                self._img_flat_ref = photo
                 cvs_f = self._chart_flat_canvas
+
+                swapped = False
+                item_existing = getattr(self, "_chart_canvas_image_item", None)
+                if item_existing is not None:
+                    try:
+                        cvs_f.itemconfigure(item_existing, image=photo)
+                        swapped = True
+                    except tk.TclError:
+                        self._chart_canvas_image_item = None
+
                 try:
                     cvs_f.configure(bg=self._chart_canvas_bg_plain())
-                    cvs_f.delete("all")
-                    cvs_f.create_image(0, 0, anchor=tk.NW, image=photo)
+                    if not swapped:
+                        try:
+                            cvs_f.delete("all")
+                        except tk.TclError:
+                            pass
+                        self._chart_canvas_image_item = cvs_f.create_image(
+                            0, 0, anchor=tk.NW, image=photo, tags=("chart_main",)
+                        )
                 except tk.TclError:
-                    pass
+                    return
+
+                self._img_flat_ref = photo
+                self._last_chart_path = image_path
         except Exception as e:
+            self._last_chart_path = None
+            self._chart_canvas_image_item = None
             self._img_flat_ref = None
             self._chart_flat_show_message(f"이미지 로드 실패: {e}")
 
@@ -2081,6 +2155,7 @@ class BacktestGUI(ctk.CTk):
         if not res.ok:
             self._last_chart_path = None
             self._img_flat_ref = None
+            self._chart_canvas_image_item = None
             self._chart_flat_show_message(res.error or "오류")
             self._set_summary(res.error or "알 수 없는 오류")
             self.lbl_status.configure(text="오류로 종료됨.")
@@ -2124,12 +2199,13 @@ class BacktestGUI(ctk.CTk):
             self.lbl_status.configure(
                 text="백테스트 완료 — 차트 PNG 생성 중…",
             )
-            self._chart_flat_show_message(
-                "백테스트 요약은 상단 패널에 반영되었습니다.\n차트 이미지를 생성하는 중입니다…"
-            )
+            self._chart_materialize_ticket += 1
+            ticket = self._chart_materialize_ticket
+            self._start_chart_loading_spinner()
 
             replay_copy = dict(res.replay_chart)
             px = deferred_chart_px
+            tk_snap = ticket
 
             def _chart_paint_task() -> None:
                 try:
@@ -2140,14 +2216,17 @@ class BacktestGUI(ctk.CTk):
                     )
                     self.after(
                         0,
-                        lambda p=outp, sk=skipped: self._apply_materialized_chart(
-                            p, sk
-                        ),
+                        lambda p=outp,
+                        sk=skipped,
+                        tt=tk_snap: self._materialized_chart_dispatch(tt, p, sk),
                     )
                 except Exception as chart_ex:
+                    em = str(chart_ex)
                     self.after(
                         0,
-                        lambda m=str(chart_ex): self._chart_materialize_failed(m),
+                        lambda tt=tk_snap, mm=em: self._chart_materialize_failed_for_ticket(
+                            tt, mm
+                        ),
                     )
 
             threading.Thread(target=_chart_paint_task, daemon=True).start()
@@ -2156,10 +2235,28 @@ class BacktestGUI(ctk.CTk):
             self.after_idle(lambda p=res.report_path: self._defer_chart_image_paint(p))
             self._finalize_run_status_stripes(res.trade_markers_skipped)
 
+    def _materialized_chart_dispatch(
+        self,
+        ticket: int,
+        report_path: str | None,
+        trade_markers_skipped: int,
+    ) -> None:
+        """가장 마지막에 요청한 materialize 결과만 차트를 갱신(연타 안전)."""
+        if ticket != self._chart_materialize_ticket:
+            return
+        self._stop_chart_loading_spinner()
+        self._apply_materialized_chart(report_path, trade_markers_skipped)
+
+    def _chart_materialize_failed_for_ticket(self, ticket: int, msg: str) -> None:
+        if ticket != self._chart_materialize_ticket:
+            return
+        self._stop_chart_loading_spinner()
+        self._chart_materialize_failed(msg)
+
     def _apply_materialized_chart(
         self, report_path: str | None, trade_markers_skipped: int
     ) -> None:
-        """v4.10 연기 차트 후처리(메인 스레드)."""
+        """v4.10 연기 차트 후처리(메인 스레드); 스피너 정지는 dispatch 에서 처리."""
         self.update_idletasks()
         self.after_idle(lambda p=report_path: self._defer_chart_image_paint(p))
         self._finalize_run_status_stripes(trade_markers_skipped)

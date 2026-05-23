@@ -19,6 +19,7 @@
 - [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈·검색/이력/날짜 컴팩트 배치·매수·매도 **동일 행 2열** 카드 내 필터 **2단 행**·**규칙 헤더 Refresh로 조건 반영 차트 재계산** (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
 - [x] **v4.7** 하단 독립 누적수익률 패널 제거(캔들+거래량 2단)·좌패널 **최고/최저 누적 수익률**·GUI **주가 패널 수익률 음영** 토글(`show_return_overlay`)·저장 후 `plt.close(fig)` (`backtest_chart.py`, `metrics.py`, `gui.py`, `gui_helpers.py`)
 - [x] **v4.10** 백테스트 고속 경로: `data_loader` 상장표 TTL·OHLCV LRU, `metrics.defer_chart_render` + `materialize_backtest_chart_png` 로 통계/차트 분리(GUI), `simulator` ndarray 루프, 수익률 오버레이 기본 OFF (`gui.py`·`metrics.py`·`data_loader.py`·`simulator.py`)
+- [x] **v4.11** 차트 교체 시 캔버스 `PhotoImage` 스왑(`itemconfig`)·PNG 생성 대기 중 이전 이미지 유지·차트 툴바 Braille 로딩·연타 시 materialize 티켓 필터 (`gui.py`)
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
@@ -30,6 +31,9 @@
 - **`gui.py`:** 창 제목 v4.10, 수익률 체크 기본 OFF, 백테스트 워커는 defer 후 메인에서 캡처한 `chart_render_px` 로 차트 전용 스레드 PNG 생성.
 - **`config/settings.yaml`:** `show_return_overlay: false` 기본.
 - **`scripts/benchmark_backtest_v410.py`:** 동기 vs defer+materialize 초 단위 비교 출력.
+
+### 2026-05-23 (차트 더블버퍼·로딩 표시 v4.11)
+- **`gui.py`:** 창 제목 v4.11. `_update_chart_image` 는 단일 `canvas` image item 에 `itemconfigure` 로 비트맵 교체해 선삭제 백색 플래시 제거·첫 회·오류만 `delete('all')`. defer PNG 생성 대기 때 캔버스 플레이스홀더 메시지 제거(기존 차트 유지). 기간 줄 `lbl_chart_loading` Braille 애니 + `_chart_materialize_ticket` 디스패치로 오래된 백그라운드 결과 무시.
 
 ### 2026-05-23 (반응형 차트 패널 v4.9)
 - **`gui.py`:** 우패널 `grid_propagate(False)` 로 Row2(weight=1) 차트 높이가 규칙 패널의 요구 높이에만 종속되지 않도록 교정 `_raw_chart_overlay_measured_size` 로 픽셀 다단 추정 `_defer_chart_image_paint` 로 초기 한 번 재리페인트 백테스트 시작 직전 `chart_render_px` 를 `run_backtest_detailed(..., chart_render_px=...)`.
