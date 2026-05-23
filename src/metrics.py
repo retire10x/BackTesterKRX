@@ -6,6 +6,7 @@ v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼
 v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
 v4.9: GUI 선택 시 `chart_render_px` 로 mpl `figsize`/저장 DPI 동기 — `backtest_chart` 의 `gui_target` 레이아웃 프리셋;
+v4.10: `defer_chart_render` 로 시뮬·지표와 PNG 분리(GUI 고속)·FDR 호출 빈도는 `data_loader` 캐시와 병행;
 v4.6: 매매 규칙 분리(`golden_buy_enabled`·`dead_cross_sell_enabled`) — 매수 후보 필터 AND·매도 트레일/데크 OR(strategy·simulator);
 v4.5: 차트 내 `ax.legend` 범례 매립·GUI 외부 범례 제거;
 v3.5 타점 미매칭 알림·v3.4 날짜 엄격 매칭·v3.3 타점 스타일.
@@ -86,6 +87,7 @@ class BacktestResult:
     n_buy: int = 0
     n_sell: int = 0
     trade_markers_skipped: int = 0
+    chart_render_pending: bool = False
 
 
 def _listing_display_name_resolve(
@@ -156,6 +158,165 @@ def rolling_trend_ma_series(close: pd.Series, period: int) -> pd.Series:
     return close.rolling(period, min_periods=min_periods).mean()
 
 
+def _write_signal_debug_file(
+    *,
+    name: str,
+    selected: str,
+    trades: list,
+    sim: pd.DataFrame,
+    path: str = "backtest_signal_debug.txt",
+) -> None:
+    """매매 신호 vs 차트 마킹 검증 로그(CLI 동기 실행용). 연산량이 커 지연 차트 단계에서는 생략 가능."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("=====================================================\n")
+            f.write("[시뮬레이터 매매 신호 및 차트 마킹 동기화 검증 로그]\n")
+            f.write(f"종목: {name} ({selected})\n\n")
+
+            idx = sim.index
+            buy_idx = 0
+            sell_idx = 0
+
+            for t in trades:
+                side = t["side"]
+                if side == "BUY":
+                    buy_idx += 1
+                    label = f"매수 {buy_idx}번"
+                else:
+                    sell_idx += 1
+                    label = f"매도 {sell_idx}번"
+
+                trade_ts = pd.Timestamp(t["date"]).normalize()
+                idx_norm = idx.normalize()
+                pos = idx_norm.get_indexer([trade_ts], method=None)
+                if pos.size == 0 or int(pos[0]) < 0:
+                    continue
+                bi_exec = int(pos[0])
+                bi_signal = bi_exec - 1
+                if bi_signal < 0:
+                    continue
+
+                t_date_str = idx[bi_signal].strftime("%Y-%m-%d")
+                exec_date_str = idx[bi_exec].strftime("%Y-%m-%d")
+
+                op = float(sim["Open"].iloc[bi_signal])
+                cl = float(sim["Close"].iloc[bi_signal])
+                pct = (cl - op) / op if op > 0 else 0
+                if pct < -0.03:
+                    candle_desc = "장대음봉"
+                elif pct > 0.03:
+                    candle_desc = "장대양봉"
+                elif pct < 0:
+                    candle_desc = "음봉"
+                elif pct > 0:
+                    candle_desc = "양봉"
+                else:
+                    candle_desc = "도지"
+
+                marked_date = t.get("marked_date", exec_date_str)
+
+                error_suffix = ""
+                if marked_date != t_date_str:
+                    error_suffix = "   [오류: 인덱스 1칸 밀림 발생]"
+
+                f.write(f" [{label}]\n\n")
+                f.write(
+                    f"전략 판단 신호 발생일 (T일 종가): {t_date_str} ({candle_desc})\n\n"
+                )
+                f.write(f"실제 차트 마킹 적용일 (정상 위치): {t_date_str}\n\n")
+                f.write(
+                    f"현재 차트 플로팅 인덱스 날짜   : {marked_date}{error_suffix}\n\n"
+                )
+                f.write(f"실제 체결 집행일 (T+1일 시가)  : {exec_date_str}\n")
+                f.write("=====================================================\n\n")
+    except Exception as e:
+        import sys
+
+        print(f"[ERROR] 검증 로그 작성 실패: {e}", file=sys.stderr)
+
+
+def materialize_backtest_chart_png(
+    replay: dict,
+    *,
+    chart_render_px: tuple[int, int] | None = None,
+    chart_render_dpi: int | None = None,
+    out_path: str | None = None,
+    write_signal_debug_log: bool = False,
+) -> tuple[str | None, int]:
+    """
+    v4.10: 연기된 차트 재생(dict)만으로 mpl Figure·PNG 생성. 통계 재계산 없음.
+
+    replay 키: sim, trades, name, selected_code, bar_label, ma_n, ret_series,
+    full_close, trend_flags, show_chart_candle, show_chart_volume, show_return_overlay
+    """
+    sim = replay["sim"]
+    trades = replay["trades"]
+    name = str(replay["name"])
+    selected = str(replay.get("selected_code") or "")
+    bar_label = str(replay["bar_label"])
+    ma_n = int(replay["ma_n"])
+    ret_series = replay["ret_series"]
+    full_close = replay["full_close"]
+    trend_flags = replay["trend_flags"]
+    show_chart_candle = bool(replay.get("show_chart_candle", True))
+    show_chart_volume = bool(replay.get("show_chart_volume", True))
+    show_return_overlay = bool(replay.get("show_return_overlay", False))
+
+    trend_ma: dict[int, pd.Series] = {}
+    for p in TREND_MA_PERIODS:
+        if not trend_flags.get(p):
+            continue
+        trend_ma[p] = rolling_trend_ma_series(full_close, p)
+    trend_plot = (
+        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    )
+
+    out_png = out_path or os.path.join("output", "backtest_report.png")
+
+    dpi_save = DEFAULT_CLI_SAVE_DPI
+    figsize_inch: tuple[float, float] | None = None
+    layout_preset = "report"
+
+    if chart_render_px is not None:
+        gx, gy = int(chart_render_px[0]), int(chart_render_px[1])
+        gx = max(320, gx)
+        gy = max(200, gy)
+        dpi_save = (
+            int(chart_render_dpi)
+            if chart_render_dpi is not None
+            else GUI_CHART_RENDER_DPI_DEFAULT
+        )
+        dpi_save = max(72, min(dpi_save, 300))
+        iw = max(4.0, gx / float(dpi_save))
+        ih = max(2.85, gy / float(dpi_save))
+        figsize_inch = (iw, ih)
+        layout_preset = "gui_target"
+    else:
+        dpi_save = DEFAULT_CLI_SAVE_DPI
+
+    fig = make_backtest_figure(
+        sim,
+        trades,
+        name,
+        bar_label,
+        ma_n,
+        ret_series,
+        trend_ma=trend_plot,
+        show_candle=show_chart_candle,
+        show_volume=show_chart_volume,
+        show_return_overlay=show_return_overlay,
+        figsize=figsize_inch,
+    )
+    skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
+    save_figure_as_png(fig, out_png, dpi=dpi_save, layout_preset=layout_preset)
+    plt.close(fig)
+
+    if write_signal_debug_log and selected:
+        _write_signal_debug_file(name=name, selected=selected, trades=trades, sim=sim)
+
+    return out_png, skipped
+
+
 def run_backtest_detailed(
     cfg: dict,
     override_code: str | None = None,
@@ -163,10 +324,16 @@ def run_backtest_detailed(
     *,
     ohlcv_preloaded_daily: pd.DataFrame | None = None,
     omit_report_artifacts: bool = False,
+    defer_chart_render: bool = False,
     chart_render_px: tuple[int, int] | None = None,
     chart_render_dpi: int | None = None,
+    write_signal_debug_log: bool = True,
 ) -> BacktestResult:
-    """설정 dict 기준 전체 백테스트. GUI·CLI 공용."""
+    """설정 dict 기준 전체 백테스트. GUI·CLI 공용.
+
+    defer_chart_render: True 이면 시뮬·요약까지 수행 후 PNG·(선택)검증로그 생략.
+    차트는 `materialize_backtest_chart_png(replay_chart, ...)` 로 후속 생성.
+    """
     lines: list[str] = []
     period = cfg.get("period", {})
     start = period.get("start_date")
@@ -433,6 +600,39 @@ def run_backtest_detailed(
             n_buy=n_buy,
             n_sell=n_sell,
             trade_markers_skipped=0,
+            chart_render_pending=False,
+        )
+
+    if defer_chart_render and not omit_report_artifacts:
+        tf_dict = {p: bool(trend_flags.get(p)) for p in TREND_MA_PERIODS}
+        replay_dc = {
+            "sim": sim,
+            "trades": trades,
+            "name": name,
+            "selected_code": selected,
+            "bar_label": bar_label,
+            "ma_n": ma_n,
+            "ret_series": ret_series,
+            "full_close": sig_df["Close"].astype(float),
+            "trend_flags": tf_dict,
+            "show_chart_candle": show_chart_candle,
+            "show_chart_volume": show_chart_volume,
+            "show_return_overlay": show_return_overlay,
+        }
+        lines.append(
+            f"[그래프] 분리(v4.10): PNG 생략(후속 렌더) — 매수 {n_buy}회 / 매도 {n_sell}회"
+        )
+        return BacktestResult(
+            True,
+            None,
+            summary,
+            None,
+            lines,
+            replay_chart=replay_dc,
+            n_buy=n_buy,
+            n_sell=n_sell,
+            trade_markers_skipped=0,
+            chart_render_pending=True,
         )
 
     full_close = sig_df["Close"].astype(float)
@@ -487,76 +687,8 @@ def run_backtest_detailed(
     save_figure_as_png(fig, out_png, dpi=dpi_save, layout_preset=layout_preset)
     plt.close(fig)
 
-    # 디버그 검증 로그 생성 (backtest_signal_debug.txt)
-    debug_log_path = "backtest_signal_debug.txt"
-    try:
-        with open(debug_log_path, "w", encoding="utf-8") as f:
-            f.write("=====================================================\n")
-            f.write("[시뮬레이터 매매 신호 및 차트 마킹 동기화 검증 로그]\n")
-            f.write(f"종목: {name} ({selected})\n\n")
-
-            idx = sim.index
-            buy_idx = 0
-            sell_idx = 0
-
-            for t in trades:
-                side = t["side"]
-                if side == "BUY":
-                    buy_idx += 1
-                    label = f"매수 {buy_idx}번"
-                else:
-                    sell_idx += 1
-                    label = f"매도 {sell_idx}번"
-
-                # 체결일 인덱스
-                trade_ts = pd.Timestamp(t["date"]).normalize()
-                idx_norm = idx.normalize()
-                pos = idx_norm.get_indexer([trade_ts], method=None)
-                if pos.size == 0 or int(pos[0]) < 0:
-                    continue
-                bi_exec = int(pos[0])
-                bi_signal = bi_exec - 1
-                if bi_signal < 0:
-                    continue
-
-                t_date_str = idx[bi_signal].strftime("%Y-%m-%d")
-                exec_date_str = idx[bi_exec].strftime("%Y-%m-%d")
-
-                # 캔들 형태 판단 (T일)
-                op = float(sim["Open"].iloc[bi_signal])
-                cl = float(sim["Close"].iloc[bi_signal])
-                pct = (cl - op) / op if op > 0 else 0
-                if pct < -0.03:
-                    candle_desc = "장대음봉"
-                elif pct > 0.03:
-                    candle_desc = "장대양봉"
-                elif pct < 0:
-                    candle_desc = "음봉"
-                elif pct > 0:
-                    candle_desc = "양봉"
-                else:
-                    candle_desc = "도지"
-
-                marked_date = t.get("marked_date", exec_date_str)
-
-                error_suffix = ""
-                if marked_date != t_date_str:
-                    error_suffix = "   [오류: 인덱스 1칸 밀림 발생]"
-
-                f.write(f" [{label}]\n\n")
-                f.write(
-                    f"전략 판단 신호 발생일 (T일 종가): {t_date_str} ({candle_desc})\n\n"
-                )
-                f.write(f"실제 차트 마킹 적용일 (정상 위치): {t_date_str}\n\n")
-                f.write(
-                    f"현재 차트 플로팅 인덱스 날짜   : {marked_date}{error_suffix}\n\n"
-                )
-                f.write(f"실제 체결 집행일 (T+1일 시가)  : {exec_date_str}\n")
-                f.write("=====================================================\n\n")
-    except Exception as e:
-        import sys
-
-        print(f"[ERROR] 검증 로그 작성 실패: {e}", file=sys.stderr)
+    if write_signal_debug_log:
+        _write_signal_debug_file(name=name, selected=selected, trades=trades, sim=sim)
 
     replay_chart: dict | None = None
     if embed_figure:
@@ -585,6 +717,7 @@ def run_backtest_detailed(
         n_buy=n_buy,
         n_sell=n_sell,
         trade_markers_skipped=trade_markers_skipped,
+        chart_render_pending=False,
     )
 
 
@@ -594,6 +727,7 @@ __all__ = [
     "MIN_BARS_FOR_ENTRY_FILTERS",
     "TREND_MA_PERIODS",
     "make_backtest_figure",
+    "materialize_backtest_chart_png",
     "metrics_total_cagr_mdd_equity",
     "normalize_interval",
     "rolling_trend_ma_series",

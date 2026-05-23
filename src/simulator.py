@@ -4,6 +4,7 @@ v4.8: 시장(KOSPI/KOSDAQ)·가격 로딩 분리(DataReader 티커 기준)·시�
 v4.0: 선택적 매수 진입 필터 — 120일선 선형회귀 기울기·돌파 강도·시간 버퍼.
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(트레일링); 종가 확정 후 다음 봉 시가 청산·`reason='trail_stop'` 타점 차트 색 구분).
 v4.6: 매도 분기에서 가변 낙폭(우선)·데드 크로스(옵션) OR; `dead_cross_sell_enabled` 가 False 면 신호 매도 실행 안 함(strategy 와 결합).
+v4.10: 시뮬 본문 루프에서 ndarray로 OHLCV 열 접근(iloc 반복 감소) — 상태 머신은 순차 유지.
 """
 from __future__ import annotations
 
@@ -196,6 +197,14 @@ def simulate_single(
     past = df.loc[df.index < start_ts]
     pending = int(past["Signal"].iloc[-1]) if len(past) else 0
 
+    op_arr = pd.to_numeric(d["Open"], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    hi_arr = pd.to_numeric(d["High"], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    cl_arr = pd.to_numeric(d["Close"], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+    sig_arr = (
+        pd.to_numeric(d["Signal"], errors="coerce").fillna(0).to_numpy(dtype=np.int64, copy=False)
+    )
+    di_idx = d.index
+
     cash = float(initial)
     shares = 0
     position = 0
@@ -212,10 +221,10 @@ def simulate_single(
     def _sell_at_open_ma_cross() -> None:
         """데드크로스 등 신호 매도(다음 봉 시가)."""
         nonlocal cash, shares, position, trail_buy_px, trail_max_high, trail_exec_next
-        if pd.notna(o) and o > 0 and shares > 0:
+        if np.isfinite(o) and o > 0 and shares > 0:
             cash += shares * o * (1 - sell_cost)
             trades.append(
-                {"date": d.index[i], "side": "SELL", "price": float(o)}
+                {"date": di_idx[i], "side": "SELL", "price": float(o)}
             )
         shares = 0
         position = 0
@@ -226,11 +235,11 @@ def simulate_single(
     def _sell_at_open_trail_stop() -> None:
         """v4.4 가변 낙폭 매도 확정 행."""
         nonlocal cash, shares, position, trail_buy_px, trail_max_high, trail_exec_next
-        if pd.notna(o) and o > 0 and shares > 0:
+        if np.isfinite(o) and o > 0 and shares > 0:
             cash += shares * o * (1 - sell_cost)
             trades.append(
                 {
-                    "date": d.index[i],
+                    "date": di_idx[i],
                     "side": "SELL",
                     "price": float(o),
                     "reason": "trail_stop",
@@ -253,17 +262,17 @@ def simulate_single(
         position = 1
         shares = sh_qty
         trail_buy_px = float(price_f)
-        hip = float(d["High"].iloc[i])
+        hip = float(hi_arr[i])
         trail_max_high = max(trail_buy_px, hip) if np.isfinite(hip) else trail_buy_px
         trail_exec_next = False
         trades.append(
-            {"date": d.index[i], "side": "BUY", "price": float(price_f)}
+            {"date": di_idx[i], "side": "BUY", "price": float(price_f)}
         )
 
     for i in range(len(d)):
-        o = d["Open"].iloc[i]
-        cl = d["Close"].iloc[i]
-        sig = int(d["Signal"].iloc[i])
+        o = float(op_arr[i])
+        cl = float(cl_arr[i])
+        sig = int(sig_arr[i])
 
         # 시간 버퍼로 예약된 매수 (돌파일 이후 2봉 종가 안착 확인 뒤 다음 봉 시가 체결)
         if (
@@ -273,7 +282,7 @@ def simulate_single(
             and position == 0
         ):
             sb = buf_sig_bar if buf_sig_bar is not None else max(0, i - 1)
-            if pd.notna(o) and o > 0 and cash > 0 and _buy_filters_pass(d, sb, ef):
+            if np.isfinite(o) and o > 0 and cash > 0 and _buy_filters_pass(d, sb, ef):
                 _buy_at_open(float(o))
             buf_exec_bar = None
             buf_sig_bar = None
@@ -287,12 +296,12 @@ def simulate_single(
         # ftbuf 시에는 통상 pending 매수 대신 버퍼만 사용; 시뮬 첫 봉(i==0) 워밍업 pending==1 만 예외
         if pending == 1 and position == 0 and (not ftbuf or i == 0):
             sig_bar = (i - 1) if i > 0 else 0
-            if pd.notna(o) and o > 0 and cash > 0 and _buy_filters_pass(
+            if np.isfinite(o) and o > 0 and cash > 0 and _buy_filters_pass(
                 d, sig_bar, ef
             ):
                 _buy_at_open(float(o))
 
-        eq = cash + shares * (cl if pd.notna(cl) else 0)
+        eq = cash + shares * (cl if np.isfinite(cl) else 0)
         equity.append(eq)
 
         # --- v4.4 가변 낙폭: 종가 확정 분기별 트레일(다음 봉 시가 청산) ---
@@ -303,7 +312,7 @@ def simulate_single(
             and trail_buy_px > 0
             and np.isfinite(trail_max_high)
         ):
-            hp = float(d["High"].iloc[i])
+            hp = float(hi_arr[i])
             if np.isfinite(hp):
                 trail_max_high = max(trail_max_high, hp)
             peak_ret_pct = (

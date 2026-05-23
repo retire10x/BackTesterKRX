@@ -18,9 +18,18 @@
 - [x] 스크리너 시총(상장표 Marcap)·MA20/120 추세 하드 게이트, 차트 패닝 일봉 캐시, Harness 매수 세 조건 동시 적용 YAML 옵션
 - [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈·검색/이력/날짜 컴팩트 배치·매수·매도 **동일 행 2열** 카드 내 필터 **2단 행**·**규칙 헤더 Refresh로 조건 반영 차트 재계산** (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
 - [x] **v4.7** 하단 독립 누적수익률 패널 제거(캔들+거래량 2단)·좌패널 **최고/최저 누적 수익률**·GUI **주가 패널 수익률 음영** 토글(`show_return_overlay`)·저장 후 `plt.close(fig)` (`backtest_chart.py`, `metrics.py`, `gui.py`, `gui_helpers.py`)
+- [x] **v4.10** 백테스트 고속 경로: `data_loader` 상장표 TTL·OHLCV LRU, `metrics.defer_chart_render` + `materialize_backtest_chart_png` 로 통계/차트 분리(GUI), `simulator` ndarray 루프, 수익률 오버레이 기본 OFF (`gui.py`·`metrics.py`·`data_loader.py`·`simulator.py`)
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-23 (백테스트 속도·차트 분리 v4.10)
+- **`data_loader.py`:** `fdr_stock_listing` 결과 메모리 캐시(TTL)·`load_ohlcv` LRU(최대 96건); `clear_ohlcv_cache()`.
+- **`metrics.py`:** `defer_chart_render`·`write_signal_debug_log`·`BacktestResult.chart_render_pending`·`materialize_backtest_chart_png()` — 시뮬·성과와 mpl PNG·검증 로그 분리.
+- **`simulator.py`:** 시뮬 본 루프에서 Open/High/Close/Signal ndarray 직접 인덱싱.
+- **`gui.py`:** 창 제목 v4.10, 수익률 체크 기본 OFF, 백테스트 워커는 defer 후 메인에서 캡처한 `chart_render_px` 로 차트 전용 스레드 PNG 생성.
+- **`config/settings.yaml`:** `show_return_overlay: false` 기본.
+- **`scripts/benchmark_backtest_v410.py`:** 동기 vs defer+materialize 초 단위 비교 출력.
 
 ### 2026-05-23 (반응형 차트 패널 v4.9)
 - **`gui.py`:** 우패널 `grid_propagate(False)` 로 Row2(weight=1) 차트 높이가 규칙 패널의 요구 높이에만 종속되지 않도록 교정 `_raw_chart_overlay_measured_size` 로 픽셀 다단 추정 `_defer_chart_image_paint` 로 초기 한 번 재리페인트 백테스트 시작 직전 `chart_render_px` 를 `run_backtest_detailed(..., chart_render_px=...)`.

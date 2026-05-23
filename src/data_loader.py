@@ -1,17 +1,31 @@
 """
 데이터 수집·정렬·주봉 집계·설정 YAML 로드 (FinanceDataReader 등).
 필요 시 pykrx 등으로 확장. GUI 비의존.
+v4.10: FDR 상장표 메모리 캐시(TTL)·OHLCV LRU—스크리너·백테스트 반복 I/O 완화.
 """
 from __future__ import annotations
 
 import calendar
 import os
+import threading
+import time
+from collections import OrderedDict
 from datetime import date
 
 import FinanceDataReader as fdr
 import numpy as np
 import pandas as pd
 import yaml
+
+# v4.10: 동일 세션 내 중복 네트워크 호출 완화(스크리너 급 저지연 목표).
+_LISTING_LOCK = threading.Lock()
+_LISTING_TS: dict[str, float] = {}
+_LISTING_DF: dict[str, pd.DataFrame] = {}
+FDR_LISTING_CACHE_TTL_SEC = 600.0
+
+_OHLCV_LOCK = threading.Lock()
+_OHLCV_LRU: OrderedDict[tuple[str, str, str], pd.DataFrame] = OrderedDict()
+OHLCV_CACHE_MAX_ENTRIES = 96
 
 
 def months_before(d: date, months: int) -> date:
@@ -73,9 +87,27 @@ def load_config(path: str | None = None) -> dict:
 def fdr_stock_listing(market: str) -> pd.DataFrame | None:
     """FinanceDataReader StockListing 호출 전 시장 라벨 정규화."""
     m = str(market or "").strip().upper()
-    if m == "ETF":
-        return fdr.StockListing("ETF/KR")
-    return fdr.StockListing(m)
+    key = "ETF/KR" if m == "ETF" else m
+    now = time.monotonic()
+    with _LISTING_LOCK:
+        ts = _LISTING_TS.get(key)
+        cached_df = _LISTING_DF.get(key)
+        if (
+            cached_df is not None
+            and ts is not None
+            and (now - ts) < FDR_LISTING_CACHE_TTL_SEC
+        ):
+            return cached_df.copy()
+    try:
+        raw = fdr.StockListing(key) if m == "ETF" else fdr.StockListing(m)
+    except Exception:
+        raw = None
+    if raw is None or getattr(raw, "empty", True):
+        return None
+    with _LISTING_LOCK:
+        _LISTING_DF[key] = raw
+        _LISTING_TS[key] = time.monotonic()
+    return raw.copy()
 
 
 def fetch_filtered_universe(market: str, keyword: str) -> dict[str, str]:
@@ -159,11 +191,29 @@ def load_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame | None:
     """FinanceDataReader 로 OHLCV 티커 조회.(시장 인자 불필요 — KRX 코드 기준 로드.)
 
     v4.8: 게이트 검증 시 상장 시장 선택은 호출측(metrics·GUI 설정) 책임. 본 함수는 코드만 받는다.
+    v4.10: (코드,start,end) 키 LRU—동일 구간 재조회 시 네트워크 생략.
     """
+    cdf = str(symbol or "").strip().zfill(6)
+    sk = (cdf, str(start).strip()[:10], str(end).strip()[:10])
+    with _OHLCV_LOCK:
+        if sk in _OHLCV_LRU:
+            _OHLCV_LRU.move_to_end(sk)
+            return _OHLCV_LRU[sk].copy()
     try:
         df = fdr.DataReader(symbol, start=start, end=end)
-        if df is None or df.empty:
-            return None
-        return df
     except Exception:
+        df = None
+    if df is None or df.empty:
         return None
+    with _OHLCV_LOCK:
+        _OHLCV_LRU[sk] = df
+        _OHLCV_LRU.move_to_end(sk)
+        while len(_OHLCV_LRU) > OHLCV_CACHE_MAX_ENTRIES:
+            _OHLCV_LRU.popitem(last=False)
+    return df.copy()
+
+
+def clear_ohlcv_cache() -> None:
+    """테스트 또는 메모리 회수 시 사용."""
+    with _OHLCV_LOCK:
+        _OHLCV_LRU.clear()

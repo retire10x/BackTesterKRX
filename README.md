@@ -105,7 +105,7 @@ python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 `true`; 끄면 골든/데크 시그널·데크 신호 매도 각각 비활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글(`show_chart_candle`·`show_chart_volume`·**v4.7** `show_return_overlay` 기본 ON 및 누적 수익률 우측 Y축 눈금), 비용, `portfolio.initial_cash`. **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
+`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 `true`; 끄면 골든/데크 시그널·데크 신호 매도 각각 비활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글(`show_chart_candle`·`show_chart_volume`·**v4.10** `show_return_overlay` 기본 OFF — 켜면 가격 패널 누적 수익률 우측 Y축 포함), 비용, `portfolio.initial_cash`. **v4.10 GUI:** 백테스트 요약은 먼저 표시 후 PNG 차트가 별도 단계에서 생성됩니다(`defer_chart_render`/`materialize_backtest_chart_png`). **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
 
 ## 소스 역할 (파일별)
 
@@ -116,8 +116,8 @@ python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
 | `src/gui_helpers.py` | YAML→위젯·`try_build_config`·툴팁 |
 | `src/backtest_constants.py` | `TREND_MA_PERIODS` 등 차트·GUI 공유 상수 |
 | `src/backtest_chart.py` | mplfinance 멀티패널·타점·PNG 저장; **v4.9** 선택 `figsize`·`layout_preset`(CLI `report`/GUI `gui_target`) |
-| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘)·`ohlcv_warm_start_date` |
+| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘)·`ohlcv_warm_start_date` · **v4.10** FDR 상장표 TTL·OHLCV LRU |
 | `src/strategy.py` | 이평 돌파 시그널 |
-| `src/simulator.py` | 익봉 시가 체결 시뮬 |
-| `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) |
+| `src/simulator.py` | 익봉 시가 체결 시뮬 · **v4.10** 시뮬 루프 ndarray 최적화 |
+| `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) · **v4.10** `defer_chart_render`·`materialize_backtest_chart_png` |
 | `src/stock_screener.py` | 일봉 스크리너(ATR14 고정·MA120 역배열 하드 필터·거래대금·낙폭·거래량건조 순위 융합·시총 상위·돌파 에너지·GUI·CLI 공용) |

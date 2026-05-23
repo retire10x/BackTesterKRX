@@ -44,8 +44,8 @@ strategy:
   # 차트 패널 표시 (GUI·YAML 공통)
   show_chart_candle: true
   show_chart_volume: true
-  # 하단 독립 누적수익률 패널(v4.6-) 폐기. 가격 패널 배경 음영 및 우측 % 축(기본 ON)
-  show_return_overlay: true
+  # 하단 독립 누적수익률 패널(v4.6-) 폐기. 가격 패널 배경 음영·우측 % 축(v4.10 GUI 기본 OFF)
+  show_return_overlay: false
   # v4.0 매수 진입 필터 (시뮬 엔진 simulate_single.entry_filters)
   filter_trend_slope: false
   slope_threshold: 0.01

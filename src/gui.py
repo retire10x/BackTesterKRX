@@ -3,7 +3,7 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)` 로 그리드 할당 면적을 유지(v4.9). 차트는 **정적 PNG**(`FigureCanvasTkAgg` 미사용) — mpl `figsize`/DPI 는 GUI가 넘기는 `chart_render_px` 와 동기, 표시는 호스트 실측(fw,fh)·**지연 리페인트**로 초기 클립 방지.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 엔진에서 시뮬·지표를 먼저 마치고(`defer_chart_render`) PNG는 별도 스레드의 `materialize_backtest_chart_png` 로 생성·표시.
 """
 from __future__ import annotations
 
@@ -57,7 +57,12 @@ from src.gui_helpers import (
     GUI_FONT_SIZE,
 )
 from src.backtest_constants import TREND_MA_PERIODS
-from src.metrics import BacktestResult, normalize_interval, run_backtest_detailed
+from src.metrics import (
+    BacktestResult,
+    materialize_backtest_chart_png,
+    normalize_interval,
+    run_backtest_detailed,
+)
 from src.stock_screener import (
     RankedUniversePick,
     ScreenerEntry,
@@ -156,7 +161,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.9")
+        self.title("BackTesterKRX v4.10")
 
         self._apply_initial_window_geometry()
 
@@ -183,7 +188,7 @@ class BacktestGUI(ctk.CTk):
         }
         self.var_show_candle = ctk.BooleanVar(value=True)
         self.var_show_volume = ctk.BooleanVar(value=True)
-        self.var_show_return_overlay = ctk.BooleanVar(value=True)
+        self.var_show_return_overlay = ctk.BooleanVar(value=False)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.18")
         self.var_cash = ctk.StringVar(value="5000000")
@@ -1493,9 +1498,13 @@ class BacktestGUI(ctk.CTk):
                 res = run_backtest_detailed(
                     cfg,
                     ohlcv_preloaded_daily=preload if preload is not None else None,
-                    chart_render_px=chart_px,
+                    defer_chart_render=True,
+                    write_signal_debug_log=False,
                 )
-                self.after(0, lambda r=res: self._finish_run(r))
+                self.after(
+                    0,
+                    lambda r=res, px=chart_px: self._finish_run(r, deferred_chart_px=px),
+                )
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -2057,7 +2066,12 @@ class BacktestGUI(ctk.CTk):
     def _on_run(self):
         self._run_single_from_run_button()
 
-    def _finish_run(self, res):
+    def _finish_run(
+        self,
+        res,
+        *,
+        deferred_chart_px: tuple[int, int] | None = None,
+    ) -> None:
         self._busy = False
         self.btn_run.configure(state="normal", text="백테스트 실행")
         try:
@@ -2101,16 +2115,71 @@ class BacktestGUI(ctk.CTk):
             listing_market=mk_done,
         )
 
-        self.update_idletasks()
-        self.after_idle(lambda p=res.report_path: self._defer_chart_image_paint(p))
         self._update_period_label()
-        if res.trade_markers_skipped > 0:
+
+        pending_chart = (
+            getattr(res, "chart_render_pending", False) and res.replay_chart is not None
+        )
+        if pending_chart:
             self.lbl_status.configure(
-                text=f"완료 · 매칭 실패 오류 발생 — 차트 타점 {res.trade_markers_skipped}건 누락"
+                text="백테스트 완료 — 차트 PNG 생성 중…",
+            )
+            self._chart_flat_show_message(
+                "백테스트 요약은 상단 패널에 반영되었습니다.\n차트 이미지를 생성하는 중입니다…"
+            )
+
+            replay_copy = dict(res.replay_chart)
+            px = deferred_chart_px
+
+            def _chart_paint_task() -> None:
+                try:
+                    outp, skipped = materialize_backtest_chart_png(
+                        replay_copy,
+                        chart_render_px=px,
+                        write_signal_debug_log=False,
+                    )
+                    self.after(
+                        0,
+                        lambda p=outp, sk=skipped: self._apply_materialized_chart(
+                            p, sk
+                        ),
+                    )
+                except Exception as chart_ex:
+                    self.after(
+                        0,
+                        lambda m=str(chart_ex): self._chart_materialize_failed(m),
+                    )
+
+            threading.Thread(target=_chart_paint_task, daemon=True).start()
+        else:
+            self.update_idletasks()
+            self.after_idle(lambda p=res.report_path: self._defer_chart_image_paint(p))
+            self._finalize_run_status_stripes(res.trade_markers_skipped)
+
+    def _apply_materialized_chart(
+        self, report_path: str | None, trade_markers_skipped: int
+    ) -> None:
+        """v4.10 연기 차트 후처리(메인 스레드)."""
+        self.update_idletasks()
+        self.after_idle(lambda p=report_path: self._defer_chart_image_paint(p))
+        self._finalize_run_status_stripes(trade_markers_skipped)
+
+    def _chart_materialize_failed(self, msg: str) -> None:
+        self.set_status_message(f"차트 생성 실패: {msg}")
+        self._chart_flat_show_message(f"차트 생성 실패: {msg}")
+
+    def _finalize_run_status_stripes(self, trade_markers_skipped: int) -> None:
+        """완료/타점 경고 라벨 + (필요 시) 한 번 모달."""
+        if trade_markers_skipped > 0:
+            self.lbl_status.configure(
+                text=(
+                    "완료 · 매칭 실패 오류 발생 — 차트 타점 "
+                    f"{trade_markers_skipped}건 누락"
+                )
             )
             messagebox.showwarning(
                 "차트 타점 누락",
-                f"{res.trade_markers_skipped}건의 매매가 차트 날짜 인덱스와 일치하지 않아 표시하지 못했습니다.\n"
+                f"{trade_markers_skipped}건의 매매가 차트 날짜 인덱스와 일치하지 않아 표시하지 못했습니다.\n"
                 "요약 로그의 [CRITICAL] 항목과 터미널 메시지를 확인하고 데이터를 점검하세요.",
             )
         else:
