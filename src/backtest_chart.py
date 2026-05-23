@@ -1,7 +1,7 @@
 """
 정적 백테스트 리포트 차트 (matplotlib Agg · mplfinance 멀티패널).
 GUI 비의존. metrics.run_backtest_detailed 가 조립한 인자로 Figure·PNG 를 만든다.
-v4.5: 활성 추세 이평은 가격 패널 좌상단 matplotlib ax.legend 로 표시(외부 범례 없음).
+v4.6: 패널 세로 레이블(Price·Volume 등) 숨김 후 거래량·누적수익률 패널은 좌상단 뱃지.ax.text 로 표시.
 """
 from __future__ import annotations
 
@@ -84,6 +84,75 @@ def save_figure_as_png(fig: Figure, out_path: str, dpi: int = 300) -> None:
             pass
     # bbox_inches='tight' 는 본 레이아웃을 덮어 잘림을 유발할 수 있어 figure bbox 기준 저장
     fig.savefig(out_path, dpi=dpi)
+
+
+def _mplfinance_primary_axes(axlist: list) -> list:
+    """mplfinance 플래튼 뒤 axlist 에서 패널별 보이는 primary 축만(짝수 인덱스) 순서대로 반환."""
+    out: list = []
+    for i in range(0, len(axlist), 2):
+        ax = axlist[i]
+        if getattr(ax, "get_visible", lambda: True)():
+            out.append(ax)
+    return out
+
+
+def _assign_price_volume_return_axes(
+    primary_axes: list,
+    *,
+    show_volume: bool,
+    show_return: bool,
+) -> tuple:
+    ax_price = primary_axes[0] if primary_axes else None
+    ax_vol = None
+    ax_ret = None
+    if show_volume and show_return and len(primary_axes) >= 3:
+        ax_vol, ax_ret = primary_axes[1], primary_axes[2]
+    elif show_volume and len(primary_axes) >= 2:
+        ax_vol = primary_axes[1]
+    elif show_return and len(primary_axes) >= 2:
+        ax_ret = primary_axes[1]
+    return ax_price, ax_vol, ax_ret
+
+
+def _strip_vertical_ylabel(ax) -> None:
+    """패널 축 우측·좌측 세로 레이블 제거( mplfinance 기본 문자열 숨김 )."""
+    if ax is None:
+        return
+    ax.set_ylabel("")
+    try:
+        ax.yaxis.offsetText.set_visible(False)
+    except Exception:
+        pass
+
+
+def _panel_badge_font_families() -> tuple[str, ...]:
+    """패널 뱃지(이모지+한글) glyph 폴백 — 없는 패밀리는 matplotlib 가 조용히 스킵."""
+    return ("Segoe UI Emoji", "Malgun Gothic", "DejaVu Sans", "sans-serif")
+
+
+def _panel_upper_left_badge(ax, text: str, *, fontsize: float = 9.0) -> None:
+    """패널 내부 좌상단: 흰 반투명 박스 + 연한 회색 테두리."""
+    if ax is None or not text:
+        return
+    ax.text(
+        0.012,
+        0.96,
+        text,
+        transform=ax.transAxes,
+        fontsize=fontsize,
+        ha="left",
+        va="top",
+        fontfamily=_panel_badge_font_families(),
+        bbox={
+            "facecolor": "white",
+            "alpha": 0.8,
+            "edgecolor": "#dddddd",
+            "linewidth": 0.8,
+            "boxstyle": "round,pad=0.32",
+        },
+        zorder=25,
+        clip_on=False,
+    )
 
 
 def _trade_resolve_bar_index(t: dict, idx: pd.DatetimeIndex) -> int | None:
@@ -458,7 +527,6 @@ def make_backtest_figure(
                 panel=ret_panel,
                 color="royalblue",
                 width=1.6,
-                ylabel="누적 수익률 (%)",
             )
         )
 
@@ -477,17 +545,8 @@ def make_backtest_figure(
         rc=chart_rc,
     )
 
-    unit_ma = "봉" if "주" in bar_label else "일"
+    # v4.5: 추세 이평은 가격 패널 ax.legend — 세로 라벨(Price 등) 대신 패널 뱃지로 패널 구분.
 
-    price_label = "캔들" if show_candle else "종가"
-    shown: list[str] = [price_label]
-    if show_volume:
-        shown.append("거래량")
-    if show_return:
-        shown.append("수익률")
-    chart_bits = "+".join(shown)
-    # v4.5: 추세 이평 이름·색상은 가격 패널 ax.legend 로 표시(제목에 중복 나열 안 함).
-    
     title = f"{name} (매매기준 MA{ma_n})"
 
     plot_type = "candle" if show_candle else "line"
@@ -504,9 +563,26 @@ def make_backtest_figure(
         title=title,
         tight_layout=False,
         scale_padding=1.04,
+        ylabel="",
+        ylabel_lower="",
     )
     _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
-    ax_price = axlist[0]
+
+    primary_axes = _mplfinance_primary_axes(axlist)
+    ax_price, ax_vol, ax_ret = _assign_price_volume_return_axes(
+        primary_axes, show_volume=show_volume, show_return=show_return
+    )
+    if ax_price is None:
+        raise RuntimeError("mplfinance 가격 패널 축을 찾지 못했습니다.")
+
+    _strip_vertical_ylabel(ax_price)
+    _strip_vertical_ylabel(ax_vol)
+    _strip_vertical_ylabel(ax_ret)
+    if show_volume:
+        _panel_upper_left_badge(ax_vol, "📊 Volume")
+    if show_return:
+        _panel_upper_left_badge(ax_ret, "📈 누적 수익률 (%)")
+
     _share_x_axes(fig, ax_price)
     _apply_hts_style_xaxis(fig, idx)
     n_skip_tm = _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)

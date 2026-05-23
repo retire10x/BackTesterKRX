@@ -6,19 +6,26 @@ period:
 # 싱글 종목: 키워드로 후보를 좁힌 뒤 selected_code 1개만 매매
 universe:
   market: "KOSPI"
-  search_keyword: ""   # GUI 최초 표시 및 시장 후보 목록 필터("" = 전체 검색 허용, 스크리너 미사용 시에는 GUI에서 종목명 입력 필요)
-  selected_code: ""   # GUI는 검색 결과·이력 선택을 기본으로 함. 빈 값이면 특정 종목 하드코딩 없음
-  # 종목 스크리너: GUI 체크박스 또는 batch CLI 시 활성. 종료일(end_date)까지의 일봉만 보고 과거 참조 금지.
+  search_keyword: ""   # GUI 최초 표시 및 시장 후보 필터
+  selected_code: ""
+  # GUI 스크리너 모드: whole | screener | mcap_top30 | breakout_energy (미지정 시 screener.enabled 로 폴백)
+  screener_mode: "whole"
+  # 스크리너(랭킹) CLI·YAML: 변동성 지표는 atr14(14일 ATR/종가 %)로 엔진 고정 — 아래 키는 하위 호환만
   screener:
-    enabled: true
+    enabled: false
     lookback_trading_days: 20
     top_n: 30
-    volatility_metric: "atr14"   # atr14 | std_return — 일봉 기준 평균 ATR%/거래량×종가 합 순위 또는 일간 수익률 표준편차
+    volatility_metric: "atr14"
     combine: "sum_rank_pct"
     min_market_cap_krw: 300000000000   # 최소 시가총액(원), 예: 3000억=3e11. FDR 상장표 근사. ETF 시장은 무시됨.
     hard_ma_pair_trend_filter: true  # 일봉 MA20 대 MA120·우상향 하드 게이트 후 스코어링
     # 고점대비 낙폭 순위화 전 클램프(%). 초과 구간은 랭크에서 과도 낙폭(급락·상투 가능성)으로 상대 패널티
     pullback_rank_cap_pct: 35.0
+
+  # 슬로프 가속도 ablation: 시총 하한 종목별 baseline(False) vs slope_accel(True) 경량 배치
+  slope_ablation_batch:
+    min_market_cap_krw: 300000000000   # 0 또는 생략 시 universe.screener.min_market_cap_krw 폴백
+    max_workers: 6
 
 # 전략
 strategy:
@@ -49,6 +56,8 @@ strategy:
   trailing_drop_below_pct: 3.0     # 미만 구간 적용 고점 대비 하락 %
   trailing_drop_above_pct: 5.0     # 기준 도달 후 적용 고점 대비 하락 %
   harness_buy_all_three_and: false  # true 면 매수 진입 시 대세·돌파강도·시간버퍼 무조건 AND (harness 정합)
+  # True 시 최근 5봉 MA20 값에 대한 OLS 기울기가 0보다 클 때만 매수 허용(단기 우상향 곡선 게이트)
+  use_slope_acceleration: false
 trading_costs:
   buy_cost: 0.00015
   sell_cost: 0.0018

@@ -20,6 +20,20 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-05-22 (GUI: 검색 중 버튼 비활성·대기 커서)
+- **`gui.py`:** 검색 워커 시작 전 `검색` 버튼 비활성 + 최상위 창 `cursor=wait`; 완료·실패 콜백에서 버튼·커서 원복.
+
+### 2026-05-22 (곡선 가속도: MA20 단기 OLS>0 완화 · GUI 체크박스 · 백테스트 버튼 리스트 보존)
+- **시뮬 (`simulator.py`):** `use_slope_acceleration` 판정을 MA20 vs MA120 비교에서 **최근 5봉 MA20 OLS 기울기 > 0** 단일 조건으로 변경.
+- **GUI (`gui.py`):** 매수 진입 스트립에 **곡선 가속도** 체크박스(`check_slope_accel_var`), `run_single_backtest(..., use_slope_acceleration=…)`로 단일 종목만 실행·`screener.enabled` 강제 OFF. **「백테스트 실행」** 은 더 이상 스크리너 일괄을 호출하지 않아 `list_codes` 가 지워지지 않음(검색 전용 경로만 리스트 갱신).
+- **헬퍼 (`gui_helpers.py`):** YAML `strategy.use_slope_acceleration` → 체크박스 초기값.
+- **설정·로그:** `config/settings.yaml` 주석, `metrics.py` 로그 문구 정합.
+
+### 2026-05-22 (곡선 가속도 검증: ablation 배치 TSV — 이후 엔진은 MA20 OLS>0 로 갱신)
+- **메트릭 (`metrics.py`):** `omit_report_artifacts=True` 시 PNG·디버그 생략(유니버스 배치 경량화).
+- **배치 (`slope_ablation_batch.py`):** `main.py --slope-ablation-batch` 로 종목별 `baseline`/`slope_accel` 2회 → `output/slope_ablation.tsv`·출력 요약. `--batch-max-workers N`.
+- **설정:** `strategy.use_slope_acceleration`, `universe.slope_ablation_batch` (`config/settings.yaml`).
+
 ### 2026-05-22 (스크리너: 눌림목형 랭킹 — 고점 낙폭·거래량 건조 지표 융합)
 - **스크리너 (`stock_screener.py`):** 후보별 최근 lookback 내 **고점 대비 종가 낙폭(%)**, 말단 대 직전 구간 **평균 거래량 비율**로부터 **거래량 건조(%)** 계산 후, 변동성·거래대금과 함께 **백분위 순위 4개 평균**으로 `combined_score`. 낙폭은 `pullback_rank_cap_pct`(기본 35) 클램프 후 순위화해 과도 낙폭에 상대 패널티.
 - **설정·출력:** `universe.screener.pullback_rank_cap_pct` (`config/settings.yaml`). `output/screener_last.tsv`·CLI 표에 고점낙폭·거래량건조 열 추가 (`gui.py`, `main.py`).

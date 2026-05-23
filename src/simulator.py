@@ -37,6 +37,24 @@ def _volume_series(d: pd.DataFrame) -> pd.Series:
     return pd.to_numeric(d["Volume"], errors="coerce")
 
 
+def _pass_slope_acceleration_ma20_positive(d: pd.DataFrame, sig_bar: int) -> bool:
+    """
+    곡선 가속도 게이트: sig_bar 포함 최근 MA120_SLOPE_LOOKBACK개 봉의 MA20 값에 대해
+    X=0..n-1 축 OLS 기울기가 **양수**(단기 MA20 라인 우상향)일 때만 통과.
+    눌림목·우상향 초입처럼 단기 곡선이 살아 있는 구간만 허용.
+    """
+    n = MA120_SLOPE_LOOKBACK
+    if sig_bar < n - 1 or sig_bar >= len(d):
+        return False
+    if "MA20" not in d.columns:
+        return False
+    sl = slice(sig_bar - (n - 1), sig_bar + 1)
+    s20 = _ols_slope_beta1(d["MA20"].iloc[sl].to_numpy(dtype=float))
+    if s20 is None:
+        return False
+    return s20 > 0.0
+
+
 def _pass_trend_slope_ma120(
     d: pd.DataFrame, sig_bar: int, threshold: float
 ) -> bool:
@@ -108,11 +126,14 @@ def _buy_filters_pass(
         return False
     if bool(ef.get("harness_buy_all_three_and", False)):
         thr = float(ef.get("slope_threshold", 0.01))
-        return bool(
+        ok = (
             _pass_trend_slope_ma120(d, sig_bar, thr)
             and _pass_breakout_strength(d, sig_bar)
             and _pass_time_buffer(d, sig_bar)
         )
+        if ok and bool(ef.get("use_slope_acceleration", False)):
+            ok = _pass_slope_acceleration_ma20_positive(d, sig_bar)
+        return bool(ok)
     if bool(ef.get("filter_trend_slope", False)):
         thr = float(ef.get("slope_threshold", 0.01))
         if not _pass_trend_slope_ma120(d, sig_bar, thr):
@@ -122,6 +143,9 @@ def _buy_filters_pass(
             return False
     if bool(ef.get("filter_time_buffer", False)):
         if not _pass_time_buffer(d, sig_bar):
+            return False
+    if bool(ef.get("use_slope_acceleration", False)):
+        if not _pass_slope_acceleration_ma20_positive(d, sig_bar):
             return False
     return True
 
@@ -140,7 +164,8 @@ def simulate_single(
     """봉 종가에서 신호 확정 → 다음 봉 시가 체결. 전액 매수/전액 매도.
 
     entry_filters (선택): filter_trend_slope, slope_threshold, filter_breakout_strength,
-    filter_time_buffer, harness_buy_all_three_and(True 시 세 필터 무조건 AND) — 모두 False 기본.
+    filter_time_buffer, use_slope_acceleration(최근 MA20 OLS 기울기 > 0),
+    harness_buy_all_three_and(True 시 세 필터 무조건 AND; 가속도 ON 시 여기에 추가 AND) — 기본 False.
 
     매도 분기는 가변 낙폭(우선 순위 높음) 또는 데드크로스(옵션) **OR**(한쪽 충족 시 다음 봉 시가 청산).
 

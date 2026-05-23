@@ -18,6 +18,7 @@ from tabulate import tabulate
 
 from src.data_loader import fetch_filtered_universe, load_config
 from src.metrics import run_backtest_detailed
+from src.slope_ablation_batch import run_slope_ablation_batch
 from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
@@ -54,6 +55,11 @@ def merge_cli_into_config(cfg: dict, args: argparse.Namespace) -> dict:
         out.setdefault("strategy", {})["show_trend_ma200"] = True
     if getattr(args, "screener_batch", False):
         out.setdefault("universe", {}).setdefault("screener", {})["enabled"] = True
+    if getattr(args, "batch_max_workers", None) is not None:
+        ub = out.setdefault("universe", {})
+        sab = ub.setdefault("slope_ablation_batch", {})
+        if isinstance(sab, dict):
+            sab["max_workers"] = int(args.batch_max_workers)
     return out
 
 
@@ -96,7 +102,7 @@ def run_screener_batch_cli(cfg: dict) -> bool:
 
     lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
     tn = max(1, min(200, int(scr.get("top_n", 30))))
-    metric = str(scr.get("volatility_metric") or "atr14").strip()
+    metric = "atr14"  # 엔진 고정(구 YAML volatility_metric 과 무관)
     ds = default_screener_config()
     try:
         mc_kw = float(scr.get("min_market_cap_krw", ds["min_market_cap_krw"]))
@@ -126,7 +132,7 @@ def run_screener_batch_cli(cfg: dict) -> bool:
         print("[오류] 스크리너 후보 없음.", file=sys.stderr)
         return False
 
-    print(f"\n[스크리너] 종료일 {end_d} 일봉 기준 최근 {lk}영업일 | 지표={metric} | 상위 {len(picks)}개\n")
+    print(f"\n[스크리너 CLI] 종료일 {end_d} 일봉 기준 최근 {lk}영업일 | ATR14(%) 고정 랭킹 | 상위 {len(picks)}개\n")
     print(tabulate(
         [
             [
@@ -208,7 +214,7 @@ def run_screener_batch_cli(cfg: dict) -> bool:
         )
 
     print("\n" + "=" * 72)
-    print(f" 종목 스크리너 배치 요약 (성공 포함 {sum(1 for row in agg_rows if row[2] != 'FAIL')} / {len(agg_rows)}) ")
+    print(f" 스크리너 배치 요약 (성공 포함 {sum(1 for row in agg_rows if row[2] != 'FAIL')} / {len(agg_rows)}) ")
     print("=" * 72)
     print(
         tabulate(
@@ -258,6 +264,21 @@ def cli_main() -> None:
             "(universe.screener + 기간 종료일 기준)."
         ),
     )
+    ap.add_argument(
+        "--slope-ablation-batch",
+        action="store_true",
+        help=(
+            "KOSPI 등 시장 시총 하한 종목별로 strategy.use_slope_acceleration "
+            "False/True 각각 경량 백테스트 후 output/slope_ablation.tsv 비교 출력."
+        ),
+    )
+    ap.add_argument(
+        "--batch-max-workers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="배치(--slope-ablation-batch 등) 동시 종목 처리 스레드 수를 YAML 값 대신 고정합니다.",
+    )
     ap.epilog = (
         "GUI 는 인자 없이: python main.py\n"
         "코드 저장 시 GUI 자동 재시작(개발): python main.py --watch  (감시: src/**/*.py, 루트 main.py)"
@@ -276,7 +297,14 @@ def cli_main() -> None:
         print_candidate_list(cand)
         return
 
-    if args.screener_batch:
+    if args.slope_ablation_batch:
+        try:
+            run_slope_ablation_batch(cfg)
+            ok = True
+        except Exception as e:
+            print(f"[오류] slope-ablation-batch: {e}", file=sys.stderr)
+            ok = False
+    elif args.screener_batch:
         ok = run_screener_batch_cli(cfg)
     else:
         ok = run_backtest_cli(cfg, override_code=args.code)

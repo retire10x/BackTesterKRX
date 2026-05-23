@@ -12,10 +12,68 @@ from tkinter import messagebox
 
 import customtkinter as ctk
 
+import numpy as np
+
 from src.backtest_constants import TREND_MA_PERIODS
 from src.data_loader import default_backtest_period_range, load_config
 from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
 from src.stock_screener import default_screener_config
+
+# =========================================================================
+# 스크리너 모드(GUI 라디오) 및 검색 결과 리스트 포맷 (티커 | 종목명 | 시총)
+# =========================================================================
+
+GUI_SCREENER_MODE_WHOLE = "whole"
+GUI_SCREENER_MODE_SCREENER = "screener"
+GUI_SCREENER_MODE_MCAP_TOP = "mcap_top30"
+GUI_SCREENER_MODE_BREAKOUT = "breakout_energy"
+
+VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
+    {
+        GUI_SCREENER_MODE_WHOLE,
+        GUI_SCREENER_MODE_SCREENER,
+        GUI_SCREENER_MODE_MCAP_TOP,
+        GUI_SCREENER_MODE_BREAKOUT,
+    }
+)
+
+
+def parse_gui_list_row_code(line: str) -> str:
+    """리스트 줄에서 6자리 티커만 추출(구분 '|' 허용, 첫 세그먼트만 사용)."""
+    raw = str(line or "").strip()
+    if not raw:
+        return ""
+    head = raw.split("|", 1)[0].strip()
+    if not head:
+        return ""
+    tok = head.split()[0].strip()
+    digits = "".join(ch for ch in tok if ch.isdigit())
+    if not digits:
+        return ""
+    if len(digits) >= 6:
+        return digits[-6:]
+    return digits.zfill(6)
+
+
+def format_gui_list_triple(code: str, name: str, market_cap_krw: float | None) -> str:
+    """예: 009150 | 삼화콘덴서 | 7,421 억원."""
+    cdf = str(code or "").strip().zfill(6)
+    nm = str(name or "").strip() or cdf
+    if market_cap_krw is None:
+        mcap_disp = "N/A"
+    else:
+        try:
+            x = float(market_cap_krw)
+        except (TypeError, ValueError):
+            mcap_disp = "N/A"
+        else:
+            if not np.isfinite(x) or x <= 0:
+                mcap_disp = "N/A"
+            else:
+                eok = int(round(x / 1e8))
+                mcap_disp = f"{eok:,d} 억원"
+    return f"{cdf} | {nm} | {mcap_disp}"
+
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
 # CTkFont 는 import 시점에 만들 수 없음(기본 Tk 루트 없음) — `gui_body_font()` 로 창 생성 후 사용.
@@ -306,14 +364,19 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
     if uni.get("search_keyword") is not None:
         # 빈 문자열도 허용(시장 전체 후보 목록 등). 문자열 타입 고정 및 앞뒤 공백 제거.
         ui.var_keyword.set(str(uni["search_keyword"]).strip())
-    scr_yaml = uni.get("screener")
-    if isinstance(scr_yaml, dict) and hasattr(ui, "var_screener_enabled"):
-        if "enabled" in scr_yaml:
-            ui.var_screener_enabled.set(bool(scr_yaml["enabled"]))
-        if scr_yaml.get("volatility_metric") is not None:
-            mv = str(scr_yaml["volatility_metric"]).strip().lower()
-            if mv in ("atr14", "std_return"):
-                ui.var_screener_metric.set(mv)
+    scr_yaml = uni.get("screener") if isinstance(uni.get("screener"), dict) else {}
+    if hasattr(ui, "var_screener_mode"):
+        sm_raw = uni.get("screener_mode")
+        if isinstance(sm_raw, str) and sm_raw.strip() in VALID_GUI_SCREENER_MODES_FROZEN:
+            ui.var_screener_mode.set(sm_raw.strip())
+        elif isinstance(scr_yaml, dict) and "enabled" in scr_yaml:
+            ui.var_screener_mode.set(
+                GUI_SCREENER_MODE_SCREENER
+                if bool(scr_yaml.get("enabled"))
+                else GUI_SCREENER_MODE_WHOLE
+            )
+        else:
+            ui.var_screener_mode.set(GUI_SCREENER_MODE_WHOLE)
     st = cfg.get("strategy", {})
     if st.get("interval"):
         ui.var_interval.set(str(st["interval"]).lower())
@@ -339,6 +402,8 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_filter_breakout.set(bool(st["filter_breakout_strength"]))
     if "filter_time_buffer" in st:
         ui.var_filter_timebuf.set(bool(st["filter_time_buffer"]))
+    if "use_slope_acceleration" in st and hasattr(ui, "check_slope_accel_var"):
+        ui.check_slope_accel_var.set(bool(st["use_slope_acceleration"]))
     if st.get("slope_threshold") is not None:
         ui.var_slope_threshold.set(str(st["slope_threshold"]))
     if "trailing_stop_enabled" in st:
@@ -398,7 +463,7 @@ def _has_explicit_stock_selection(
     if cur:
         try:
             line = sel.get(cur[0])  # type: ignore[union-attr]
-            c = str(line).split()[0].strip().zfill(6)
+            c = parse_gui_list_row_code(str(line))
         except (tk.TclError, IndexError):
             c = ""
         if c and c != "000000":
@@ -431,19 +496,22 @@ def try_build_config(
         if isinstance(yaml_uni.get("screener"), dict)
         else {}
     )
+    gui_mode = GUI_SCREENER_MODE_WHOLE
+    if hasattr(ui, "var_screener_mode"):
+        gmv = str(ui.var_screener_mode.get()).strip()
+        gui_mode = (
+            gmv if gmv in VALID_GUI_SCREENER_MODES_FROZEN else GUI_SCREENER_MODE_WHOLE
+        )
+
     scr_merged = {**default_screener_config(), **yaml_scr}
-    if hasattr(ui, "var_screener_enabled"):
-        scr_merged["enabled"] = bool(ui.var_screener_enabled.get())
-    if getattr(ui, "var_screener_metric", None) is not None:
-        mv = str(ui.var_screener_metric.get()).strip().lower()
-        if mv in ("atr14", "std_return"):
-            scr_merged["volatility_metric"] = mv
+    scr_merged["volatility_metric"] = "atr14"
+    scr_merged["enabled"] = gui_mode == GUI_SCREENER_MODE_SCREENER
     uni_block["screener"] = scr_merged
-    screener_on = bool(scr_merged.get("enabled"))
+    uni_block["screener_mode"] = gui_mode
 
     if (
         not silent
-        and not screener_on
+        and gui_mode == GUI_SCREENER_MODE_WHOLE
         and not kw
         and not _has_explicit_stock_selection(
             ui,
@@ -453,11 +521,11 @@ def try_build_config(
     ):
         if hasattr(ui, "set_status_message"):
             ui.set_status_message(
-                "오류: 스크리너 미사용 시 검색할 종목명을 입력해야 합니다."
+                "오류: 「전체」 모드에서는 검색할 종목명을 입력하거나 목록에서 종목을 고르세요."
             )
         messagebox.showwarning(
             "입력 오류",
-            "종목명을 입력하거나 종목 스크리너를 선택해 주세요.",
+            "「전체」 모드에서는 상단 종목 검색창을 채워 검색하거나, 검색 결과·이력에서 종목을 선택하세요.",
         )
         return None
 
@@ -477,11 +545,12 @@ def try_build_config(
             sel = ui.list_codes.curselection()
             if sel:
                 line = ui.list_codes.get(sel[0])
-                code = line.split()[0].strip()
+                code = parse_gui_list_row_code(str(line)).strip().zfill(6)
             else:
                 code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-                # deepcopy 초기값이 비어 있는 경우 원본 YAML의 selected_code 재시도
-                if (not code or code == "000000") and screener_on:
+                if (not code or code == "000000") and (
+                    gui_mode != GUI_SCREENER_MODE_WHOLE
+                ):
                     fallback = (
                         str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
                     )
@@ -493,9 +562,9 @@ def try_build_config(
     if not code or code == "000000":
         if not silent:
             hint = ""
-            if screener_on:
+            if gui_mode != GUI_SCREENER_MODE_WHOLE:
                 hint = (
-                    "\n\n종목 스크리너 모드에서는 스크린 결과에서 종목을 고르거나, "
+                    "\n\n자동 스캔 모드에서는 검색 결과에서 종목을 고르거나, "
                     "settings 의 universe.selected_code 에 6자리 코드가 있어야 합니다."
                 )
             messagebox.showwarning(

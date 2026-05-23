@@ -46,6 +46,7 @@ def strategy_entry_filters_from_cfg(st: dict) -> dict[str, bool | float]:
         "filter_breakout_strength": bool(st.get("filter_breakout_strength", False)),
         "filter_time_buffer": bool(st.get("filter_time_buffer", False)),
         "harness_buy_all_three_and": bool(st.get("harness_buy_all_three_and", False)),
+        "use_slope_acceleration": bool(st.get("use_slope_acceleration", False)),
     }
 
 
@@ -141,6 +142,7 @@ def run_backtest_detailed(
     embed_figure: bool = False,
     *,
     ohlcv_preloaded_daily: pd.DataFrame | None = None,
+    omit_report_artifacts: bool = False,
 ) -> BacktestResult:
     """설정 dict 기준 전체 백테스트. GUI·CLI 공용."""
     lines: list[str] = []
@@ -252,6 +254,7 @@ def run_backtest_detailed(
             entry_ef["filter_trend_slope"],
             entry_ef["filter_breakout_strength"],
             entry_ef["filter_time_buffer"],
+            entry_ef["use_slope_acceleration"],
         )
     )
     if any_entry_filter and len(bars) < MIN_BARS_FOR_ENTRY_FILTERS:
@@ -273,11 +276,17 @@ def run_backtest_detailed(
             parts.append("돌파강도")
         if entry_ef["filter_time_buffer"]:
             parts.append("시간버퍼")
+        if entry_ef["use_slope_acceleration"]:
+            parts.append("곡선가속도(MA20 OLS 기울기>0)")
         lines.append("[전략 v4.0] 매수 진입 필터(골던 후보 AND): " + ", ".join(parts))
     elif harness_buy:
-        lines.append(
-            "[Harness 매수] 골든 후 대세·돌파·시간버퍼 세 조건 **동시 만족(AND)** (개별 필터 스위치와 무관)."
+        hb = (
+            "[Harness 매수] 골든 후 대세·돌파·시간버퍼 세 조건 **동시 만족(AND)** "
+            "(개별 필터 스위치와 무관)."
         )
+        if entry_ef["use_slope_acceleration"]:
+            hb += " + 곡선가속도(MA20 OLS 기울기>0)."
+        lines.append(hb)
 
     lines.append(
         "[매도] 트레일(활성 시) 종가 신호 또는 데드(옵션) 중 **어느 한쪽이라도 충족 시** 다음 봉 시가 청산 시뮬(OR)."
@@ -322,16 +331,6 @@ def run_backtest_detailed(
         return BacktestResult(False, "시뮬 구간이 너무 짧습니다.", [], None, lines)
     sim, trades = res
 
-    full_close = sig_df["Close"].astype(float)
-    trend_ma: dict[int, pd.Series] = {}
-    for p in TREND_MA_PERIODS:
-        if not trend_flags.get(p):
-            continue
-        trend_ma[p] = rolling_trend_ma_series(full_close, p)
-    trend_plot = (
-        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
-    )
-
     eq = sim["Equity"]
     total_r, cagr_r, mdd_r, ret_series = metrics_total_cagr_mdd_equity(
         eq, initial, bars_per_year
@@ -347,6 +346,65 @@ def run_backtest_detailed(
         ["연평균 수익률", f"{cagr_r:.2f} %"],
         ["최대 손실 낙폭", f"{mdd_r:.2f} %"],
     ]
+
+    n_buy = sum(1 for t in trades if t["side"] == "BUY")
+    n_sell = sum(1 for t in trades if t["side"] == "SELL")
+
+    if omit_report_artifacts:
+        trend_plot_rb: dict[int, pd.Series] | None = None
+        if embed_figure:
+            full_close_rb = sig_df["Close"].astype(float)
+            trend_ma_rb: dict[int, pd.Series] = {}
+            for p in TREND_MA_PERIODS:
+                if not trend_flags.get(p):
+                    continue
+                trend_ma_rb[p] = rolling_trend_ma_series(full_close_rb, p)
+            trend_plot_rb = (
+                {p: s.reindex(sim.index) for p, s in trend_ma_rb.items()}
+                if trend_ma_rb
+                else None
+            )
+
+        replay_chart_rb: dict | None = None
+        if embed_figure:
+            replay_chart_rb = {
+                "sim": sim,
+                "trades": trades,
+                "name": name,
+                "bar_label": bar_label,
+                "ma_n": ma_n,
+                "ret_series": ret_series,
+                "trend_ma": trend_plot_rb,
+                "show_chart_candle": show_chart_candle,
+                "show_chart_volume": show_chart_volume,
+                "show_chart_return": show_chart_return,
+            }
+
+        lines.append(
+            f"[그래프] 생략(omit_report_artifacts 배치 모드) — 매수 {n_buy}회 / 매도 {n_sell}회"
+        )
+
+        return BacktestResult(
+            True,
+            None,
+            summary,
+            None,
+            lines,
+            replay_chart=replay_chart_rb,
+            n_buy=n_buy,
+            n_sell=n_sell,
+            trade_markers_skipped=0,
+        )
+
+    full_close = sig_df["Close"].astype(float)
+    trend_ma: dict[int, pd.Series] = {}
+    for p in TREND_MA_PERIODS:
+        if not trend_flags.get(p):
+            continue
+        trend_ma[p] = rolling_trend_ma_series(full_close, p)
+    trend_plot = (
+        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    )
 
     out_png = os.path.join("output", "backtest_report.png")
     fig = make_backtest_figure(
@@ -377,11 +435,11 @@ def run_backtest_detailed(
             f.write("=====================================================\n")
             f.write("[시뮬레이터 매매 신호 및 차트 마킹 동기화 검증 로그]\n")
             f.write(f"종목: {name} ({selected})\n\n")
-            
+
             idx = sim.index
             buy_idx = 0
             sell_idx = 0
-            
+
             for t in trades:
                 side = t["side"]
                 if side == "BUY":
@@ -390,7 +448,7 @@ def run_backtest_detailed(
                 else:
                     sell_idx += 1
                     label = f"매도 {sell_idx}번"
-                
+
                 # 체결일 인덱스
                 trade_ts = pd.Timestamp(t["date"]).normalize()
                 idx_norm = idx.normalize()
@@ -401,10 +459,10 @@ def run_backtest_detailed(
                 bi_signal = bi_exec - 1
                 if bi_signal < 0:
                     continue
-                    
+
                 t_date_str = idx[bi_signal].strftime("%Y-%m-%d")
                 exec_date_str = idx[bi_exec].strftime("%Y-%m-%d")
-                
+
                 # 캔들 형태 판단 (T일)
                 op = float(sim["Open"].iloc[bi_signal])
                 cl = float(sim["Close"].iloc[bi_signal])
@@ -419,21 +477,26 @@ def run_backtest_detailed(
                     candle_desc = "양봉"
                 else:
                     candle_desc = "도지"
-                    
+
                 marked_date = t.get("marked_date", exec_date_str)
-                
+
                 error_suffix = ""
                 if marked_date != t_date_str:
                     error_suffix = "   [오류: 인덱스 1칸 밀림 발생]"
-                    
+
                 f.write(f" [{label}]\n\n")
-                f.write(f"전략 판단 신호 발생일 (T일 종가): {t_date_str} ({candle_desc})\n\n")
+                f.write(
+                    f"전략 판단 신호 발생일 (T일 종가): {t_date_str} ({candle_desc})\n\n"
+                )
                 f.write(f"실제 차트 마킹 적용일 (정상 위치): {t_date_str}\n\n")
-                f.write(f"현재 차트 플로팅 인덱스 날짜   : {marked_date}{error_suffix}\n\n")
+                f.write(
+                    f"현재 차트 플로팅 인덱스 날짜   : {marked_date}{error_suffix}\n\n"
+                )
                 f.write(f"실제 체결 집행일 (T+1일 시가)  : {exec_date_str}\n")
                 f.write("=====================================================\n\n")
     except Exception as e:
         import sys
+
         print(f"[ERROR] 검증 로그 작성 실패: {e}", file=sys.stderr)
 
     replay_chart: dict | None = None
@@ -451,8 +514,6 @@ def run_backtest_detailed(
             "show_chart_return": show_chart_return,
         }
 
-    n_buy = sum(1 for t in trades if t["side"] == "BUY")
-    n_sell = sum(1 for t in trades if t["side"] == "SELL")
     lines.append(f"[그래프] {out_png} (매수 {n_buy}회 / 매도 {n_sell}회)")
 
     return BacktestResult(

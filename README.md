@@ -21,7 +21,8 @@ BackTesterKRX/
 │   ├── strategy.py     # 골든/데드크로스 시그널
 │   ├── simulator.py    # 익봉 시가 체결·수수료 시뮬
 │   ├── metrics.py      # 성과 지표·PNG 보고서·run_backtest_detailed
-│   └── stock_screener.py  # 종목 스크리너(MA120 역배열 제외·변동성·거래대금·낙폭·거래량건조 순위 융합)
+│   ├── slope_ablation_batch.py  # `--slope-ablation-batch` 유니버스 통계 배치(TSV)
+│   └── stock_screener.py  # 스크리너(MA120 역배열 제외·ATR14·거래대금·낙폭·거래량건조 순위 융합)
 ├── output/             # backtest_report.png
 ├── config/             # settings.yaml (기본 설정)
 ├── main.py             # GUI/CLI 공통 진입
@@ -53,8 +54,8 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면: **시장·종목·검색** 및 옵션 **종목 스크리너**, 기간 기본 **6개월 전~오늘**. 우측 차트는 창에 맞춰 **가변 확장**(최소 크기 약 **960×540**, 폴백 **1280×840**)·실측 `chart_overlay_host` 기준 PNG 리사이즈. 매매 기준 이평 **5·10·20**(내부 변수), 추세선 **20·120** 기본, 캘린더 선택.)  
-검색 → 리스트에서 **종목 1개 선택** → 기간·원금 등 → **백테스트 실행**.
+(화면: **시장·종목·검색** 및 **스크리너 모드**(전체 / 스크리너 / 시총 상위 / 돌파 에너지)·검색 결과(티커|종목명|시총), 기간 기본 **6개월 전~오늘**. 우측 차트는 창에 맞춰 **가변 확장**(최소 크기 약 **960×540**, 폴백 **1280×840**)·실측 `chart_overlay_host` 기준 PNG 리사이즈. 매매 기준 이평 **5·10·20**, 추세선 **20·120** 기본, 캘린더 선택.)  
+검색 → 리스트에서 **종목 1개 선택** 또는 **더블클릭 즉시 실행**(동작은 동일)·기간·원금 등 설정 후 **백테스트 실행** 버튼을 누르면 **현재 선택(하이라이트)된 종목 하나만** 단일 실행됩니다.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (`watchdog`, Node 불필요)
 
@@ -86,13 +87,19 @@ python main.py --interval daily --start 2022-01-01 --end 2025-12-31 --keyword �
 
 (`--ma120` / `--ma200` 은 YAML 의 `show_trend_ma120` / `show_trend_ma200` 을 켭니다.)
 
-**종목 스크리너 배치:** 종료일(`--end` 또는 YAML `period.end_date`)까지의 **일봉만** 사용. 후보별 데이터는 **캘린더 약 400일**(MA120·ATR 워밍업)까지 당김. **종가\<120일 단순이평(역배열)** 인 종목은 **랭킹 산출 전 제외**. 스코어는 최근 lookback 내 **변동성·거래대금·고점 대비 낙폭·거래량 건조(말단/직전 평균 거래량 비율)** 를 각각 순위분위화한 뒤 평균(낙폭은 `pullback_rank_cap_pct` 클램프 후 순위화)합니다. 상위 `top_n` 종목만 순차 백테스트합니다.
+**스크리너 배치 CLI:** 종료일(`--end` 또는 YAML `period.end_date`)까지의 **일봉만** 사용. 후보별 데이터는 **캘린더 약 400일**(MA120·ATR 워밍업)까지 당김. **종가\<120일 단순이평(역배열)** 인 종목은 **랭킹 산출 전 제외**. 변동성 지표는 **ATR14 고정**. 스코어는 최근 lookback 내 **거래대금·고점 대비 낙폭·거래량 건조·ATR%** 를 각각 순위분위화한 뒤 평균(낙폭은 `pullback_rank_cap_pct` 클램프 후 순위화)합니다. 상위 `top_n` 종목만 순차 백테스트합니다.
 
 ```powershell
 python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
 ```
 
-선정 순위는 `output/screener_last.tsv` 에 저장합니다. 검색 키워드를 비우면 해당 시장 **전 후보**를 돌려 **네트워크 부하와 시간이 큽니다.**
+스크리너 선정 순위는 `output/screener_last.tsv` 에 저장합니다. 검색 키워드를 비우면 해당 시장 **전 후보**를 돌려 **네트워크 부하와 시간이 큽니다.**
+
+**곡선 가속도 ablation(전 유니버스 통계 비교):** 같은 YAML 전략·기간으로 `universe.slope_ablation_batch` 시총 한도 종목 각각 **`use_slope_acceleration` False**(baseline)·**True**(slope_accel; 엔진: 최근 MA20 OLS 기울기>0) 경량 시뮬 2회, 결과를 **`output/slope_ablation.tsv`** 에 기록합니다(차트/PNG 생략). `--batch-max-workers N` 로 병렬도 조정.
+
+```powershell
+python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
+```
 
 **그래프:** `output/backtest_report.png` — **`mplfinance`** 로 가격(**캔들** 또는 **종가선**)·**(선택) 거래량**·**(선택) 누적 수익률** 패널을 조합(비율: 전체 **50:14:21**(거래량·수익률 패널 높이 기존 대비 약 30% 축소), 거래량 끔 **15:7**, 수익률 끔 **10:3**, 가격만 **단일 패널**) + **(선택) 추세 이평 오버레이**(켜진 기간만 `TREND_MA_COLORS`, **PNG 가격 패널 좌상단 `ax.legend`(v4.5)·반투명 박스)** + **매매 타점**(v3.4~v3.5 동일)·매매 기준 이평(N일)은 **차트 선으로 그리지 않음**(시그널·체결만).
 
@@ -113,4 +120,4 @@ python main.py --screener-batch --market KOSPI --keyword 삼성 --end 2025-12-31
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 |
 | `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) |
-| `src/stock_screener.py` | 일봉 스크리너(MA120 역배열 하드 필터·변동성·거래대금·낙폭·거래량건조 순위 융합·GUI·CLI 공용) |
+| `src/stock_screener.py` | 일봉 스크리너(ATR14 고정·MA120 역배열 하드 필터·거래대금·낙폭·거래량건조 순위 융합·시총 상위·돌파 에너지·GUI·CLI 공용) |

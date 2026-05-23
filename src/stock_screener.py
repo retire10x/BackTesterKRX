@@ -1,9 +1,11 @@
 """
-일봉 기준 종목 스크리너: 설정 종료일 이전 영업일 구간만 사용(미래 참조 금지).
+일봉 기준 스크리너: 설정 종료일 이전 영업일 구간만 사용(미래 참조 금지).
 **종가 < MA120 역배열 종목 사전 제외 기능 포함** — 랭킹 산출 전 종가와 120일 단순이평 비교해 하향 배열이면 탈락.
 
-최근 N거래일 변동성·거래대금·**고점 대비 낙폭(%)**·**거래량 감소 지표**를 순위분위 융합해 눌림목형 후보 상위 산출.
+최근 N거래일 **ATR%(14)·거래대금** 및 **고점 대비 낙폭(%)**·**거래량 감소 지표**를 순위분위 융합해 눌림목형 후보 상위 산출.
 FinanceDataReader 기반으로 GUI 비의존.
+
+변동성은 **항상 atr14**(최근 14영업일 True Range Wilder 평균 대비 종가 %)로 고정한다.
 """
 from __future__ import annotations
 
@@ -134,12 +136,23 @@ class ScreenerEntry:
     combined_score: float
 
 
+@dataclass(frozen=True)
+class RankedUniversePick:
+    """시총 순위·돌파 에너지 등 GUI 배치 공용 간단 순위 행 (리스트박스·TSV)."""
+
+    code: str
+    name: str
+    combined_score: float
+    market_cap_krw: float | None = None
+
+
 def default_screener_config() -> dict:
     """settings.yaml 우선 병합용 기본 블록."""
     return {
         "enabled": True,
         "lookback_trading_days": 20,
         "top_n": 30,
+        # 변동성 지표 GUI 제거 후 엔진은 atr14(14일 평균 등락 폭 %)만 사용
         "volatility_metric": "atr14",
         "combine": "sum_rank_pct",
         "min_market_cap_krw": SCREEN_MIN_MARKET_CAP_KRW_DEFAULT,
@@ -178,6 +191,7 @@ def _daily_metrics_slice(
     """
     end_ts까지의 일봉만 사용하여 [마지막 lookback거래일] 구간 변동성·거래대금 합 계산.
     ATR은 전체 로드 구간으로 워밍업한 뒤, 마지막 lookback구간의 ATR/종가 비율 평균만 사용.
+    변동성은 **항상 atr14**(최근 14일 평균 참범위/종가 %)만 사용 — 구 metric 인자는 하위 호환용.
     z_prefetched_end: 이미 종료일까지 자른 동일 규격 OHLCV(역배열 필터 후 재사용용).
     """
     if z_prefetched_end is not None:
@@ -188,10 +202,8 @@ def _daily_metrics_slice(
         if z is None:
             return None, None
 
-    metric = volatility_metric.strip().lower()
     atr_period = 14
-    # ATR은 lookback 이전 봉까지 포함해 추정해야 안정적이다.
-    min_len = lookback + (atr_period if metric in ("atr", "atr14") else 0)
+    min_len = lookback + atr_period
     if len(z) < min_len:
         return None, None
 
@@ -204,25 +216,16 @@ def _daily_metrics_slice(
     if turnover <= 0 or not np.isfinite(turnover):
         return None, None
 
-    if metric == "std_return":
-        cl = pd.to_numeric(tail["Close"], errors="coerce")
-        lr = np.log(cl / cl.shift(1)).dropna()
-        if len(lr) < max(lookback // 2, 5):
-            return None, None
-        vol = float(lr.std(ddof=0))
-    elif metric in ("atr", "atr14"):
-        atrp = atr_ratio_series(
-            pd.to_numeric(z["High"], errors="coerce"),
-            pd.to_numeric(z["Low"], errors="coerce"),
-            pd.to_numeric(z["Close"], errors="coerce"),
-            period=atr_period,
-        )
-        atr_tail = atrp.dropna().iloc[-lookback:]
-        if atr_tail.empty:
-            return None, None
-        vol = float(atr_tail.mean())
-    else:
-        raise ValueError(f"지원하지 않는 volatility_metric: {volatility_metric}")
+    atrp = atr_ratio_series(
+        pd.to_numeric(z["High"], errors="coerce"),
+        pd.to_numeric(z["Low"], errors="coerce"),
+        pd.to_numeric(z["Close"], errors="coerce"),
+        period=atr_period,
+    )
+    atr_tail = atrp.dropna().iloc[-lookback:]
+    if atr_tail.empty:
+        return None, None
+    vol = float(atr_tail.mean())
 
     if not np.isfinite(vol):
         return None, None
@@ -267,6 +270,210 @@ def _pullback_volume_contract_from_lookback_tail(
 def _screen_fetch_start(end_date: str) -> str:
     t = pd.Timestamp(str(end_date).strip()[:10])
     return (t - pd.Timedelta(days=_SCR_FETCH_CALENDAR_DAYS)).strftime("%Y-%m-%d")
+
+
+_BREAKOUT_TD = 20
+_BREAKOUT_BURST_MULT = 3.0  # 평균 대비 거래대금 300%
+_BREAKOUT_NEAR_HIGH = 0.95  # 20일 고점 대비 종가 −5% 이내 근접(≥95%)
+
+
+def screen_universe_mcap_top(
+    *,
+    market: str,
+    keyword: str,
+    top_n: int = 30,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> list[RankedUniversePick]:
+    """기술 지표 배제 · 상장표 시총 기준 상위 top_n 종목만 선별."""
+    cand = fetch_filtered_universe(market, keyword)
+    if not cand:
+        return []
+
+    mkt_upper_local = str(market).strip().upper()
+    marcap_krw_map = fetch_listing_market_cap_krw_by_code(market)
+    if not marcap_krw_map and mkt_upper_local != "ETF":
+        rows: list[tuple[str, str, float, float]] = [
+            (
+                str(code).strip().zfill(6),
+                str(name),
+                0.0,
+                float("nan"),
+            )
+            for code, name in sorted(cand.items(), key=lambda x: x[0])
+        ]
+    else:
+        rows = []
+        for code, name in sorted(cand.items(), key=lambda x: x[0]):
+            cdf = code.strip().zfill(6)
+            mc_raw = (
+                marcap_krw_map.get(cdf)
+                if isinstance(marcap_krw_map, dict)
+                else None
+            )
+            mc = (
+                float(mc_raw)
+                if mc_raw is not None and np.isfinite(float(mc_raw))
+                else float("nan")
+            )
+            sc = mc if np.isfinite(mc) else float("-inf")
+            rows.append((cdf, name, sc, mc))
+        rows.sort(key=lambda r: (-r[2], r[0]))
+
+    cap = max(1, min(200, int(top_n)))
+    out: list[RankedUniversePick] = []
+    done = 0
+    for cdf, nm, _sc4sort, mc in rows[:cap]:
+        done += 1
+        if progress_cb:
+            progress_cb(done, cap, cdf)
+        mcap_use = mc if np.isfinite(mc) and mc > 0 else None
+        norm = mc / max(1.0, 1e13) if mcap_use is not None else 0.0
+        out.append(
+            RankedUniversePick(
+                code=str(cdf).zfill(6),
+                name=str(nm),
+                combined_score=float(norm),
+                market_cap_krw=mcap_use,
+            )
+        )
+    return out
+
+
+def _breakout_candidate_row(
+    code: str,
+    name: str,
+    fetch_start: str,
+    end_date: str,
+    *,
+    marcap_krw_map: dict[str, float] | None,
+    min_market_cap_krw: float,
+) -> RankedUniversePick | None:
+    cdf = code.strip().zfill(6)
+
+    df = load_ohlcv(code, fetch_start, end_date)
+    zw = _slice_ohlcv_through_end_calendar(df, end_date_str=end_date)
+    if zw is None or zw.empty:
+        return None
+
+    # 시총 하드 게이트(스크리너와 동일 — ETF 에서는 호출 전에 비활성)
+    if marcap_krw_map is not None and min_market_cap_krw > 0:
+        mc_chk = marcap_krw_map.get(cdf)
+        if mc_chk is None or not np.isfinite(float(mc_chk)) or float(
+            mc_chk
+        ) < float(min_market_cap_krw):
+            return None
+    zw = zw.dropna(subset=list(_OHLCV_COLS_REQ))
+    if len(zw) < _BREAKOUT_TD:
+        return None
+
+    tail = zw.iloc[-_BREAKOUT_TD:].copy()
+    vol = pd.to_numeric(tail["Volume"], errors="coerce").fillna(0.0)
+    cl = pd.to_numeric(tail["Close"], errors="coerce")
+    hi = pd.to_numeric(tail["High"], errors="coerce")
+    tv = (vol * cl).to_numpy(dtype=float)
+    if len(tv) < _BREAKOUT_TD or not np.all(np.isfinite(tv)):
+        return None
+
+    avg_tv = float(np.mean(tv))
+    max_tv = float(np.max(tv))
+    last_close = float(cl.iloc[-1])
+    hh = float(hi.max())
+
+    if not np.isfinite(avg_tv) or avg_tv <= 1e-9:
+        return None
+    if not np.isfinite(max_tv) or not np.isfinite(last_close) or not np.isfinite(hh):
+        return None
+    if hh <= 0 or last_close < hh * _BREAKOUT_NEAR_HIGH:
+        return None
+    if max_tv < _BREAKOUT_BURST_MULT * avg_tv:
+        return None
+
+    burst_ratio = max_tv / avg_tv
+    proximity = last_close / hh
+    combo = float(max(1e-9, burst_ratio) * max(proximity, 1e-9))
+
+    mc = None
+    if marcap_krw_map is not None:
+        mr = marcap_krw_map.get(cdf)
+        if mr is not None and np.isfinite(float(mr)) and float(mr) > 0:
+            mc = float(mr)
+
+    return RankedUniversePick(
+        code=str(cdf),
+        name=str(name),
+        combined_score=combo,
+        market_cap_krw=mc,
+    )
+
+
+def screen_universe_breakout_energy(
+    *,
+    market: str,
+    keyword: str,
+    end_date: str,
+    top_n: int = 30,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    max_workers: int = MAX_SCREEN_WORKERS,
+    min_market_cap_krw: float | None = None,
+) -> list[RankedUniversePick]:
+    """
+    최근 20거래일: 일별 거래대금이 구간 평균 대비 최대값이 ≥300%
+    이고, 종가가 20일 고점 −5% 이내 또는 돌파에 근접한 종목을 점수순 선별.
+    """
+    cand = fetch_filtered_universe(market, keyword)
+    if not cand:
+        return []
+    fetch_start = _screen_fetch_start(end_date)
+
+    min_mc_eff = (
+        SCREEN_MIN_MARKET_CAP_KRW_DEFAULT
+        if min_market_cap_krw is None
+        else float(min_market_cap_krw)
+    )
+    mkt_upper = str(market).strip().upper()
+    if mkt_upper == "ETF":
+        marcap_krw_map: dict[str, float] | None = None
+        min_mc_eff = 0.0
+    elif min_mc_eff > 0:
+        marcap_krw_map = fetch_listing_market_cap_krw_by_code(market)
+        if not marcap_krw_map:
+            marcap_krw_map = {}
+    else:
+        marcap_krw_map = None
+
+    items = sorted(cand.items(), key=lambda x: x[0])
+    total = len(items)
+    raw_out: list[RankedUniversePick] = []
+    done = 0
+
+    def _one(pair: tuple[str, str]) -> RankedUniversePick | None:
+        cod, nm = pair
+        return _breakout_candidate_row(
+            cod,
+            nm,
+            fetch_start,
+            end_date,
+            marcap_krw_map=marcap_krw_map,
+            min_market_cap_krw=min_mc_eff,
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 12))) as ex:
+        futures = {ex.submit(_one, p): p[0] for p in items}
+        for fut in as_completed(futures):
+            done += 1
+            cdf = futures[fut]
+            if progress_cb is not None:
+                progress_cb(done, total, cdf)
+            try:
+                row = fut.result()
+            except Exception:
+                row = None
+            if row is not None:
+                raw_out.append(row)
+
+    cap = max(1, min(200, int(top_n)))
+    raw_out.sort(key=lambda x: (-float(x.combined_score), str(x.code)))
+    return raw_out[:cap]
 
 
 def rank_screener_candidates(
@@ -423,6 +630,7 @@ def screen_universe(
     키워드로 좁힌 시장 유니버스에 대해 스크리닝 후 상위 top_n 반환.
     progress_cb(done_count, total, last_code) — 스레드에서 호출 시 GUI는 after로 래핑 권장.
     """
+    volatility_metric = "atr14"  # 엔진 고정 atr14 (매개변수는 하위 호환용)
     cand = fetch_filtered_universe(market, keyword)
     if not cand:
         return []
