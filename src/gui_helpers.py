@@ -648,45 +648,100 @@ def _has_explicit_stock_selection(
     return bool(yaml_cd and yaml_cd != "000000")
 
 
-def live_strategy_blob_for_pipeline_search(ui: "BacktestGUI") -> dict:
+def merge_live_trade_panel_into_strategy(
+    ui: "BacktestGUI",
+    strategy_out: dict,
+    *,
+    ma_period_preset: int | None = None,
+    clamp_invalid_ma_period: bool = False,
+) -> str | None:
     """
-    `execute_pipelined_screening` 에 넘길 strategy 블록.
+    차트 표시 플래그(`show_*`)를 제외한 **매매 신호·진입 필터·트레일** 키를
+    우측 패널·주기 위젯으로 `strategy_out` 에 제자리 반영한다.
 
-    디스크 `settings.yaml` 의 strategy 딥카피를 기준으로, 우측 **매매 규칙** 위젯
-    (`golden_buy`·진입 필터·이평·주기 등)으로 덮어쓴다. 검색 버튼이 YAML 저장 없이
-    동작하므로 스냅샷 없이 `load_config()` 만 쓰면 GUI 변경이 종봉 필터에 반영되지 않는다.
+    - `try_build_config`·`extract_live_strategy_config` 가 **동일 규격**으로 사용한다.
 
-    **Tk 변수 읽기**이므로 **메인/UI 스레드에서만** 호출할 것(워커에서 호출 금지).
+    매개변수:
+    - ``ma_period_preset``: ``None`` 이면 위젿에서 읽음. 검증 성공값(5·10·20)을 넘길 경우
+      (백테스트 경로에서 이미 검증한 뒤) 그대로 사용한다.
+    - ``clamp_invalid_ma_period``: 프리셋 없이 위젓 값이 무효일 때 ``20`` 으로 고정 검색 호환 경로용.
+
+    반환값: 검증 거부 등 실패 메시지(한 줄), 성공 시 ``None``.
     """
-    base = load_config()
-    st = copy.deepcopy(dict(base.get("strategy") or {}))
-    interval = ui.var_interval.get()
-    if isinstance(interval, str) and interval.strip():
-        st["interval"] = str(interval).strip().lower()
-    try:
-        ma_n = int(ui.var_ma_period.get())
-    except ValueError:
-        ma_n = 20
-    if ma_n not in (5, 10, 20):
-        ma_n = 20
-    st["ma_period"] = ma_n
+    iv = ui.var_interval.get()
+    if isinstance(iv, str) and iv.strip():
+        strategy_out["interval"] = str(iv).strip().lower()
 
-    st["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
-    st["dead_cross_sell_enabled"] = bool(ui.var_dead_sell.get())
+    if ma_period_preset is not None:
+        mn = int(ma_period_preset)
+        if mn not in (5, 10, 20):
+            return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        strategy_out["ma_period"] = mn
+    else:
+        try:
+            mn = int(ui.var_ma_period.get())
+        except ValueError:
+            if clamp_invalid_ma_period:
+                mn = 20
+            else:
+                return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        if mn not in (5, 10, 20):
+            if clamp_invalid_ma_period:
+                mn = 20
+            else:
+                return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        strategy_out["ma_period"] = mn
+
+    strategy_out["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
+    strategy_out["dead_cross_sell_enabled"] = bool(ui.var_dead_sell.get())
 
     try:
         slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
     except ValueError:
-        slope_thr = float(st.get("slope_threshold", 0.01))
-    st["slope_threshold"] = slope_thr
-    st["filter_trend_slope"] = bool(ui.var_filter_trend.get())
-    st["filter_breakout_strength"] = bool(ui.var_filter_breakout.get())
-    st["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
+        slope_thr = float(strategy_out.get("slope_threshold", 0.01))
+    strategy_out["slope_threshold"] = slope_thr
+    strategy_out["filter_trend_slope"] = bool(ui.var_filter_trend.get())
+    strategy_out["filter_breakout_strength"] = bool(ui.var_filter_breakout.get())
+    strategy_out["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
 
     if hasattr(ui, "check_slope_accel_var"):
-        st["use_slope_acceleration"] = bool(ui.check_slope_accel_var.get())
+        strategy_out["use_slope_acceleration"] = bool(ui.check_slope_accel_var.get())
 
-    # `harness_buy_all_three_and` 등 YAML 전용 플래그는 deepcopy 상태 유지
+    try:
+        t_ref = float(str(ui.var_trailing_reference_pct.get()).replace(",", "").strip())
+        t_below = float(str(ui.var_trailing_drop_below_pct.get()).replace(",", "").strip())
+        t_above = float(str(ui.var_trailing_drop_above_pct.get()).replace(",", "").strip())
+    except ValueError:
+        return "가변 낙폭 매도 수치(기준·미달·돌파 %)는 숫자로 입력하세요."
+    if t_ref <= 0 or t_below <= 0 or t_above <= 0:
+        return "가변 낙폭 매도 기준 및 낙폭 값은 모두 양수여야 합니다."
+    strategy_out["trailing_stop_enabled"] = bool(ui.var_trailing_stop.get())
+    strategy_out["trailing_reference_pct"] = t_ref
+    strategy_out["trailing_drop_below_pct"] = t_below
+    strategy_out["trailing_drop_above_pct"] = t_above
+
+    return None
+
+
+def extract_live_strategy_config(ui: "BacktestGUI") -> dict:
+    """
+    YAML ``strategy`` 딥카피 + 현재 패널 **매매(신호·필터·트레일)** 위젯을 오버레이한다.
+
+    `execute_pipelined_screening`·외부 검증 코드와 규격이 `try_build_config` 결과의
+    해당 키와 동일해야 한다 — 내부적으로 `merge_live_trade_panel_into_strategy` 를 사용한다.
+
+    **Tk 변수는 메인 스레드에서만 읽음.**
+    """
+    base = load_config()
+    st = copy.deepcopy(dict(base.get("strategy") or {}))
+    err = merge_live_trade_panel_into_strategy(
+        ui,
+        st,
+        ma_period_preset=None,
+        clamp_invalid_ma_period=True,
+    )
+    if err:
+        raise RuntimeError(err)
     return st
 
 
@@ -832,8 +887,6 @@ def try_build_config(
 
     cfg["universe"]["selected_code"] = code
 
-    interval = ui.var_interval.get()
-    cfg.setdefault("strategy", {})["interval"] = interval
     try:
         ma_n = int(ui.var_ma_period.get())
     except ValueError:
@@ -841,7 +894,12 @@ def try_build_config(
     if ma_n not in (5, 10, 20):
         messagebox.showerror("오류", "매매 기준 이평은 5·10·20일선 중 하나여야 합니다.")
         return None
-    cfg.setdefault("strategy", {})["ma_period"] = ma_n
+
+    st = cfg.setdefault("strategy", {})
+    m_err = merge_live_trade_panel_into_strategy(ui, st, ma_period_preset=ma_n)
+    if m_err:
+        messagebox.showerror("오류", m_err)
+        return None
 
     try:
         sd = ui._date_start.get_date()
@@ -899,51 +957,6 @@ def try_build_config(
     )
     cfg.get("strategy", {}).pop("show_chart_return", None)
     cfg.get("strategy", {}).pop("show_chart_scroll", None)
-
-    cfg.setdefault("strategy", {})["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
-    cfg.setdefault("strategy", {})["dead_cross_sell_enabled"] = bool(
-        ui.var_dead_sell.get()
-    )
-
-    try:
-        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
-    except ValueError:
-        slope_thr = 0.01
-    cfg.setdefault("strategy", {})["slope_threshold"] = slope_thr
-    cfg.setdefault("strategy", {})["filter_trend_slope"] = bool(ui.var_filter_trend.get())
-    cfg.setdefault("strategy", {})["filter_breakout_strength"] = bool(
-        ui.var_filter_breakout.get()
-    )
-    cfg.setdefault("strategy", {})["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
-
-    try:
-        t_ref = float(
-            str(ui.var_trailing_reference_pct.get()).replace(",", "").strip()
-        )
-        t_below = float(
-            str(ui.var_trailing_drop_below_pct.get()).replace(",", "").strip()
-        )
-        t_above = float(
-            str(ui.var_trailing_drop_above_pct.get()).replace(",", "").strip()
-        )
-    except ValueError:
-        messagebox.showerror(
-            "오류",
-            "가변 낙폭 매도 수치(기준·미달·돌파 %)는 숫자로 입력하세요.",
-        )
-        return None
-    if t_ref <= 0 or t_below <= 0 or t_above <= 0:
-        messagebox.showerror(
-            "오류",
-            "가변 낙폭 매도 기준 및 낙폭 값은 모두 양수여야 합니다.",
-        )
-        return None
-    cfg.setdefault("strategy", {})["trailing_stop_enabled"] = bool(
-        ui.var_trailing_stop.get()
-    )
-    cfg.setdefault("strategy", {})["trailing_reference_pct"] = t_ref
-    cfg.setdefault("strategy", {})["trailing_drop_below_pct"] = t_below
-    cfg.setdefault("strategy", {})["trailing_drop_above_pct"] = t_above
 
     return cfg
 

@@ -954,11 +954,14 @@ def _pipeline_buy_rules_terminal_qualifies(
     strategy_block: dict[str, object],
 ) -> bool:
     """
-    종료일 종가 확정 시점(마지막 봉)에서 매수 후보 규격: Signal==1(골든) + 활성 진입 필터 통과.
+    종료일 종가 확정 시점(마지막 봉)에서 2단계 매수 규칙 검증(v4.15).
+
+    - **골든 매수 ON:** 마지막 봉 `Signal == 1` 이어야 하고, 활성 진입 필터를 `_buy_filters_pass` 로 AND 검사한다.
+    - **골든 매수 OFF:** 골든 조건만 생략하고, 켜진 진입 필터만 동일 규격으로 AND 검사한다.
+      필터가 전부 꺼지면 해당 봉은 무조건 통과할 수 있다(백테·시뮬 정책과 별개 스크린 용도).
     """
     xf = strategy_cross_flags_from_cfg(strategy_block)
-    if not bool(xf["golden_buy_enabled"]):
-        return False
+    golden_on = bool(xf["golden_buy_enabled"])
     try:
         ma_n = max(5, int(strategy_block.get("ma_period", 20)))
     except (TypeError, ValueError):
@@ -968,7 +971,7 @@ def _pipeline_buy_rules_terminal_qualifies(
         add_signals(
             zw,
             ma_n,
-            golden_buy_enabled=bool(xf["golden_buy_enabled"]),
+            golden_buy_enabled=golden_on,
             dead_cross_sell_enabled=bool(xf["dead_cross_sell_enabled"]),
         )
     )
@@ -985,8 +988,9 @@ def _pipeline_buy_rules_terminal_qualifies(
     sig_arr = (
         pd.to_numeric(sig_df["Signal"], errors="coerce").fillna(0).to_numpy(dtype=int)
     )
-    if int(sig_arr[t_last]) != 1:
-        return False
+    if golden_on:
+        if int(sig_arr[t_last]) != 1:
+            return False
     try:
         return bool(_buy_filters_pass(sig_df, t_last, ef_ok))
     except Exception:
@@ -1009,12 +1013,13 @@ def execute_pipelined_screening(
     max_workers: int = MAX_SCREEN_WORKERS,
 ) -> list[PipelineScreenerPick]:
     """
-    v4.14 조립식 파이프라인: 후보(dict) 로드 후 체크된 단계를 순차 AND 적용한다.
-    순서: 유니버스 → (선택)시총 상위 컷오프 → 종목별 OHLC 필요 시 일괄 스레드 → 매수 규칙 → 김직선 패턴.
+    v4.14~v4.15 조립식 파이프라인: 유니버스 → (선택)시총 상위 → OHLC(필요 시) → **2단계 매수 규칙**
+    → 김직선 패턴. `min_market_cap_krw` 는 API 호환용(파이프라인에서는 시총 하한 미적용).
 
-    `min_market_cap_krw`(레거시)는 하위 호환 인자만 유지하며 파이프라인 후보 필터링에는 사용하지 않는다.
+    2단계 ON 시 종봉·OHLC 로드 후, **골든 매수 ON/OFF 와 무관**하게 활성 진입 필터를
+    `_buy_filters_pass` 로 AND 검사한다. 골든 ON 일 때만 마지막 봉에 `Signal == 1`(골든)을 추가로 요구한다.
 
-    결과는 단일 행 타입 PipelineScreenerPick 으로 정규화한다.
+    결과는 `PipelineScreenerPick` 리스트이다.
     """
     _ = min_market_cap_krw  # API 호환 유지(v4.14_Fix: 파이프라인에서는 시총 하한 미적용)
     cand = fetch_filtered_universe(market, keyword or "")
@@ -1030,10 +1035,8 @@ def execute_pipelined_screening(
 
     st_blob = dict(strategy_st or {})
 
-    xf0 = strategy_cross_flags_from_cfg(st_blob)
-    golden_on = bool(xf0["golden_buy_enabled"])
-    # 체크박스 2단계 ON이어도 골든 매수 OFF면 종봉 필터는 적용하지 않음(바이패스).
-    effective_buy_rules = bool(stage_buy_rules) and golden_on
+    # 2단계: 체크 ON 이 골든 플래그와 무관하게 OHLC 종봉 평가·필터 AND 를 수행(v4.15).
+    run_buy_stage_screen = bool(stage_buy_rules)
 
     mkt_upper = str(market).strip().upper()
     # 레거시 3000억 하한은 파이프라인 후보 소거에 사용하지 않음(1단계 Top-N만 게이트).
@@ -1042,7 +1045,7 @@ def execute_pipelined_screening(
     else:
         marcap_krw_map = fetch_listing_market_cap_krw_by_code(market) or {}
 
-    need_ohlc = bool(stage_kim_candle) or bool(effective_buy_rules)
+    need_ohlc = bool(stage_kim_candle) or run_buy_stage_screen
 
     disp_cap = max(1, min(200, int(top_display_n)))
     # 1단계 시총 Top-N은 mcap_cutoff_n(기본 100); 표시 건수는 YAML top_display_n 과의 max.
@@ -1100,7 +1103,7 @@ def execute_pipelined_screening(
                     mc=mc_use,
                     entry_f=(
                         "미적용"
-                        if not effective_buy_rules
+                        if not run_buy_stage_screen
                         else "—"
                     ),
                     candle_lbl=("미적용" if not stage_kim_candle else "—"),
@@ -1139,7 +1142,7 @@ def execute_pipelined_screening(
         if zw is None or zw.empty:
             return None
 
-        if effective_buy_rules:
+        if run_buy_stage_screen:
             if not _pipeline_buy_rules_terminal_qualifies(zw, strategy_block=st_blob):
                 return None
 
@@ -1154,7 +1157,7 @@ def execute_pipelined_screening(
         if hk is not None:
             lbl, _tv, spread_v = hk
 
-        entry_label = "Y" if effective_buy_rules else "미적용"
+        entry_label = "Y" if run_buy_stage_screen else "미적용"
 
         return _pick_with_fields(
             cdf,

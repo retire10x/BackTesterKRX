@@ -24,12 +24,19 @@
 - [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 - [x] **v4.13** 스크리너 「김직선 1봉 캔들 추적」: 장대양봉+20일 최대 거래량 기준봉 후 당일 고가돌파/중심선지지(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 - [x] **v4.14** GUI 라디오 폐지·**순차 AND 파이프라인** 체크(시총 Top100·매수 규칙 종봉·김직선 1봉); `execute_pipelined_screening`·`PipelineScreenerPick`·통합 목록 포맷; YAML `universe.screener_pipeline`
-- [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한·골든 OFF 시 **2단계 바이패스**
+- [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한
+- [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-24 (**v4.15** 매매 패널 추출 헬퍼 단일화 · 골든 OFF 시에도 2단계 필터 종봉 AND)
+- **`gui_helpers.py`:** `merge_live_trade_panel_into_strategy` 로 interval·이평(백테: 검증된 값)·골든/데드·진입 필터·가변 낙폭까지 한 경로 반영; `extract_live_strategy_config`(검색: 이평 클램프 + 실패 시 `RuntimeError`).
+- **`try_build_config`:** 차트 플래그 전에 동일 헬퍼 호출하여 중복 제거.
+- **`stock_screener.py`:** `run_buy_stage_screen = stage_buy_rules` 만으로 OHLC·`_pipeline_buy_rules_terminal_qualifies` 실행. `_pipeline_buy_rules_terminal_qualifies` 는 골든 ON→`Signal==1` 필요, 골든 OFF→Signal 생략·`_buy_filters_pass` 만 엄격 적용.
+- **`gui.py`:** 검색 스냅샷은 `extract_live_strategy_config`; 창 제목 v4.15.
 
 ### 2026-05-24 (**v4.14_Patch** 스크리너 2단계 strategy 누수 수정)
 - **원인:** `execute_pipelined_screening(..., strategy_st=load_config()['strategy'])` 만 사용해 **디스크 YAML** 기준으로 종봉·골든·진입 필터를 평가함. 사용자가 우측 패널에서 체크를 바꿔도 검색 결과(특히 1단계+2단계)가 거의 안 바뀌는 **GUI↔백엔드 단절**이었음(.py 내 `_buy_filters_pass` 무조건 True 버그 아님).
-- **`gui_helpers.py`:** `live_strategy_blob_for_pipeline_search(ui)` — YAML strategy 딥카피 + `[골든/데드, MA 주기·interval, 대세·돌파·시간·OLS 가속]` 위젯 오버레이. **Tk 읽기 → 메인 스레드 전용**.
+- **`gui_helpers.py`:** 패치 당시 `live_strategy_blob_for_pipeline_search`; v4.15에서 `extract_live_strategy_config`(코어 `merge_live_trade_panel_into_strategy`)로 통합.
 - **`gui.py`:** 검색 시작 직전 스냅샷 후 워커에 `strategy_st` 전달. 창 제목 v4.14_Patch.
 - **`stock_screener.py`:** `strategy_cross_flags_from_cfg` 결과에 대해 `golden_buy_enabled` 를 **`.get(..., True)` 없이 명시 불리언**으로 사용(폴백 혼선 제거).
 

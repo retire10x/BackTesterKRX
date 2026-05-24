@@ -3,7 +3,7 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.14_Patch** 검색은 YAML이 아니라 우측 매매 규칙 위젯 스냅샷으로 `strategy` 를 넘김.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config` 로 백테·스크린 공통 반영.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from src.data_loader import (
 )
 from src.gui_helpers import (
     HoverTooltip,
-    live_strategy_blob_for_pipeline_search,
+    extract_live_strategy_config,
     apply_yaml_to_widgets,
     date_entry_theme_kw,
     format_gui_list_hist,
@@ -176,7 +176,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.14_Patch")
+        self.title("BackTesterKRX v4.15")
 
         self._apply_initial_window_geometry()
 
@@ -2035,7 +2035,11 @@ class BacktestGUI(ctk.CTk):
         if sp_cal is None:
             return
 
-        strategy_st_snap = live_strategy_blob_for_pipeline_search(self)
+        try:
+            strategy_st_snap = extract_live_strategy_config(self)
+        except RuntimeError as e:
+            messagebox.showerror("매매 규칙 설정", str(e))
+            return
 
         self._busy = True
         self._begin_search_loading_state()
