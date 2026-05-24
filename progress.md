@@ -26,7 +26,13 @@
 - [x] **v4.14** GUI 라디오 폐지·**순차 AND 파이프라인** 체크(시총 Top100·매수 규칙 종봉·김직선 1봉); `execute_pipelined_screening`·`PipelineScreenerPick`·통합 목록 포맷; YAML `universe.screener_pipeline`
 - [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한
 - [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
+- [x] **v4.16_Patch** 김직선 1봉: 기준봉 거래량 **300% 또는 20일 TOP3**, 고가돌파 허용 `τ ∈ [T-3,T]`, 패턴 문자열 **`고가돌파 (경과일: N일)`**·파이프라인·GUI 동일 정렬 키
+
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-25 (**v4.16_Patch** 김직선 3단계 거래량·고가돌파 창 완화)
+- **`stock_screener.py`:** 기준봉 포함 20영업일 거래량이 **평균 대비 ≥300%** 이거나 순위 **TOP3** 일 때 세력 기준봉 인정. 고가 돌파(종가 확인) 허용 `τ ∈ [T-3,T]`, 종가 기준 고가 유지 **`kim_breakout_age_trading_days`**, 패턴 레이블 `고가돌파 (경과일: N일)`. **`pipeline_screener_pick_sort_tuple`** 로 시총 정렬 후에도 고가·경과 우선 표시 일치.
+- **`gui.py`:** `_screener_list_sort_key`·창 제목 v4.16_Patch.
 
 ### 2026-05-24 (**v4.15** 매매 패널 추출 헬퍼 단일화 · 골든 OFF 시에도 2단계 필터 종봉 AND)
 - **`gui_helpers.py`:** `merge_live_trade_panel_into_strategy` 로 interval·이평(백테: 검증된 값)·골든/데드·진입 필터·가변 낙폭까지 한 경로 반영; `extract_live_strategy_config`(검색: 이평 클램프 + 실패 시 `RuntimeError`).

@@ -3,7 +3,7 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config` 로 백테·스크린 공통 반영.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. **v4.16_Patch** 김직선 3단계: 기준봉 거래량 300%/TOP3·고가돌파 허용 `τ∈[T-3,T]`·경과일·정렬. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config`.
 """
 from __future__ import annotations
 
@@ -68,11 +68,31 @@ from src.stock_screener import (
     ScreenerEntry,
     default_screener_config,
     execute_pipelined_screening,
+    pipeline_screener_pick_sort_tuple,
 )
 
 # ==========================================
 # 스크리너 결과 → 리스트박스 표시용 정규화 (방어적 정렬·슬라이싱)
 # ==========================================
+
+
+def _screener_list_sort_key(item: object) -> tuple:
+    """검색 결과 리스트 표시 순서(v4.16 김패턴 포함 파이프라인 우선 규격)."""
+    if isinstance(item, PipelineScreenerPick):
+        return (0,) + tuple(pipeline_screener_pick_sort_tuple(item))
+    if isinstance(item, KimLineOneBarPick):
+        pl = item.pattern_label
+        gd = pl.startswith("고가돌파")
+        zn = pl.startswith("중심선지지")
+        tier = 0 if gd else (1 if zn else 2)
+        age_raw = getattr(item, "kim_breakout_age_trading_days", None)
+        age = age_raw if (gd and isinstance(age_raw, int)) else 99
+        return (1, tier, age, -float(item.base_bar_turnover_krw), str(item.code))
+    row = _screener_gui_item_to_code_name_score(item)
+    if row is None:
+        return (9, "")
+    code, _name, sc = row
+    return (2, -float(sc), str(code))
 
 
 def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float] | None:
@@ -88,7 +108,7 @@ def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float
     if isinstance(item, KimLineOneBarPick):
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
-        tier = 0.0 if item.pattern_label == "고가돌파" else 1.0
+        tier = 0.0 if item.pattern_label.startswith("고가돌파") else 1.0
         return (
             c,
             n,
@@ -176,7 +196,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.15")
+        self.title("BackTesterKRX v4.16_Patch")
 
         self._apply_initial_window_geometry()
 
@@ -1343,7 +1363,7 @@ class BacktestGUI(ctk.CTk):
         m_use = m_raw if m_raw in ("KOSPI", "KOSDAQ", "ETF") else "KOSPI"
         mcap_fallback = fetch_listing_market_cap_krw_by_code(m_use)
 
-        packed: list[tuple[object, str, str, str, float, float | None]] = []
+        packed: list[tuple[tuple, object, str, str, str, float, float | None]] = []
         for item in final_top_n_list:
             row = _screener_gui_item_to_code_name_score(item)
             if row is None:
@@ -1375,15 +1395,16 @@ class BacktestGUI(ctk.CTk):
             else:
                 line = format_gui_list_triple(code, name, mc)
 
-            packed.append((item, line, code, name, float(sc), mc))
+            sk = _screener_list_sort_key(item)
+            packed.append((sk, item, line, code, name, float(sc), mc))
 
-        packed.sort(key=lambda z: (-z[4], z[2]))
+        packed.sort(key=lambda z: z[0])
         total_raw = len(packed)
         truncated = packed
-        self._last_batch_picks = [r[0] for r in truncated]
-        self._candidates = [(r[2], r[3], r[5]) for r in truncated]
+        self._last_batch_picks = [r[1] for r in truncated]
+        self._candidates = [(r[3], r[4], r[6]) for r in truncated]
 
-        for _it, ln, *_rest in truncated:
+        for sk, _it, ln, *_rest in truncated:
             self.list_codes.insert(tk.END, ln)
         if truncated:
             try:
