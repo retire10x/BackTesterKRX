@@ -16,13 +16,18 @@ from pathlib import Path
 
 from tabulate import tabulate
 
-from src.data_loader import fetch_filtered_universe, load_config
+from src.data_loader import (
+    fetch_filtered_universe,
+    load_config,
+    load_v3_0_overnight_scalper_data,
+    scan_v3_overnight_candidates_bulk,
+)
 from src.metrics import run_backtest_detailed
 from src.slope_ablation_batch import run_slope_ablation_batch
 from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
-# v3.0 (Overnight Scalper) CLI
-from src.data_loader import load_v3_0_overnight_scalper_data
+# v3.0 (Overnight Scalper)
+from src.utils.date_helper import resolve_overnight_scan_anchor
 from src.v3_execution_engine import execute_v3_overnight_backtest
 from src.v3_metrics import run_v3_analytics
 from src.v3_signal_generator import generate_v3_overnight_signals
@@ -537,9 +542,23 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
     v3_cfg = cfg.get("v3_0") or {}
     limit = int(v3_cfg.get("universe_limit", 100))
 
+    anchor_info = resolve_overnight_scan_anchor(end_d)
+    end_load = anchor_info.anchor_date.strftime("%Y-%m-%d")
+    from datetime import date as _date_mod
+
+    if _date_mod.fromisoformat(start_d.strip()[:10]) > anchor_info.anchor_date:
+        raise SystemExit(
+            f"[v3.0 cli] period.start_date({start_d}) 가 앵커 종료일({end_load}) 보다 늦습니다. 설정을 확인하세요."
+        )
+
+    print(
+        f"[v3.13 parity] requested={anchor_info.requested_calendar_date} "
+        f"t0={anchor_info.anchor_date} policy={anchor_info.anchor_policy_reason}"
+    )
+
     items = load_v3_0_overnight_scalper_data(
         start_date=start_d,
-        end_date=end_d,
+        end_date=end_load,
         market=market,
         universe_limit=limit,
     )
@@ -555,6 +574,27 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
         traded_frames.append(df_tr)
 
     run_v3_analytics(traded_frames)
+
+    parity = scan_v3_overnight_candidates_bulk(
+        end_d,
+        market=market,
+        universe_limit=limit,
+    )
+    print("\n" + "=" * 52 + "\nv3.1 Overnight scanner (CLI/GUI parity list)\n" + "=" * 52)
+    if parity.get("ok"):
+        prow = parity.get("rows") or []
+        if not prow:
+            print("(해당 규격 충족 종목 없음)")
+        for code_p, rp, _mk, _tk in prow:
+            print(f"  {str(code_p).zfill(6)}  상승률(시가대비) {rp:+.2f}%")
+        pst = parity.get("stats") or {}
+        print(
+            f"\n(parity meta) universe_limit_applied={pst.get('universe_limit_applied')} "
+            f"t0={pst.get('effective_anchor_date')} prev1={pst.get('prev_1')} "
+            f"policy={pst.get('anchor_policy_reason')}"
+        )
+    else:
+        print(f"[parity unavailable] reason={parity.get('reason')}")
 
 
 if __name__ == "__main__":
