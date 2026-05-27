@@ -35,10 +35,18 @@ from .strategy import add_entry_filter_columns, add_signals
 _SCR_FETCH_CALENDAR_DAYS = 400
 # 당일 타점 추적 스크린: 종료일 기준 역대 최근 '신호 상태' 전환(골든+진입 필터) 이후 거래일 수
 ENTRY_EVENT_RECENT_TD = 3
-# 김직선식 1봉 패턴(v4.13): 장대양봉 최소 몸통 비율(종가-시가)/시가, 거래량 윈도우
+# 김직선식 1봉 패턴(v4.13,v4.16): 장대양봉 최소 몸통 비율, 20영업일 거래량 규격
 KIM_1BAR_BODY_MIN_RATIO = 0.07
 KIM_1BAR_VOL_WINDOW = 20
-KIM_1BAR_MIN_BARS = 21  # 20일 거래량 max 판별에 t-1, 당일 t 필요
+# τ∈[T-3,T] 돌파 + 기준일 b=τ-1 시 b-(W-1)≥0 → n≥24
+KIM_1BAR_MIN_BARS = 24
+# v4.16: 평균 대비 거래량(300%) 또는 20일 내 거래량 TOP3
+KIM_1BAR_VOL_MEAN_RATIO_MIN = 3.0
+KIM_1BAR_VOL_TOP_N = 3
+# 종료일 T 기준 고가 돌파(종가 확인) 허용: τ=n-4..n-1 → 신호경과 Trading days 0~3
+KIM_1BAR_BREAKOUT_MAX_AGE_TD = 3
+# 퀀트 파이프라인 시총 스텝 고정 규격 (v4.14)
+PIPELINE_MC_TOP_N_DEFAULT = 100
 
 SCREEN_MA_LOOKBACK = 120  # 종가 < MA120 역배열 종목 스크린 랭킹 단계 제외
 SCREEN_MA20_WINDOW = 20
@@ -175,7 +183,7 @@ class EntryEventTrackPick:
 
 @dataclass(frozen=True)
 class KimLineOneBarPick:
-    """v4.13: 전일 장대양봉(몸통≥7%·20일 최대 거래량) + 당일 고가돌파 또는 중심선 지지."""
+    """v4.13~v4.16: 장대양봉 기준봉 + 고가돌파(경과일)·중심선지지 후속."""
 
     code: str
     name: str
@@ -184,13 +192,46 @@ class KimLineOneBarPick:
     spread_from_ref_line_pct: float
     combined_score: float = 0.0
     market_cap_krw: float | None = None
+    kim_breakout_age_trading_days: int | None = None
+
+
+@dataclass(frozen=True)
+class PipelineScreenerPick:
+    """v4.14~: 조립식 AND 파이프라인 결과 — 단일 출력 스키마."""
+
+    code: str
+    name: str
+    market_cap_krw: float | None
+    entry_match_flag: str
+    candle_pattern: str
+    spread_from_ref_pct: float | None
+    kim_breakout_age_trading_days: int | None = None
+    combined_score: float = 0.0
+
+
+def pipeline_screener_pick_sort_tuple(p: PipelineScreenerPick) -> tuple[int, int, float, str]:
+    """
+    김직선 패턴 포함 파이프라인 목록 정렬(v4.16).
+    고가돌파 > 중심선지지 > 기타 · 동일 패턴에서는 신호경과일 짧은 쪽 우선 · 이어 시가총액 우선.
+    """
+    cp = str(p.candle_pattern)
+    gd = cp.startswith("고가돌파")
+    zn = cp.startswith("중심선지지")
+    tier = 0 if gd else (1 if zn else 2)
+    age_raw = p.kim_breakout_age_trading_days
+    age = age_raw if (gd and isinstance(age_raw, int)) else 99
+    mc = float(p.combined_score or 0.0)
+    if not np.isfinite(mc):
+        mc = 0.0
+    return (tier, age, -mc, str(p.code))
+
 
 def default_screener_config() -> dict:
     """settings.yaml 우선 병합용 기본 블록."""
     return {
         "enabled": True,
         "lookback_trading_days": 20,
-        "top_n": 30,
+        "top_n": 100,
         # 변동성 지표 GUI 제거 후 엔진은 atr14(14일 평균 등락 폭 %)만 사용
         "volatility_metric": "atr14",
         "combine": "sum_rank_pct",
@@ -734,7 +775,7 @@ def screen_universe_entry_event(
     """
     st_raw = dict(strategy_st or {})
     xf = strategy_cross_flags_from_cfg(st_raw)
-    if not bool(xf.get("golden_buy_enabled", True)):
+    if not bool(xf["golden_buy_enabled"]):
         return []
 
     cand = fetch_filtered_universe(market, keyword or "")
@@ -810,17 +851,59 @@ def screen_universe_entry_event(
     return out[:cap]
 
 
-def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, float] | None:
+def _kim_basis_volume_qualifies(win_v: np.ndarray, v_basis: float) -> bool:
     """
-    유튜버 김직선식 일봉 1봉 후속 패턴(종료일=t, 전일=t-1).
+    v4.16: 기준일 포함 최근 KIM_1BAR_VOL_WINDOW 영업일에서
+    거래량 ≥ 평균×KIM_1BAR_VOL_MEAN_RATIO_MIN 이거나 순위 상위 TOP N.
+    """
+    if (
+        win_v.size != KIM_1BAR_VOL_WINDOW
+        or not np.all(np.isfinite(win_v))
+        or not np.isfinite(v_basis)
+    ):
+        return False
+    if v_basis < 0:
+        return False
+    mean_v = float(np.mean(win_v))
+    if mean_v <= 0 or not np.isfinite(mean_v):
+        return False
+    if float(v_basis) >= KIM_1BAR_VOL_MEAN_RATIO_MIN * mean_v:
+        return True
+    strict_above = int(np.sum(win_v > v_basis))
+    rank_one_based = strict_above + 1
+    return rank_one_based <= KIM_1BAR_VOL_TOP_N
 
-    기준봉 t-1: 양봉, 몸통 (종가-시가)/시가 ≥ 7%, 거래량이 그날 포함 최근 20거래일 중 최대.
-    당일 t: 패턴1 종가 > 전일 고가 / 패턴2 저가≥전일 몸통 중심선·당일 양봉. 둘 다면 고가돌파 우선.
 
-    `z` 는 `_slice_ohlcv_through_end_calendar` 등으로 이미 정제된 OHLCV(과거→현재)를 기대한다.
+def _kim_basis_bar_long_green_ok(o: np.ndarray, c: np.ndarray, i_b: int) -> bool:
+    """기준 인덱스 i_b 장대양봉 규격(몸통·가격 유효)."""
+    ob, cb = float(o[i_b]), float(c[i_b])
+    if (
+        not (np.isfinite(ob) and np.isfinite(cb))
+        or ob <= 0
+        or cb <= ob
+    ):
+        return False
+    body_ratio = (cb - ob) / ob
+    return bool(body_ratio >= KIM_1BAR_BODY_MIN_RATIO)
 
-    반환: (패턴명, 전일 거래대금 원, 종가 기준선 대비 변동률 %).
-    차트: 엔진 매수 ▲ 는 이평 골든 기준이라 본 패턴과 무관 — 어제·오늘 캔들은 목록 종료일 두 봉으로 육안 확인.
+
+def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, float, int | None] | None:
+    """
+    김직선식 일봉 1봉 후속 패턴.(v4.16_Patch)
+
+    **기준봉**(인덱스 b): 장대양봉(몸통 ≥7%). 거래량: b 포함 최근 20영업일에서
+    (평균 대비 ≥300% 또는 해당 구간 거래량 TOP 3).
+
+    **고가돌파**(우선): ∃ τ ∈ {T−3…T}(마지막 봉이 T), 기준 고가가 b=τ−1 에 형성되어
+    τ일 종가가 기준 고가를 종가 확인으로 돌파하고, 종료일 종가 또한 기준 고가 위.
+    라벨에 **신호경과일** 필드에는 (마지막 봉 T 기준 거래일) T−τ 를 담는다.
+
+    **중심선지지**(대안): 종료 전일 장대양봉 규격 + 동일 거래량 규격, 종료일에
+    전일 몸통 중심선 지지 + 양봉(v4.13).
+
+    `z`: `_slice_ohlcv_through_end_calendar` 등으로 과거→현재 정렬·정제된 OHLCV.
+
+    반환: (표시 패턴명, 기준봉 거래대금 원, 종종가 기준선 대비 %, 고가돌파 시 경과 거래일·아니면 None).
     """
     if z is None or z.empty or not _OHLCV_COLS_REQ.issubset(set(z.columns)):
         return None
@@ -830,16 +913,64 @@ def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, flo
         return None
 
     o = pd.to_numeric(pz["Open"], errors="coerce").to_numpy(dtype=np.float64)
-    h = pd.to_numeric(pz["High"], errors="coerce").to_numpy(dtype=np.float64)
-    l = pd.to_numeric(pz["Low"], errors="coerce").to_numpy(dtype=np.float64)
-    c = pd.to_numeric(pz["Close"], errors="coerce").to_numpy(dtype=np.float64)
-    v = pd.to_numeric(pz["Volume"], errors="coerce").to_numpy(dtype=np.float64)
+    h_arr = pd.to_numeric(pz["High"], errors="coerce").to_numpy(dtype=np.float64)
+    l_arr = pd.to_numeric(pz["Low"], errors="coerce").to_numpy(dtype=np.float64)
+    c_arr = pd.to_numeric(pz["Close"], errors="coerce").to_numpy(dtype=np.float64)
+    v_arr = pd.to_numeric(pz["Volume"], errors="coerce").to_numpy(dtype=np.float64)
 
+    i_end = n - 1
+    end_close = float(c_arr[i_end])
+    if not np.isfinite(end_close) or end_close <= 0:
+        return None
+
+    # ── 패턴 1–2: 종료 직후 τ ∈ [T−3, T] 에서 종가 확인 고가 돌파(가능한 가장 최근 τ 채택) ──
+    low_tau = n - KIM_1BAR_BREAKOUT_MAX_AGE_TD - 1  # n-4 when max_age=3
+    for tau in range(i_end, low_tau - 1, -1):
+        if tau < 1:
+            break
+        b = tau - 1
+        win_lo = b - (KIM_1BAR_VOL_WINDOW - 1)
+        if win_lo < 0:
+            continue
+        if not _kim_basis_bar_long_green_ok(o, c_arr, b):
+            continue
+        win_v = v_arr[win_lo : b + 1]
+        vb = float(v_arr[b])
+        if not (_kim_basis_volume_qualifies(win_v, vb)):
+            continue
+        h_basis = float(h_arr[b])
+        ctau = float(c_arr[tau])
+        if (
+            not (np.isfinite(h_basis) and np.isfinite(ctau))
+            or h_basis <= 0
+            or ctau <= h_basis
+        ):
+            continue
+        if end_close <= h_basis:
+            continue
+
+        turnover = vb * float(c_arr[b])
+        if not (np.isfinite(turnover) and turnover > 0):
+            return None
+
+        spread_pct = 100.0 * (end_close / h_basis - 1.0)
+        age_td = int(i_end - tau)
+        if age_td < 0 or age_td > KIM_1BAR_BREAKOUT_MAX_AGE_TD:
+            continue
+        label = f"고가돌파 (경과일: {age_td}일)"
+        return label, turnover, spread_pct, age_td
+
+    # ── 패턴 2: 종료 전일 기준 장대양봉(v4.13) + 중심선 지지 · 당일 양봉 ──
     i_tm1 = n - 2
-    i_t = n - 1
+    i_t = i_end
+    if i_tm1 < 0:
+        return None
 
-    o1, h1, c1, v1 = o[i_tm1], h[i_tm1], c[i_tm1], v[i_tm1]
-    o0, l0, c0 = o[i_t], l[i_t], c[i_t]
+    o1 = float(o[i_tm1])
+    h1 = float(h_arr[i_tm1])
+    c1 = float(c_arr[i_tm1])
+    v1 = float(v_arr[i_tm1])
+    o0, l0, c0 = float(o[i_t]), float(l_arr[i_t]), float(c_arr[i_t])
 
     if not (
         np.isfinite(o1)
@@ -862,40 +993,319 @@ def _evaluate_kim_line_one_bar_pattern(z: pd.DataFrame) -> tuple[str, float, flo
     lo = i_tm1 - (KIM_1BAR_VOL_WINDOW - 1)
     if lo < 0:
         return None
-    win_v = v[lo : i_tm1 + 1]
-    if not np.all(np.isfinite(win_v)):
-        return None
-    max_v = float(np.max(win_v))
-    if max_v <= 0 or not np.isfinite(max_v):
-        return None
-    tol_v = max(max_v * 1e-9, 1.0)
-    if v1 + tol_v < max_v:
+    win_sv = v_arr[lo : i_tm1 + 1]
+    if not (_kim_basis_volume_qualifies(win_sv, v1)):
         return None
 
-    h_prev = float(h[i_tm1])
     center = 0.5 * (o1 + c1)
-    if not np.isfinite(h_prev) or not np.isfinite(center) or center <= 0:
+    if not np.isfinite(center) or center <= 0:
         return None
 
-    pat1 = c0 > h_prev
-    pat2 = (l0 >= center - max(abs(center) * 1e-12, 1e-9)) and (c0 > o0)
+    tol_c = max(abs(center) * 1e-12, 1e-9)
+    pat2 = (l0 >= center - tol_c) and (c0 > o0)
 
-    if pat1:
-        label = "고가돌파"
-        ref = h_prev
-    elif pat2:
-        label = "중심선지지"
-        ref = center
-    else:
+    if not pat2:
         return None
 
-    if ref <= 0 or not np.isfinite(c0):
-        return None
-    spread_pct = 100.0 * (float(c0) / ref - 1.0)
     turnover = float(v1) * float(c1)
-    if not np.isfinite(turnover) or turnover <= 0:
+    if not (np.isfinite(turnover) and turnover > 0):
         return None
-    return label, turnover, spread_pct
+    spread_pct = 100.0 * (c0 / center - 1.0)
+    return "중심선지지", turnover, spread_pct, None
+
+
+def _market_mcap_rank_top_codes(market: str, top_n: int) -> frozenset[str]:
+    tn = max(1, min(5000, int(top_n)))
+    cmap = fetch_listing_market_cap_krw_by_code(market) or {}
+    if not cmap:
+        return frozenset()
+    ranked: list[tuple[str, float]] = []
+    for code_raw, mr in cmap.items():
+        cdf = str(code_raw).strip().zfill(6)
+        try:
+            fv = float(mr)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(fv) or fv <= 0:
+            continue
+        ranked.append((cdf, fv))
+    ranked.sort(key=lambda x: (-x[1], x[0]))
+    return frozenset(c for c, _ in ranked[:tn])
+
+
+def _narrow_universe_by_mcap_top(
+    candidates: dict[str, str],
+    *,
+    market: str,
+    top_n: int,
+) -> dict[str, str]:
+    allow = _market_mcap_rank_top_codes(market, top_n)
+    if not allow:
+        return dict(candidates)
+    out: dict[str, str] = {}
+    for k, v in candidates.items():
+        ck = str(k).strip().zfill(6)
+        if ck in allow:
+            out[ck] = str(v)
+    return out
+
+
+def _pipeline_buy_rules_terminal_qualifies(
+    zw: pd.DataFrame,
+    *,
+    strategy_block: dict[str, object],
+) -> bool:
+    """
+    종료일 종가 확정 시점(마지막 봉)에서 2단계 매수 규칙 검증(v4.15).
+
+    - **골든 매수 ON:** 마지막 봉 `Signal == 1` 이어야 하고, 활성 진입 필터를 `_buy_filters_pass` 로 AND 검사한다.
+    - **골든 매수 OFF:** 골든 조건만 생략하고, 켜진 진입 필터만 동일 규격으로 AND 검사한다.
+      필터가 전부 꺼지면 해당 봉은 무조건 통과할 수 있다(백테·시뮬 정책과 별개 스크린 용도).
+    """
+    xf = strategy_cross_flags_from_cfg(strategy_block)
+    golden_on = bool(xf["golden_buy_enabled"])
+    try:
+        ma_n = max(5, int(strategy_block.get("ma_period", 20)))
+    except (TypeError, ValueError):
+        ma_n = 20
+    entry_ef = dict(strategy_entry_filters_from_cfg(strategy_block))
+    sig_df = add_entry_filter_columns(
+        add_signals(
+            zw,
+            ma_n,
+            golden_buy_enabled=golden_on,
+            dead_cross_sell_enabled=bool(xf["dead_cross_sell_enabled"]),
+        )
+    )
+
+    ef_ok = entry_ef
+    min_need = max(int(ma_n) + 5, SCREEN_MA_LOOKBACK)
+    if _entry_filter_any_active(ef_ok):
+        min_need = max(min_need, int(MIN_BARS_FOR_ENTRY_FILTERS))
+
+    n = len(sig_df)
+    if n < min_need:
+        return False
+    t_last = n - 1
+    sig_arr = (
+        pd.to_numeric(sig_df["Signal"], errors="coerce").fillna(0).to_numpy(dtype=int)
+    )
+    if golden_on:
+        if int(sig_arr[t_last]) != 1:
+            return False
+    try:
+        return bool(_buy_filters_pass(sig_df, t_last, ef_ok))
+    except Exception:
+        return False
+
+
+def execute_pipelined_screening(
+    *,
+    market: str,
+    keyword: str,
+    end_date: str,
+    strategy_st: dict[str, object] | None,
+    stage_mcap_top100: bool,
+    stage_buy_rules: bool,
+    stage_kim_candle: bool,
+    top_display_n: int = 100,
+    mcap_cutoff_n: int = PIPELINE_MC_TOP_N_DEFAULT,
+    min_market_cap_krw: float | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    max_workers: int = MAX_SCREEN_WORKERS,
+) -> list[PipelineScreenerPick]:
+    """
+    v4.14~v4.16 파이프라인: 유니버스 → (선택)시총 상위 → OHLC(필요 시) → **2단계 매수 규칙**
+    → 김직선 패턴. `min_market_cap_krw` 는 API 호환용(파이프라인에서는 시총 하한 미적용).
+
+    2단계 ON 시 종봉·OHLC 로드 후, **골든 매수 ON/OFF 와 무관**하게 활성 진입 필터를
+    `_buy_filters_pass` 로 AND 검사한다. 골든 ON 일 때만 마지막 봉에 `Signal == 1`(골든)을 추가로 요구한다.
+
+    **김직선 3단계(v4.16_Patch):** 기준봉 거래량은 최근 20영업일 **평균 대비 300%+** 또는 **거래량 TOP3**;
+    고가돌파는 종료일 T 기준 최근 거래 구간 내 `τ ∈ [T−3, T]` 에서 종가 확인 돌파·종가 고가 유지,
+    패턴 문자열과 `kim_breakout_age_trading_days` 에 **신호경과일** 저장. 정렬은 `pipeline_screener_pick_sort_tuple`.
+
+    결과는 `PipelineScreenerPick` 리스트이다.
+    """
+    _ = min_market_cap_krw  # API 호환 유지(v4.14_Fix: 파이프라인에서는 시총 하한 미적용)
+    cand = fetch_filtered_universe(market, keyword or "")
+    if not cand:
+        return []
+
+    if stage_mcap_top100:
+        cand = _narrow_universe_by_mcap_top(
+            cand, market=str(market), top_n=max(1, int(mcap_cutoff_n))
+        )
+        if not cand:
+            return []
+
+    st_blob = dict(strategy_st or {})
+
+    # 2단계: 체크 ON 이 골든 플래그와 무관하게 OHLC 종봉 평가·필터 AND 를 수행(v4.15).
+    run_buy_stage_screen = bool(stage_buy_rules)
+
+    mkt_upper = str(market).strip().upper()
+    # 레거시 3000억 하한은 파이프라인 후보 소거에 사용하지 않음(1단계 Top-N만 게이트).
+    if mkt_upper == "ETF":
+        marcap_krw_map = None
+    else:
+        marcap_krw_map = fetch_listing_market_cap_krw_by_code(market) or {}
+
+    need_ohlc = bool(stage_kim_candle) or run_buy_stage_screen
+
+    disp_cap = max(1, min(200, int(top_display_n)))
+    # 1단계 시총 Top-N은 mcap_cutoff_n(기본 100); 표시 건수는 YAML top_display_n 과의 max.
+    if stage_mcap_top100:
+        disp_cap = max(disp_cap, min(200, max(1, int(mcap_cutoff_n))))
+
+    def _pick_with_fields(
+        code: str,
+        name: str,
+        *,
+        mc: float | None,
+        entry_f: str,
+        candle_lbl: str,
+        spr_pct: float | None,
+        kim_age: int | None = None,
+    ) -> PipelineScreenerPick:
+        sc_sort = (
+            float(mc)
+            if mc is not None and np.isfinite(float(mc)) and float(mc) > 0
+            else float("-inf")
+        )
+        return PipelineScreenerPick(
+            code=str(code).strip().zfill(6),
+            name=str(name),
+            market_cap_krw=mc if mc is None or (np.isfinite(float(mc)) and float(mc) > 0) else None,
+            entry_match_flag=str(entry_f),
+            candle_pattern=str(candle_lbl),
+            spread_from_ref_pct=(
+                float(spr_pct)
+                if spr_pct is not None and np.isfinite(float(spr_pct))
+                else None
+            ),
+            kim_breakout_age_trading_days=kim_age,
+            combined_score=sc_sort,
+        )
+
+    items = sorted(cand.items(), key=lambda x: x[0])
+
+    if not need_ohlc:
+        picks: list[PipelineScreenerPick] = []
+        for cdf, nm in items:
+            cd = cdf.strip().zfill(6)
+            mc_use: float | None = None
+            if isinstance(marcap_krw_map, dict):
+                mr = marcap_krw_map.get(cd)
+                if mr is not None:
+                    try:
+                        mv = float(mr)
+                        if np.isfinite(mv) and mv > 0:
+                            mc_use = mv
+                    except (TypeError, ValueError):
+                        mc_use = None
+            picks.append(
+                _pick_with_fields(
+                    cd,
+                    nm,
+                    mc=mc_use,
+                    entry_f=(
+                        "미적용"
+                        if not run_buy_stage_screen
+                        else "—"
+                    ),
+                    candle_lbl=("미적용" if not stage_kim_candle else "—"),
+                    spr_pct=None,
+                )
+            )
+        picks.sort(key=lambda z: (-(z.combined_score or float("-inf")), z.code))
+        return picks[:disp_cap]
+
+    fetch_start = _screen_fetch_start(end_date)
+    out: list[PipelineScreenerPick] = []
+    total = len(items)
+    done = 0
+
+    def _one(pair: tuple[str, str]) -> PipelineScreenerPick | None:
+        code, name = pair
+        cdf = code.strip().zfill(6)
+        mc_use: float | None = None
+        if isinstance(marcap_krw_map, dict):
+            mr = marcap_krw_map.get(cdf)
+            if mr is not None:
+                try:
+                    mv = float(mr)
+                    if np.isfinite(mv) and mv > 0:
+                        mc_use = mv
+                except (TypeError, ValueError):
+                    mc_use = None
+
+        df = load_ohlcv(code, fetch_start, end_date)
+        if df is None or df.empty:
+            return None
+
+        zw = _slice_ohlcv_through_end_calendar(
+            df, end_date_str=str(end_date).strip()[:10]
+        )
+        if zw is None or zw.empty:
+            return None
+
+        if run_buy_stage_screen:
+            if not _pipeline_buy_rules_terminal_qualifies(zw, strategy_block=st_blob):
+                return None
+
+        hk: tuple[str, float, float, int | None] | None = None
+        kim_age: int | None = None
+        if stage_kim_candle:
+            hk = _evaluate_kim_line_one_bar_pattern(zw)
+            if hk is None:
+                return None
+
+        lbl = "미적용"
+        spread_v: float | None = None
+        if hk is not None:
+            lbl, _tv, spread_v, brk_age = hk
+            kim_age = (
+                int(brk_age)
+                if brk_age is not None and isinstance(brk_age, int)
+                else None
+            )
+
+        entry_label = "Y" if run_buy_stage_screen else "미적용"
+
+        return _pick_with_fields(
+            cdf,
+            name,
+            mc=mc_use,
+            entry_f=entry_label,
+            candle_lbl=lbl if stage_kim_candle else "미적용",
+            spr_pct=(
+                spread_v
+                if stage_kim_candle and spread_v is not None and np.isfinite(spread_v)
+                else None
+            ),
+            kim_age=kim_age if stage_kim_candle else None,
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, min(max_workers, 12))) as ex:
+        futures = {ex.submit(_one, pair): pair[0] for pair in items}
+        for fut in as_completed(futures):
+            done += 1
+            cid = futures[fut]
+            if progress_cb is not None:
+                progress_cb(done, total, cid)
+            try:
+                row = fut.result()
+            except Exception:
+                row = None
+            if row is not None:
+                out.append(row)
+
+    if stage_kim_candle:
+        out.sort(key=pipeline_screener_pick_sort_tuple)
+    else:
+        out.sort(key=lambda z: (-float(z.combined_score or float("-inf")), z.code))
+    return out[:disp_cap]
 
 
 def _load_one_kim_line_one_bar(
@@ -928,8 +1338,8 @@ def _load_one_kim_line_one_bar(
     hit = _evaluate_kim_line_one_bar_pattern(zw)
     if hit is None:
         return None
-    label, turnover, spr = hit
-    pat_rank = 0.0 if label == "고가돌파" else 1.0
+    label, turnover, spr, kim_age = hit
+    pat_rank = 0.0 if label.startswith("고가돌파") else 1.0
     return KimLineOneBarPick(
         code=cdf,
         name=str(name),
@@ -938,6 +1348,7 @@ def _load_one_kim_line_one_bar(
         spread_from_ref_line_pct=spr,
         combined_score=-pat_rank,
         market_cap_krw=mc_use,
+        kim_breakout_age_trading_days=kim_age,
     )
 
 
@@ -1007,7 +1418,13 @@ def screen_universe_kim_line_one_bar(
     cap = max(1, min(200, int(top_n)))
     out.sort(
         key=lambda e: (
-            0 if e.pattern_label == "고가돌파" else 1,
+            0 if e.pattern_label.startswith("고가돌파") else 1,
+            e.kim_breakout_age_trading_days
+            if (
+                isinstance(e.kim_breakout_age_trading_days, int)
+                and e.pattern_label.startswith("고가돌파")
+            )
+            else 99,
             -float(e.base_bar_turnover_krw),
             str(e.code),
         )

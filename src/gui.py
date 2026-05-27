@@ -3,12 +3,14 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 차트 후처리(**v3.1 GUI:** `materialize_backtest_chart_png_bytes` 로 메모리 PNG만 생성·디스크 미기록 / CLI·레거시는 `materialize_backtest_chart_png`). **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. **v4.16_Patch** 김직선 3단계: 기준봉 거래량 300%/TOP3·고가돌파 허용 `τ∈[T-3,T]`·경과일·정렬. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config`.
 """
 from __future__ import annotations
 
 import copy
+import io
 import json
+import math
 import os
 import threading
 from collections import deque
@@ -32,24 +34,21 @@ from src.data_loader import (
     default_backtest_period_range,
     fetch_filtered_universe,
     fetch_listing_market_cap_krw_by_code,
+    fetch_pykrx_marcap_trade_krw_by_code,
+    load_v3_0_overnight_scalper_data,
     load_config,
     load_ohlcv,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
+    scan_v3_overnight_candidates_bulk,
 )
 from src.gui_helpers import (
-    GUI_SCREENER_MODE_BREAKOUT,
-    GUI_SCREENER_MODE_ENTRY_EVENT,
-    GUI_SCREENER_MODE_KIM_LINE_1BAR,
-    GUI_SCREENER_MODE_MCAP_TOP,
-    GUI_SCREENER_MODE_SCREENER,
-    GUI_SCREENER_MODE_WHOLE,
     HoverTooltip,
+    extract_live_strategy_config,
     apply_yaml_to_widgets,
     date_entry_theme_kw,
-    format_gui_list_entry_event,
-    format_gui_list_kim_candle,
     format_gui_list_hist,
+    format_gui_list_pipeline,
     format_gui_list_triple,
     gui_body_font,
     gui_summary_five_lines,
@@ -61,32 +60,85 @@ from src.gui_helpers import (
     GUI_FONT_SIZE,
 )
 from src.backtest_constants import TREND_MA_PERIODS
+from src.backtest_chart import render_backtest_chart_png_bytes
 from src.metrics import (
     BacktestResult,
-    materialize_backtest_chart_png,
+    materialize_backtest_chart_png_bytes,
     normalize_interval,
     run_backtest_detailed,
 )
 from src.stock_screener import (
     EntryEventTrackPick,
     KimLineOneBarPick,
+    PipelineScreenerPick,
     RankedUniversePick,
     ScreenerEntry,
     default_screener_config,
-    screen_universe,
-    screen_universe_breakout_energy,
-    screen_universe_entry_event,
-    screen_universe_kim_line_one_bar,
-    screen_universe_mcap_top,
+    execute_pipelined_screening,
+    pipeline_screener_pick_sort_tuple,
 )
+from src.v3_signal_generator import generate_v3_overnight_signals
+
+
+def _format_round_eok_krw(value_krw: float | None) -> str:
+    """원화 금액을 억 단위 반올림 후 `12,345억` 형식(거래대금 등)."""
+    if value_krw is None:
+        return "-"
+    try:
+        v = float(value_krw)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(v) or v <= 0:
+        return "-"
+    return f"{int(round(v / 1e8)):,d}억"
+
+
+def _format_marcap_display_krw(value_krw: float | None) -> str:
+    """시총: 억 반올림. 극대 시총은 UI 가독용 `4,800천억` 형(100만 억 원 이상)."""
+    if value_krw is None:
+        return "-"
+    try:
+        v = float(value_krw)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(v) or v <= 0:
+        return "-"
+    eok = int(round(v / 1e8))
+    if eok >= 1_000_000:
+        return f"{int(round(eok / 1000)):,d}천억"
+    return f"{eok:,d}억"
+
 
 # ==========================================
 # 스크리너 결과 → 리스트박스 표시용 정규화 (방어적 정렬·슬라이싱)
 # ==========================================
 
 
+def _screener_list_sort_key(item: object) -> tuple:
+    """검색 결과 리스트 표시 순서(v4.16 김패턴 포함 파이프라인 우선 규격)."""
+    if isinstance(item, PipelineScreenerPick):
+        return (0,) + tuple(pipeline_screener_pick_sort_tuple(item))
+    if isinstance(item, KimLineOneBarPick):
+        pl = item.pattern_label
+        gd = pl.startswith("고가돌파")
+        zn = pl.startswith("중심선지지")
+        tier = 0 if gd else (1 if zn else 2)
+        age_raw = getattr(item, "kim_breakout_age_trading_days", None)
+        age = age_raw if (gd and isinstance(age_raw, int)) else 99
+        return (1, tier, age, -float(item.base_bar_turnover_krw), str(item.code))
+    row = _screener_gui_item_to_code_name_score(item)
+    if row is None:
+        return (9, "")
+    code, _name, sc = row
+    return (2, -float(sc), str(code))
+
+
 def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float] | None:
     """임의 객체/딕셔너리/시퀀스에서 (종목코드, 종목명, 정렬용 점수) 추출."""
+    if isinstance(item, PipelineScreenerPick):
+        c = str(item.code).strip().zfill(6)
+        n = str(item.name).strip()
+        return (c, n, float(item.combined_score or 0.0))
     if isinstance(item, EntryEventTrackPick):
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
@@ -94,7 +146,7 @@ def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float
     if isinstance(item, KimLineOneBarPick):
         c = str(item.code).strip().zfill(6)
         n = str(item.name).strip()
-        tier = 0.0 if item.pattern_label == "고가돌파" else 1.0
+        tier = 0.0 if item.pattern_label.startswith("고가돌파") else 1.0
         return (
             c,
             n,
@@ -182,14 +234,13 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.13")
+        self.title("BackTesterKRX v3.1 Overnight Scanner")
 
         self._apply_initial_window_geometry()
 
         self._candidates: list[tuple[str, str, float | None]] = []
         self._last_batch_picks: list[object] = []
         self._busy = False
-        self._screener_display_cap = 30
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
@@ -218,11 +269,13 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_show_return_overlay = ctk.BooleanVar(value=False)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
-        self.var_sell_fee_pct = ctk.StringVar(value="0.18")
+        self.var_sell_fee_pct = ctk.StringVar(value="0.20")
         self.var_cash = ctk.StringVar(value="5000000")
-        self.var_screener_mode = ctk.StringVar(value=GUI_SCREENER_MODE_WHOLE)
-        # (코드, 표시명, 시총 스냅샷 또는 None, 상장 시장 KOSPI/KOSDAQ/ETF)
-        self._history_deque: deque[tuple[str, str, float | None, str]] = deque(
+        self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
+        self.var_pf_buy_rules = ctk.BooleanVar(value=False)
+        self.var_pf_kim_candle = ctk.BooleanVar(value=False)
+        # (코드, 표시명, 시총 스냅샷, 시장, 상승률문자열, 시총문자열, 거래대금문자열)
+        self._history_deque: deque[tuple] = deque(
             maxlen=BACKTEST_HISTORY_MAX
         )
 
@@ -260,13 +313,15 @@ class BacktestGUI(ctk.CTk):
         sf_kw.grid(row=0, column=1, sticky="nsew")
         ctk.CTkLabel(sf_kw, text="종목", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
         self.var_keyword = ctk.StringVar(value="")
-        ctk.CTkEntry(
+        self.entry_keyword = ctk.CTkEntry(
             sf_kw, textvariable=self.var_keyword, height=28, font=gui_body_font()
-        ).pack(fill="x", expand=True)
+        )
+        self.entry_keyword.pack(fill="x", expand=True)
+        self.entry_keyword.configure(state="disabled")
 
         self.btn_search = ctk.CTkButton(
             row_search,
-            text="검색",
+            text="검색 (스캔 실행)",
             height=28,
             font=gui_body_font(),
             command=self._on_search,
@@ -278,26 +333,10 @@ class BacktestGUI(ctk.CTk):
         row_mode = ctk.CTkFrame(left, fg_color="transparent")
         row_mode.pack(fill="x", padx=14, pady=(4, 6))
         ctk.CTkLabel(
-            row_mode, text="스크리너 모드", font=gui_body_font()
+            row_mode,
+            text="🎯 주도주 리스트",
+            font=gui_body_font(),
         ).pack(anchor="w", pady=(0, 2))
-        radios = [
-            ("전체 · 키워드 검색", GUI_SCREENER_MODE_WHOLE),
-            ("스크리너 · 랭킹 필터", GUI_SCREENER_MODE_SCREENER),
-            ("시총 상위 필터", GUI_SCREENER_MODE_MCAP_TOP),
-            ("돌파 에너지 계산", GUI_SCREENER_MODE_BREAKOUT),
-            ("당일 타점(Event) 추적", GUI_SCREENER_MODE_ENTRY_EVENT),
-            ("김직선 1봉 캔들 추적", GUI_SCREENER_MODE_KIM_LINE_1BAR),
-        ]
-        for txt, mid in radios:
-            ctk.CTkRadioButton(
-                row_mode,
-                text=txt,
-                variable=self.var_screener_mode,
-                value=mid,
-                radiobutton_width=14,
-                radiobutton_height=14,
-                font=gui_body_font(),
-            ).pack(anchor="w", pady=1)
 
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
         list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
@@ -381,12 +420,14 @@ class BacktestGUI(ctk.CTk):
         ctk.CTkLabel(fsell, text="매도 수수료(세금 포함 %)", font=gui_body_font()).pack(
             anchor="w"
         )
-        ctk.CTkEntry(
+        self.entry_sell_fee = ctk.CTkEntry(
             fsell,
             textvariable=self.var_sell_fee_pct,
             height=28,
             font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0))
+        )
+        self.entry_sell_fee.pack(fill="x", pady=(2, 0))
+        self.entry_sell_fee.configure(state="disabled")
 
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
         hist_block.pack(fill="x", padx=14, pady=(4, 6))
@@ -395,7 +436,7 @@ class BacktestGUI(ctk.CTk):
         hist_toolbar.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             hist_toolbar,
-            text=f"최근 백테스트 이력 (FIFO {BACKTEST_HISTORY_MAX})",
+            text=f"최근 이력(FIFO {BACKTEST_HISTORY_MAX})",
             font=gui_body_font(),
         ).pack(side="left", anchor="w")
         self.btn_history_del = ctk.CTkButton(
@@ -431,30 +472,21 @@ class BacktestGUI(ctk.CTk):
         row_run.pack(fill="x", padx=14, pady=(8, 8))
         self.btn_run = ctk.CTkButton(
             row_run,
-            text="백테스트 실행",
+            text="오버나이트 주도주 스캔",
             height=40,
             font=gui_body_font(),
-            command=self._on_run,
+            command=self._on_search,
         )
         self.btn_run.pack(fill="x")
 
-        self.text_summary = ctk.CTkTextbox(
-            left,
-            height=128,
-            font=gui_body_font(),
-            wrap="word",
-        )
-        self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
-        self.text_summary.configure(state="disabled")
-
-        self.var_filter_trend = ctk.BooleanVar(value=True)
+        self.var_filter_trend = ctk.BooleanVar(value=False)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
-        self.var_filter_breakout = ctk.BooleanVar(value=True)
-        self.var_filter_timebuf = ctk.BooleanVar(value=True)
+        self.var_filter_breakout = ctk.BooleanVar(value=False)
+        self.var_filter_timebuf = ctk.BooleanVar(value=False)
         self.check_slope_accel_var = tk.BooleanVar(value=False)
 
-        self.var_golden_buy = ctk.BooleanVar(value=True)
-        self.var_dead_sell = ctk.BooleanVar(value=True)
+        self.var_golden_buy = ctk.BooleanVar(value=False)
+        self.var_dead_sell = ctk.BooleanVar(value=False)
 
         self.var_trailing_stop = ctk.BooleanVar(value=False)
         self.var_trailing_reference_pct = ctk.StringVar(value="10")
@@ -471,325 +503,21 @@ class BacktestGUI(ctk.CTk):
         right.grid_rowconfigure(1, weight=0)
         right.grid_rowconfigure(2, weight=1, minsize=120)
         right.grid_columnconfigure(0, weight=1)
-
-        rules_panel = ctk.CTkFrame(
-            right,
-            corner_radius=8,
-            border_width=1,
-            border_color=("gray65", "gray45"),
-            fg_color=("gray92", "gray18"),
-        )
-        rules_panel.grid(row=0, column=0, sticky="new", padx=8, pady=(4, 4))
-
-        rules_head = ctk.CTkFrame(rules_panel, fg_color="transparent")
-        rules_head.pack(fill="x", padx=8, pady=(8, 4))
-
-        rules_head_row0 = ctk.CTkFrame(rules_head, fg_color="transparent")
-        rules_head_row0.pack(fill="x")
-
-        titles_left = ctk.CTkFrame(rules_head_row0, fg_color="transparent")
-        titles_left.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(
-            titles_left,
-            text="매매 규칙 · v4.6",
-            font=gui_body_font(),
-            anchor="w",
-        ).pack(anchor="w")
-
-        self.btn_rules_refresh = ctk.CTkButton(
-            rules_head_row0,
-            text="Refresh",
-            width=82,
-            height=28,
-            font=gui_body_font(),
-            command=self._on_rules_refresh_chart,
-        )
-        self.btn_rules_refresh.pack(side="right", anchor="n", padx=(8, 0))
-        HoverTooltip(
-            self.btn_rules_refresh,
-            "현재 활성 종목·조회 기간에 지금 패널의 매수·매도 조건을 반영해 차트(PNG)를 다시 계산합니다.",
-        )
-
-        def _bump_slope(delta: float) -> None:
-            try:
-                v = float(str(self.var_slope_threshold.get()).replace(",", "").strip())
-            except ValueError:
-                v = 0.01
-            v = max(0.0001, min(1.0, v + delta))
-            s = f"{v:.4f}".rstrip("0").rstrip(".")
-            self.var_slope_threshold.set(s or "0")
-
-        # 좌우 격자 레이아웃을 위한 컨테이너 프레임 생성
-        grid_container = ctk.CTkFrame(rules_panel, fg_color="transparent")
-        grid_container.pack(fill="x", padx=10, pady=(0, 10))
-        grid_container.grid_columnconfigure(0, weight=1, uniform="rules_col")
-        grid_container.grid_columnconfigure(1, weight=1, uniform="rules_col")
-
-        # 매수 카드(좌) · 매도 카드(우) — 동일 행 2열
-        buy_frame = ctk.CTkFrame(
-            grid_container,
-            corner_radius=6,
-            border_width=1,
-            border_color=("gray75", "gray30"),
-            fg_color=("gray95", "gray20"),
-        )
-        buy_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=4)
-
-        sell_frame = ctk.CTkFrame(
-            grid_container,
-            corner_radius=6,
-            border_width=1,
-            border_color=("gray75", "gray30"),
-            fg_color=("gray95", "gray20"),
-        )
-        sell_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=4)
-
-        tt_golden = (
-            " 골든크로스 신호\n"
-            "위의 '추세' 조건이 충족된 상승장 안에서, 단기 주가가 이동평균선을 위로 돌파할 때 최종 매수 진입을 시도합니다."
-        )
-        tt_dead = (
-            "종가가 매매 기준 이동평균선을 하향 돌파(데드크로스)할 때 기본 매도 신호 후보 발생"
-        )
-        tt_trend = (
-            " 장기 추세 필터 (기본 활성화)\n"
-            "지난 6개월간의 평균 주가(120일선)가 하루 0.01%(연 약 2.5%) 이상 완만하게 우상향하는지 검사합니다. "
-            "하락장 분별을 위한 필수 안전장치입니다."
-        )
-        tt_breakout = (
-            "거래량 > 직전 5봉 평균×1.5 또는 종가 > MA20×1.02 (골든 후보 봉 AND)"
-        )
-        tt_timebuf = (
-            "골든 후보 봉(i) 즉시 매수 안 함 — i+1, i+2 종가까지 MA20 위 안착 후 다음 봉 시가 진입 시에도 활성 필터 AND"
-        )
-        tt_slope_accel = (
-            "최근 5봉 MA20 상에 OLS 기울기가 0보다 큰 경우에만 매수 후보 통과(단기 우상향 유지·눌림·초입 필터)"
-        )
-        tt_trailing_short = (
-            "매수 이후 최고가 대비 설정 % 하락 시, 데드크로스 매도 신호보다 앞선 시점에서 다음 봉 시가 조기 청산"
-        )
-
-        # 🟢 매수 조건 내용 배치
-        lbl_buy_title = ctk.CTkLabel(
-            buy_frame,
-            text="🟢 매수 진입 조건 (AND 결합)",
+        top_selected = ctk.CTkFrame(right, fg_color="transparent")
+        top_selected.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        self.lbl_selected_stock = ctk.CTkLabel(
+            top_selected,
+            text="현재 선택 종목 : -",
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
             anchor="w",
         )
-        lbl_buy_title.pack(anchor="w", padx=10, pady=(8, 6))
+        self.lbl_selected_stock.pack(side="left")
 
-        buy_flow = ctk.CTkFrame(buy_frame, fg_color="transparent")
-        buy_flow.pack(fill="x", padx=10, pady=(0, 10))
-        buy_row0 = ctk.CTkFrame(buy_flow, fg_color="transparent")
-        buy_row0.pack(fill="x", anchor="w")
-        buy_row1 = ctk.CTkFrame(buy_flow, fg_color="transparent")
-        buy_row1.pack(fill="x", anchor="w", pady=(6, 0))
+        self.btn_rules_refresh = None
 
-        self.cb_trend = ctk.CTkCheckBox(
-            buy_row0,
-            text="추세",
-            variable=self.var_filter_trend,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_trend.pack(side="left", padx=(0, 2))
-        HoverTooltip(self.cb_trend, tt_trend)
+        # v3.1: 우측 매매 규칙 툴박스 제거(화면 다이어트)
 
-        self.slope_spin = ctk.CTkFrame(buy_row0, fg_color="transparent")
-        self.slope_spin.pack(side="left", padx=(0, 8))
-        self.btn_slope_up = ctk.CTkButton(
-            self.slope_spin,
-            text="▴",
-            width=20,
-            height=20,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(0.01),
-        )
-        self.btn_slope_up.pack(side="left", padx=(0, 1))
-        self.entry_slope_threshold = ctk.CTkEntry(
-            self.slope_spin,
-            width=48,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_slope_threshold,
-        )
-        self.entry_slope_threshold.pack(side="left")
-        self.btn_slope_down = ctk.CTkButton(
-            self.slope_spin,
-            text="▾",
-            width=20,
-            height=20,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(-0.01),
-        )
-        self.btn_slope_down.pack(side="left", padx=(1, 0))
-        HoverTooltip(self.entry_slope_threshold, tt_trend)
-
-        ctk.CTkLabel(buy_row0, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        self.cb_golden = ctk.CTkCheckBox(
-            buy_row0,
-            text="골든 매수",
-            variable=self.var_golden_buy,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_golden.pack(side="left", padx=(0, 8))
-        HoverTooltip(self.cb_golden, tt_golden)
-
-        self.cb_breakout = ctk.CTkCheckBox(
-            buy_row1,
-            text="돌파 강도",
-            variable=self.var_filter_breakout,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_breakout.pack(side="left", padx=(0, 8))
-        HoverTooltip(self.cb_breakout, tt_breakout)
-
-        ctk.CTkLabel(buy_row1, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        self.cb_timebuf = ctk.CTkCheckBox(
-            buy_row1,
-            text="시간 버퍼",
-            variable=self.var_filter_timebuf,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_timebuf.pack(side="left")
-        HoverTooltip(self.cb_timebuf, tt_timebuf)
-
-        ctk.CTkLabel(buy_row1, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(8, 8)
-        )
-
-        self.cb_slope_accel = ctk.CTkCheckBox(
-            buy_row1,
-            text="곡선 가속도",
-            variable=self.check_slope_accel_var,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_slope_accel.pack(side="left")
-        HoverTooltip(self.cb_slope_accel, tt_slope_accel)
-
-        # 🔴 매도 조건 내용 배치
-        lbl_sell_title = ctk.CTkLabel(
-            sell_frame,
-            text="🔴 매도 청산 조건 (OR 결합)",
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
-            anchor="w",
-        )
-        lbl_sell_title.pack(anchor="w", padx=10, pady=(8, 6))
-
-        sell_row0 = ctk.CTkFrame(sell_frame, fg_color="transparent")
-        sell_row0.pack(fill="x", anchor="w", padx=10, pady=(0, 0))
-        sell_row1 = ctk.CTkFrame(sell_frame, fg_color="transparent")
-        sell_row1.pack(fill="x", anchor="w", padx=10, pady=(6, 10))
-
-        cb_dead = ctk.CTkCheckBox(
-            sell_row0,
-            text="데드 매도",
-            variable=self.var_dead_sell,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_dead.pack(side="left", padx=(0, 8))
-        HoverTooltip(cb_dead, tt_dead)
-
-        ctk.CTkLabel(sell_row0, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        cb_trailing = ctk.CTkCheckBox(
-            sell_row0,
-            text="가변 낙폭",
-            variable=self.var_trailing_stop,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_trailing.pack(side="left", padx=(0, 6))
-        HoverTooltip(cb_trailing, tt_trailing_short)
-
-        ctk.CTkLabel(sell_row1, text="기준", font=gui_body_font()).pack(
-            side="left", padx=(0, 2)
-        )
-        self.entry_trailing_ref = ctk.CTkEntry(
-            sell_row1,
-            width=36,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_reference_pct,
-        )
-        self.entry_trailing_ref.pack(side="left")
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(
-            side="left", padx=(2, 6)
-        )
-
-        ctk.CTkLabel(sell_row1, text="미달", font=gui_body_font()).pack(side="left")
-        self.entry_trailing_below = ctk.CTkEntry(
-            sell_row1,
-            width=32,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_drop_below_pct,
-        )
-        self.entry_trailing_below.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(
-            side="left", padx=(0, 6)
-        )
-
-        ctk.CTkLabel(sell_row1, text="돌파", font=gui_body_font()).pack(side="left")
-        self.entry_trailing_above = ctk.CTkEntry(
-            sell_row1,
-            width=32,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_drop_above_pct,
-        )
-        self.entry_trailing_above.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(side="left")
-
-        def _trailing_tooltip_detail() -> str:
-            try:
-                g = float(
-                    str(self.var_trailing_reference_pct.get()).replace(",", "").strip()
-                )
-                b = float(
-                    str(self.var_trailing_drop_below_pct.get())
-                    .replace(",", "")
-                    .strip()
-                )
-                a = float(
-                    str(self.var_trailing_drop_above_pct.get())
-                    .replace(",", "")
-                    .strip()
-                )
-                g_s, b_s, a_s = f"{g:g}", f"{b:g}", f"{a:g}"
-            except ValueError:
-                g_s, b_s, a_s = "?", "?", "?"
-            return (
-                f"{tt_trailing_short} (피크 기준 수익률 {g_s}% 미만·이상 분기별로 고점 대비 {b_s}% / {a_s}% 하락)"
-            )
-
-        HoverTooltip(self.entry_trailing_ref, _trailing_tooltip_detail)
-        HoverTooltip(self.entry_trailing_below, _trailing_tooltip_detail)
-        HoverTooltip(self.entry_trailing_above, _trailing_tooltip_detail)
-
-        # 차트 컨트롤 패널 (매매 규칙과 차트 사이)
+        # 차트 컨트롤 패널 (레거시 버튼 유지)
         self.chart_control_panel = ctk.CTkFrame(
             right, fg_color="transparent"
         )
@@ -935,7 +663,6 @@ class BacktestGUI(ctk.CTk):
         self.var_dead_sell.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_ma_period.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_interval.trace_add("write", lambda *_: self._refresh_trading_rules_display())
-        self.var_screener_mode.trace_add("write", lambda *_: self._on_screener_mode_changed())
         self.var_filter_trend.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_filter_breakout.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_filter_timebuf.trace_add("write", lambda *_: self._refresh_trading_rules_display())
@@ -974,14 +701,11 @@ class BacktestGUI(ctk.CTk):
             pady=(0, 10),
         )
 
-        self._set_summary(
-            "「백테스트 실행」 후 이곳에 성과 요약(5줄)이 표시됩니다."
-        )
+        self._set_summary("")
         self._update_period_label()
 
-        # 매수 필터 인터락 등록
+        # 매수 필터 인터락 등록 (YAML 반영값 유지 — 예전처럼 추세를 True로 강제 덮어쓰지 않음)
         self.var_filter_trend.trace_add("write", self._sync_buy_filters_interlock)
-        self.var_filter_trend.set(True)
         self._sync_buy_filters_interlock()
 
         self.var_market.trace_add(
@@ -991,7 +715,12 @@ class BacktestGUI(ctk.CTk):
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
-        self._chart_flat_show_message("백테스트 실행 후 차트가 표시됩니다.")
+        self._chart_flat_show_message("좌측 리스트에서 종목을 더블클릭하면 차트가 표시됩니다.")
+        self.var_sell_fee_pct.set("0.2")
+        self.bind("<KeyPress-1>", lambda _e: self._on_chart_pan_bdays(-7))
+        self.bind("<KeyPress-2>", lambda _e: self._on_chart_pan_bdays(-1))
+        self.bind("<KeyPress-7>", lambda _e: self._on_chart_pan_bdays(1))
+        self.bind("<KeyPress-8>", lambda _e: self._on_chart_pan_bdays(7))
         self.protocol("WM_DELETE_WINDOW", self._on_user_close)
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
@@ -1277,23 +1006,69 @@ class BacktestGUI(ctk.CTk):
             self._img_flat_ref = None
             self._chart_flat_show_message(f"이미지 로드 실패: {e}")
 
+    def _update_chart_image_from_png_bytes(self, png_bytes: bytes | None) -> None:
+        """v3.1: output/ PNG 없이 메모리 버퍼만으로 차트 캔버스 갱신."""
+        if not png_bytes:
+            self._last_chart_path = None
+            self._chart_canvas_image_item = None
+            self._img_flat_ref = None
+            self._chart_flat_show_message("차트 데이터가 없습니다.")
+            return
+
+        try:
+            try:
+                self.update_idletasks()
+                self.chart_frame.update_idletasks()
+                self.chart_overlay_host.update_idletasks()
+            except tk.TclError:
+                pass
+
+            fw, fh = self._chart_overlay_host_inner_pixel_size()
+            if fw <= 0 or fh <= 0:
+                return
+
+            with Image.open(io.BytesIO(png_bytes)) as pil_img:
+                rgb = pil_img.convert("RGB")
+                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(resized)
+                cvs_f = self._chart_flat_canvas
+
+                swapped = False
+                item_existing = getattr(self, "_chart_canvas_image_item", None)
+                if item_existing is not None:
+                    try:
+                        cvs_f.itemconfigure(item_existing, image=photo)
+                        swapped = True
+                    except tk.TclError:
+                        self._chart_canvas_image_item = None
+
+                try:
+                    cvs_f.configure(bg=self._chart_canvas_bg_plain())
+                    if not swapped:
+                        try:
+                            cvs_f.delete("all")
+                        except tk.TclError:
+                            pass
+                        self._chart_canvas_image_item = cvs_f.create_image(
+                            0, 0, anchor=tk.NW, image=photo, tags=("chart_main",)
+                        )
+                except tk.TclError:
+                    return
+
+                self._img_flat_ref = photo
+                self._last_chart_path = None
+        except Exception as e:
+            self._last_chart_path = None
+            self._chart_canvas_image_item = None
+            self._img_flat_ref = None
+            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
+
     def _set_summary(self, text: str):
-        self.text_summary.configure(state="normal")
-        self.text_summary.delete("1.0", "end")
-        self.text_summary.insert("1.0", text)
-        self.text_summary.configure(state="disabled")
+        _ = text
 
     def _sync_buy_filters_interlock(self, *_args: object) -> None:
-        """'추세' 필터 체크박스 상태에 따라 우측 매수 필터 및 OLS 임계값 스핀을 비활성화(인터락)."""
-        trend_active = bool(self.var_filter_trend.get())
-        target_state = "normal" if trend_active else "disabled"
-
-        self.cb_golden.configure(state=target_state)
-        self.cb_breakout.configure(state=target_state)
-        self.cb_timebuf.configure(state=target_state)
-        self.btn_slope_up.configure(state=target_state)
-        self.btn_slope_down.configure(state=target_state)
-        self.entry_slope_threshold.configure(state=target_state)
+        """v3.1: 우측 규칙 패널 제거로 인터락 동작 비활성화."""
+        return
 
     def set_status_message(self, msg: str) -> None:
         """좌측 하단 상태 표시줄에 한 줄 메시지를 표시합니다."""
@@ -1308,10 +1083,6 @@ class BacktestGUI(ctk.CTk):
         self._candidates = []
         self._last_batch_picks = []
 
-    def _on_screener_mode_changed(self, *_args: object) -> None:
-        """라디오 전환 시 목록 무효화(이전 스캔 결과 혼선 방지)."""
-        self._clear_search_results_listbox()
-
     def update_gui_with_screener_results(
         self,
         final_top_n_list: list[object],
@@ -1319,8 +1090,9 @@ class BacktestGUI(ctk.CTk):
         announce: bool = True,
     ) -> None:
         """
-        스크리너·자동 스캔 결과를 리스트박스에 반영(티커 | 종목명 | 시총 —
-        「당일 타점(Event) 추적」「김직선 1봉」 선택 시 전용 확장 컬럼 포함).
+        검색·스크린 결과를 리스트박스에 반영(v4.14).
+        PipelineScreenerPick: 티커·종목명·시총·매수조건·캔들·이격도.
+        레거시 형식(ScreenerEntry 등)은 3열 또는 기존 포맷으로 표시.
         """
         try:
             self.list_codes.delete(0, tk.END)
@@ -1334,28 +1106,12 @@ class BacktestGUI(ctk.CTk):
                 self.set_status_message("조건에 부합하는 종목이 없습니다.")
             return
 
-        cap = getattr(self, "_screener_display_cap", 30)
-        try:
-            limit = max(1, min(200, int(cap)))
-        except (TypeError, ValueError):
-            limit = 30
-
+        # 결과 건수 상한은 `execute_pipelined_screening` 의 disp_cap 과 일치해야 함(GUI 재잘림 금지).
         m_raw = self.var_market.get().strip().upper() or "KOSPI"
         m_use = m_raw if m_raw in ("KOSPI", "KOSDAQ", "ETF") else "KOSPI"
         mcap_fallback = fetch_listing_market_cap_krw_by_code(m_use)
 
-        try:
-            gui_sm_evt = (
-                str(self.var_screener_mode.get()).strip()
-                if hasattr(self, "var_screener_mode")
-                else ""
-            )
-        except Exception:
-            gui_sm_evt = ""
-        row_event_cols = gui_sm_evt == GUI_SCREENER_MODE_ENTRY_EVENT
-        row_kim_cols = gui_sm_evt == GUI_SCREENER_MODE_KIM_LINE_1BAR
-
-        packed: list[tuple[object, str, str, str, float, float | None]] = []
+        packed: list[tuple[tuple, object, str, str, str, float, float | None]] = []
         for item in final_top_n_list:
             row = _screener_gui_item_to_code_name_score(item)
             if row is None:
@@ -1374,51 +1130,29 @@ class BacktestGUI(ctk.CTk):
                             mc = v
                     except (TypeError, ValueError):
                         mc = None
-            if row_event_cols and isinstance(item, EntryEventTrackPick):
-                line = format_gui_list_entry_event(
+
+            if isinstance(item, PipelineScreenerPick):
+                line = format_gui_list_pipeline(
                     code,
                     name,
                     mc,
-                    signal_age_td=item.signal_age_trading_days,
-                    spread_pct=item.spread_from_signal_close_pct,
-                )
-            elif row_kim_cols and isinstance(item, KimLineOneBarPick):
-                line = format_gui_list_kim_candle(
-                    code,
-                    name,
-                    mc,
-                    pattern_label=item.pattern_label,
-                    base_turnover_krw=item.base_bar_turnover_krw,
-                    spread_pct=item.spread_from_ref_line_pct,
+                    entry_match_flag=item.entry_match_flag,
+                    candle_pattern=item.candle_pattern,
+                    spread_from_ref_pct=item.spread_from_ref_pct,
                 )
             else:
                 line = format_gui_list_triple(code, name, mc)
-            packed.append((item, line, code, name, float(sc), mc))
 
-        if row_event_cols:
-            packed.sort(
-                key=lambda z: (
-                    z[0].signal_age_trading_days,
-                    abs(z[0].spread_from_signal_close_pct),
-                    z[2],
-                )
-            )
-        elif row_kim_cols:
-            packed.sort(
-                key=lambda z: (
-                    0 if z[0].pattern_label == "고가돌파" else 1,
-                    -float(z[0].base_bar_turnover_krw),
-                    z[2],
-                )
-            )
-        else:
-            packed.sort(key=lambda z: (-z[4], z[2]))
+            sk = _screener_list_sort_key(item)
+            packed.append((sk, item, line, code, name, float(sc), mc))
+
+        packed.sort(key=lambda z: z[0])
         total_raw = len(packed)
-        truncated = packed[:limit]
-        self._last_batch_picks = [r[0] for r in truncated]
-        self._candidates = [(r[2], r[3], r[5]) for r in truncated]
+        truncated = packed
+        self._last_batch_picks = [r[1] for r in truncated]
+        self._candidates = [(r[3], r[4], r[6]) for r in truncated]
 
-        for _it, ln, *_rest in truncated:
+        for sk, _it, ln, *_rest in truncated:
             self.list_codes.insert(tk.END, ln)
         if truncated:
             try:
@@ -1481,7 +1215,7 @@ class BacktestGUI(ctk.CTk):
         return cc if cc and cc != "000000" else ""
 
     def _on_rules_refresh_chart(self) -> None:
-        """우측 매매 규칙 변경 후, 현재 조회 중인 종목·기간으로 차트만 재생성한다."""
+        """현재 선택 종목의 기간 차트만 다시 렌더링(v3.1: 비백테스트)."""
         if self._busy:
             self.set_status_message("다른 작업이 진행 중입니다. 완료 후 다시 시도하세요.")
             return
@@ -1490,10 +1224,10 @@ class BacktestGUI(ctk.CTk):
         if not code or code == "000000":
             messagebox.showinfo(
                 "차트 새로고침",
-                "먼저 백테스트를 실행해 활성 종목이 있거나, 차트 조회 상태가 필요합니다.",
+                "먼저 리스트에서 종목을 선택해 차트를 표시하세요.",
             )
             self.set_status_message(
-                "활성 종목이 없습니다. 검색 결과·이력에서 선택 후 백테스트를 실행하세요."
+                "활성 종목이 없습니다. 검색 결과·이력에서 종목을 선택하세요."
             )
             return
 
@@ -1509,13 +1243,7 @@ class BacktestGUI(ctk.CTk):
             )
             return
 
-        self.set_status_message(
-            "매수·매도 조건 변경을 반영해 현재 종목 차트를 다시 계산합니다…"
-        )
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _schedule_auto_run_after_shift(self) -> None:
         if self._shift_auto_run_after_id is not None:
@@ -1539,18 +1267,113 @@ class BacktestGUI(ctk.CTk):
         )
         if cfg is None:
             self.lbl_status.configure(
-                text="기간 이동: 먼저 한 종목 백테스트를 완료하거나 검색 후 차트가 열린 뒤 패닝하세요.",
+                text="기간 이동: 먼저 리스트에서 종목을 선택해 차트를 연 뒤 패닝하세요.",
             )
             return
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _on_chart_pan_bdays(self, delta_bdays: int) -> None:
         """차트 좌·우 오버레이: 영업일 기준으로 기간 이동 후 자동 재실행."""
         self._shift_period_trading_days(delta_bdays)
         self._schedule_auto_run_after_shift()
+
+    def _run_chart_only(self, cfg: dict | None) -> None:
+        """v3.1: 백테스트 없이 선택 종목의 기간별 차트만 생성/표시."""
+        if cfg is None or self._busy:
+            return
+
+        code = str((cfg.get("universe") or {}).get("selected_code") or "").strip().zfill(6)
+        if not code or code == "000000":
+            self.set_status_message("차트 표시 대상 종목 코드가 없습니다.")
+            return
+
+        period = cfg.get("period") or {}
+        start_s = str(period.get("start_date") or "").strip()
+        end_s = str(period.get("end_date") or "").strip()
+        if not start_s or not end_s:
+            self.set_status_message("기간(start/end)을 확인하세요.")
+            return
+
+        self._pending_run_code = code
+        self._busy = True
+        self._update_period_label()
+        self.btn_run.configure(state="disabled", text="차트 로딩 중…")
+        self.set_status_message("기간별 차트 생성 중…")
+        chart_px = self._chart_render_targets_for_engine()
+        show_candle = bool((cfg.get("strategy") or {}).get("show_chart_candle", True))
+        show_volume = bool((cfg.get("strategy") or {}).get("show_chart_volume", True))
+        show_overlay = bool((cfg.get("strategy") or {}).get("show_return_overlay", False))
+        ma_n = int((cfg.get("strategy") or {}).get("ma_period", 20))
+        trend_periods = [p for p in TREND_MA_PERIODS if bool(self._trend_vars[p].get())]
+
+        def work() -> None:
+            try:
+                ohlcv = load_ohlcv(code, start_s, end_s)
+                if ohlcv is None or ohlcv.empty:
+                    raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
+
+                sim = ohlcv.copy()
+                for col in ("Open", "High", "Low", "Close"):
+                    if col not in sim.columns:
+                        raise RuntimeError(f"OHLCV 필수 컬럼 누락: {col}")
+                if "Volume" not in sim.columns:
+                    sim["Volume"] = 0.0
+
+                sim = sim.sort_index()
+                close = pd.to_numeric(sim["Close"], errors="coerce")
+                ret_series = pd.Series(0.0, index=sim.index)
+                trend_ma: dict[int, pd.Series] = {}
+                for p in trend_periods:
+                    trend_ma[p] = close.rolling(int(p), min_periods=1).mean()
+
+                figsize = None
+                save_dpi = 300
+                layout_preset = "report"
+                if chart_px is not None:
+                    w_px, h_px = chart_px
+                    dpi = 100
+                    figsize = (
+                        max(3.2, float(w_px) / dpi),
+                        max(2.2, float(h_px) / dpi),
+                    )
+                    save_dpi = dpi
+                    layout_preset = "gui_target"
+
+                png_bytes = render_backtest_chart_png_bytes(
+                    sim=sim,
+                    trades=[],
+                    name=code,
+                    bar_label="일봉",
+                    ma_n=ma_n,
+                    ret_series=ret_series,
+                    trend_ma=trend_ma,
+                    show_candle=show_candle,
+                    show_volume=show_volume,
+                    show_return_overlay=show_overlay,
+                    figsize=figsize,
+                    save_dpi=save_dpi,
+                    layout_preset=layout_preset,
+                )
+
+                self.after(0, lambda b=png_bytes: self._finish_chart_only(code, b))
+            except Exception as e:
+                self.after(0, lambda m=str(e): self._finish_chart_only_error(m))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_chart_only(self, code: str, png_bytes: bytes) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self._last_active_stock_code = code
+        self._update_chart_image_from_png_bytes(png_bytes)
+        self.set_status_message("완료")
+        self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {code}")
+
+    def _finish_chart_only_error(self, msg: str) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self._chart_flat_show_message(f"차트 생성 실패: {msg}")
+        self.set_status_message(f"차트 생성 실패: {msg}")
 
     def _run_backtest(self, cfg: dict | None) -> None:
         if cfg is None or self._busy:
@@ -1696,10 +1519,7 @@ class BacktestGUI(ctk.CTk):
         )
         if cfg is None:
             return
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _run_single_from_run_button(self) -> None:
         """버튼: 검색 결과 선택 우선, 없으면 이력에서 선택된 한 종목만 실행."""
@@ -1746,7 +1566,7 @@ class BacktestGUI(ctk.CTk):
             "알림",
             "검색 결과 또는 최근 실행 이력에서 종목 한 줄을 선택하세요.",
         )
-        self.set_status_message("목록에서 종목을 선택한 뒤 백테스트를 실행하세요.")
+        self.set_status_message("목록에서 종목을 선택하면 기간 차트가 표시됩니다.")
 
     @staticmethod
     def _disp_name_from_res(res: BacktestResult) -> str:
@@ -1800,10 +1620,20 @@ class BacktestGUI(ctk.CTk):
             c, nm, mc_stored, lm = history_row_normalize(tup)
             if not c:
                 continue
-            mc_disp = mc_stored
-            if mc_disp is None:
-                mc_disp = self._listing_cap_snapshot(c, lm)
-            line = format_gui_list_hist(c, nm, lm, mc_disp)
+            rise_s = ""
+            mc_s = ""
+            amt_s = ""
+            if len(tup) >= 7:
+                rise_s = str(tup[4] or "").strip()
+                mc_s = str(tup[5] or "").strip()
+                amt_s = str(tup[6] or "").strip()
+            if rise_s and mc_s and amt_s:
+                line = f"{c} | {nm} | {rise_s} | {mc_s} | {amt_s}"
+            else:
+                mc_disp = mc_stored
+                if mc_disp is None:
+                    mc_disp = self._listing_cap_snapshot(c, lm)
+                line = format_gui_list_hist(c, nm, lm, mc_disp)
             self.list_history.insert(tk.END, line)
 
     def _load_backtest_history_from_disk(self) -> None:
@@ -1822,14 +1652,21 @@ class BacktestGUI(ctk.CTk):
             seq = raw
         if not seq:
             return
-        pairs: list[tuple[str, str, float | None, str]] = []
+        pairs: list[tuple] = []
         for el in seq:
             if not isinstance(el, (list, tuple)) or len(el) < 2:
                 continue
             c_norm, nm, mc_val, lm = history_row_normalize(list(el[:4]))
             if not c_norm:
                 continue
-            pairs.append((c_norm, nm, mc_val, lm))
+            rise_s = ""
+            mc_s = ""
+            amt_s = ""
+            if len(el) >= 7:
+                rise_s = str(el[4] or "").strip()
+                mc_s = str(el[5] or "").strip()
+                amt_s = str(el[6] or "").strip()
+            pairs.append((c_norm, nm, mc_val, lm, rise_s, mc_s, amt_s))
             if len(pairs) >= BACKTEST_HISTORY_MAX:
                 break
         if not pairs:
@@ -1847,11 +1684,17 @@ class BacktestGUI(ctk.CTk):
         items: list[list[object]] = []
         for tup in self._history_deque:
             c, n, mc, lm = history_row_normalize(tup)
+            rise_s = str(tup[4] if len(tup) >= 5 else "" or "").strip()
+            mc_s = str(tup[5] if len(tup) >= 6 else "" or "").strip()
+            amt_s = str(tup[6] if len(tup) >= 7 else "" or "").strip()
             row: list[object] = [
                 c,
                 n,
                 None if mc is None else float(mc),
                 lm,
+                rise_s,
+                mc_s,
+                amt_s,
             ]
             items.append(row)
         with open(path, "w", encoding="utf-8") as f:
@@ -1879,6 +1722,10 @@ class BacktestGUI(ctk.CTk):
         *,
         market_cap_krw: float | None = None,
         listing_market: str | None = None,
+        rise_text: str = "",
+        marcap_text: str = "",
+        trade_amount_text: str = "",
+        skip_if_exists: bool = False,
     ) -> None:
         """최근 실행 이력 · v4.8: 종목별 상장 시장 필드 포함. 같은 종목 재실행 시 맨 위."""
         cd = str(code).strip().zfill(6)
@@ -1888,14 +1735,31 @@ class BacktestGUI(ctk.CTk):
         mc = market_cap_krw
         lm_norm = normalize_krx_listing_market(listing_market or self.var_market.get())
         lm = lm_norm if lm_norm is not None else "KOSPI"
-        rest_parts: list[tuple[str, str, float | None, str]] = []
+        rest_parts: list[tuple] = []
+        exists = False
         for tup in self._history_deque:
             c0, n0, m0, k0 = history_row_normalize(tup)
             if c0 == cd:
+                exists = True
                 continue
-            rest_parts.append((c0, n0, m0, k0))
+            rise_0 = str(tup[4] if len(tup) >= 5 else "" or "").strip()
+            mc_0 = str(tup[5] if len(tup) >= 6 else "" or "").strip()
+            amt_0 = str(tup[6] if len(tup) >= 7 else "" or "").strip()
+            rest_parts.append((c0, n0, m0, k0, rise_0, mc_0, amt_0))
+        if skip_if_exists and exists:
+            return
         nd = deque(maxlen=BACKTEST_HISTORY_MAX)
-        nd.appendleft((cd, nm, mc, lm))
+        nd.appendleft(
+            (
+                cd,
+                nm,
+                mc,
+                lm,
+                str(rise_text or "").strip(),
+                str(marcap_text or "").strip(),
+                str(trade_amount_text or "").strip(),
+            )
+        )
         nd.extend(rest_parts[: BACKTEST_HISTORY_MAX - 1])
         self._history_deque = deque(nd, maxlen=BACKTEST_HISTORY_MAX)
         self._sync_history_listbox()
@@ -1926,8 +1790,27 @@ class BacktestGUI(ctk.CTk):
             raw = self.list_codes.get(sel[0])
         except (tk.TclError, IndexError):
             return
-        cd, _nm = self._split_codes_list_line(str(raw))
-        self._run_single_with_code(cd, search_keyword_override="")
+        parts = [p.strip() for p in str(raw).split("|")]
+        if len(parts) < 5:
+            return
+        cd = parse_gui_list_row_code(parts[0])
+        nm = parts[1] if len(parts) >= 2 else cd
+        rise_s = parts[2] if len(parts) >= 3 else ""
+        mc_s = parts[3].replace("시총", "", 1).strip() if len(parts) >= 4 else ""
+        amt_s = parts[4].replace("대금", "", 1).strip() if len(parts) >= 5 else ""
+        if not cd:
+            return
+        self._push_history(
+            cd,
+            nm,
+            market_cap_krw=None,
+            listing_market=self.var_market.get(),
+            rise_text=rise_s,
+            marcap_text=mc_s,
+            trade_amount_text=amt_s,
+            skip_if_exists=True,
+        )
+        self.set_status_message(f"최근 이력에 추가됨: {cd} {nm}")
 
     def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
         sel = self.list_history.curselection()
@@ -1974,7 +1857,7 @@ class BacktestGUI(ctk.CTk):
         scr["volatility_metric"] = "atr14"
 
         lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
-        tn = max(1, min(200, int(scr.get("top_n", 30))))
+        tn = max(1, min(200, int(scr.get("top_n", 100))))
         ds = default_screener_config()
         try:
             min_cap_krw = float(
@@ -1991,7 +1874,6 @@ class BacktestGUI(ctk.CTk):
             )
         except (TypeError, ValueError):
             pb_cap = float(ds["pullback_rank_cap_pct"])
-        self._screener_display_cap = tn
         return {
             "end_date": end_d,
             "lookback": lk,
@@ -2033,193 +1915,244 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.update_gui_with_screener_results(picks, announce=True)
 
+    def _run_v3_overnight_scan(
+        self, market: str, end_date: str
+    ) -> list[tuple[str, str, float, str, str]]:
+        """
+        반환: (코드, 종목명, 당일 시가대비 상승률%, 시총 표시 문자열, 거래대금 표시 문자열)
+        """
+        try:
+            name_map = fetch_filtered_universe(market, "")
+        except Exception:
+            name_map = {}
+        total_loaded = 0
+        scan_market = str(market or "KOSPI").strip().upper()
+        if scan_market not in ("KOSPI", "KOSDAQ"):
+            scan_market = "KOSPI"
+
+        # 1) 우선 고속 경로: pykrx 벌크 3회 + 벡터화 필터
+        pass_vol = 0
+        pass_ret = 0
+        pass_tail = 0
+        prev_1 = ""
+        prev_2 = ""
+        bulk = scan_v3_overnight_candidates_bulk(end_date, market=scan_market)
+
+        qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
+        if bool(bulk.get("ok")):
+            rows = bulk.get("rows") or []
+            st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
+            total_loaded = int((st or {}).get("total_loaded", len(rows)))
+            pass_vol = int((st or {}).get("pass_vol", 0))
+            pass_ret = int((st or {}).get("pass_ret", 0))
+            pass_tail = int((st or {}).get("pass_tail", len(rows)))
+            prev_1 = str((st or {}).get("prev_1", ""))
+            prev_2 = str((st or {}).get("prev_2", ""))
+            for code, rise_pct, mar_krw, trd_krw in rows:
+                c6 = str(code).zfill(6)
+                name = str(name_map.get(c6, "")).strip() or c6
+                qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
+        else:
+            # 2) 폴백 경로: 기존 per-ticker 로직(안정성 보존)
+            warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
+            universe = load_v3_0_overnight_scalper_data(
+                start_date=warm_start,
+                end_date=end_date,
+                market=scan_market,
+                universe_limit=0,
+            )
+            total_loaded = len(name_map) if name_map else len(universe)
+            for code, df in universe:
+                if df is None or df.empty:
+                    continue
+                sig = generate_v3_overnight_signals(df)
+                if sig.empty or "buy_signal" not in sig.columns:
+                    continue
+                if len(sig.index) >= 3:
+                    prev_1 = sig.index[-2].strftime("%Y-%m-%d")
+                    prev_2 = sig.index[-3].strftime("%Y-%m-%d")
+                last = sig.iloc[-1]
+                prev_v = (
+                    float(sig["Volume"].shift(1).iloc[-1])
+                    if pd.notna(sig["Volume"].shift(1).iloc[-1])
+                    else 0.0
+                )
+                today_v = (
+                    float(sig["Volume"].iloc[-1])
+                    if pd.notna(sig["Volume"].iloc[-1])
+                    else 0.0
+                )
+                vol_growth = (today_v / prev_v) if prev_v > 0 else 0.0
+                if int(last.get("buy_signal", 0) or 0) != 1:
+                    o_chk = float(last.get("Open", 0.0) or 0.0)
+                    c_chk = float(last.get("Close", 0.0) or 0.0)
+                    h_chk = float(last.get("High", 0.0) or 0.0)
+                    return_chk = (
+                        ((c_chk - o_chk) / o_chk * 100.0) if o_chk > 0 else 0.0
+                    )
+                    tail_chk = (
+                        ((h_chk - c_chk) / (h_chk - o_chk))
+                        if (h_chk - o_chk) > 0
+                        else 1.0
+                    )
+                    if vol_growth >= 1.5:
+                        pass_vol += 1
+                        if return_chk >= 4.0:
+                            pass_ret += 1
+                            if tail_chk <= 0.2:
+                                pass_tail += 1
+                    continue
+                o = float(last.get("Open", 0.0) or 0.0)
+                c = float(last.get("Close", 0.0) or 0.0)
+                vl = float(last.get("Volume", 0.0) or 0.0)
+                if o <= 0:
+                    continue
+                pass_vol += 1
+                pass_ret += 1
+                pass_tail += 1
+                rise_pct = (c - o) / o * 100.0
+                proxy_amt = (c * vl) if vl >= 0 else None
+                name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
+                qualifiers.append((str(code).zfill(6), name, rise_pct, None, proxy_amt))
+
+        qualifiers.sort(key=lambda z: z[2], reverse=True)
+
+        krx_map = fetch_pykrx_marcap_trade_krw_by_code(end_date, market=scan_market)
+        listing_mk = normalize_krx_listing_market(market) or "KOSPI"
+        try:
+            listing_caps = fetch_listing_market_cap_krw_by_code(listing_mk)
+        except Exception:
+            listing_caps = {}
+        if not isinstance(listing_caps, dict):
+            listing_caps = {}
+
+        out: list[tuple[str, str, float, str, str]] = []
+        for code, name, rise_pct, mar_seed, trd_seed in qualifiers:
+            mar_krw: float | None = mar_seed
+            trd_krw: float | None = trd_seed
+            tp = krx_map.get(code)
+            if tp:
+                mar_api, trd_api = tp
+                if mar_api is not None:
+                    mar_krw = mar_api
+                if trd_api is not None:
+                    trd_krw = trd_api
+            if mar_krw is None:
+                v = listing_caps.get(code)
+                if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                    mar_krw = float(v)
+            if trd_krw is not None and (not math.isfinite(float(trd_krw)) or float(trd_krw) <= 0):
+                trd_krw = None
+            mc_s = _format_marcap_display_krw(mar_krw)
+            amt_s = _format_round_eok_krw(trd_krw)
+            out.append((code, name, rise_pct, mc_s, amt_s))
+
+        debug_lines = [
+            "=====================================================",
+            "⚙️ [DEBUG] v3.1 SCANNER INTERNAL PARAMETERS & LOG",
+            "=====================================================",
+            f" - Target Date : {str(end_date).strip()[:10]}",
+            f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
+            "-----------------------------------------------------",
+            " [Applied Rules]",
+            "  1) Vol Growth  >= 1.50 (150%)",
+            "  2) Return Pct  >= 4.00%",
+            "  3) Tail Ratio  <= 0.20 (20%)",
+            "-----------------------------------------------------",
+            " [Pipeline Filtering Pass Count]",
+            f"  ▶ Total {market} Tickers Loaded   : {total_loaded}개",
+            f"  ▶ Pass 1 (Vol Growth >= 150%) : {pass_vol}개 종목 생존",
+            f"  ▶ Pass 2 (Return Pct >= 4%)   : {pass_ret}개 종목 생존",
+            f"  ▶ Pass 3 (Tail Ratio <= 20%)  : {pass_tail}개 종목 생존 (최종)",
+            "=====================================================",
+        ]
+        debug_text = "\n".join(debug_lines)
+        print(debug_text)
+        try:
+            os.makedirs("output", exist_ok=True)
+            with open("output/v31_scanner_debug_log.txt", "w", encoding="utf-8") as f:
+                f.write(debug_text + "\n")
+        except OSError:
+            pass
+        return out
+
     def _on_search(self) -> None:
-        """모드별 백그라운드 검색: 전체는 키워드 필수, 자동 스캔 모드는 빈 검색 허용."""
+        """v3.1 오버나이트 스캐너 실행: 리스트는 코드|종목명|당일 상승률|시총|거래대금."""
         if self._busy:
             self.set_status_message(
                 "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
             )
             return
-
-        mode_raw = (
-            self.var_screener_mode.get()
-            if hasattr(self, "var_screener_mode")
-            else GUI_SCREENER_MODE_WHOLE
-        )
-        mode = (
-            mode_raw.strip()
-            if isinstance(mode_raw, str)
-            and mode_raw.strip() in (
-                GUI_SCREENER_MODE_WHOLE,
-                GUI_SCREENER_MODE_SCREENER,
-                GUI_SCREENER_MODE_MCAP_TOP,
-                GUI_SCREENER_MODE_BREAKOUT,
-                GUI_SCREENER_MODE_ENTRY_EVENT,
-                GUI_SCREENER_MODE_KIM_LINE_1BAR,
-            )
-            else GUI_SCREENER_MODE_WHOLE
-        )
-        keyword = self.var_keyword.get().strip()
         market = self.var_market.get().strip().upper() or "KOSPI"
         if market not in ("KOSPI", "KOSDAQ", "ETF"):
             market = "KOSPI"
-
-        self._clear_search_results_listbox()
-
-        if mode == GUI_SCREENER_MODE_WHOLE:
-            if not keyword:
-                self.set_status_message(
-                    "「전체」 모드에서는 상단 종목 검색창을 반드시 입력하세요."
-                )
-                messagebox.showwarning(
-                    "검색 조건",
-                    "「전체」 모드에서는 키워드가 빈 상태로 검색할 수 없습니다.",
-                )
-                return
-            sp_cal: dict[str, object] | None = None
-        elif mode == GUI_SCREENER_MODE_MCAP_TOP:
-            base_lc = load_config()
-            uni0 = base_lc.get("universe") or {}
-            ys0 = uni0.get("screener") if isinstance(uni0.get("screener"), dict) else {}
-            scr0 = {**default_screener_config(), **ys0}
-            try:
-                self._screener_display_cap = max(
-                    1, min(200, int(scr0.get("top_n", 30)))
-                )
-            except (TypeError, ValueError):
-                self._screener_display_cap = 30
-            sp_cal = None
-        else:
-            sp_cal = self._search_screen_universe_params()
-            if sp_cal is None:
-                return
-
+        try:
+            end_date = self._date_end.get_date().strftime("%Y-%m-%d")
+        except (ValueError, tk.TclError):
+            self.set_status_message("종료일을 확인하세요.")
+            return
         self._busy = True
         self._begin_search_loading_state()
-        self.set_status_message("유니버스·일봉 조회 및 스크리닝 분석 중…")
+        self.set_status_message("v3.1 오버나이트 스캐너 실행 중…")
 
-        threading.Thread(
-            target=self._exec_search_worker,
-            kwargs={
-                "mode": mode,
-                "keyword": keyword,
-                "market": market,
-                "screener_params": sp_cal,
-            },
-            daemon=True,
-        ).start()
+        def _work() -> None:
+            try:
+                rows = self._run_v3_overnight_scan(market, end_date)
+                self.after(0, lambda rr=rows: self._finalize_v31_scan(rr))
+            except Exception as ex:
+                self.after(0, lambda m=str(ex): self._finalize_search_failure(m))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _finalize_v31_scan(
+        self, rows: list[tuple[str, str, float, str, str]]
+    ) -> None:
+        self._busy = False
+        self._end_search_loading_state()
+        self.list_codes.delete(0, tk.END)
+        self._candidates = []
+        for code, name, rise_pct, mc_s, amt_s in rows:
+            line = (
+                f"{code} | {name} | {rise_pct:+.2f} % | 시총 {mc_s} | 대금 {amt_s}"
+            )
+            self.list_codes.insert(tk.END, line)
+            self._candidates.append((code, name, None))
+        if rows:
+            self.list_codes.selection_set(0)
+            self.set_status_message(
+                f"🔥 총 {len(rows)}개 주도주 포착 완료 (시총/대금 필드 탑재)"
+            )
+        else:
+            self.set_status_message("조건에 맞는 오버나이트 주도주가 없습니다.")
 
     def _exec_search_worker(
         self,
         *,
-        mode: str,
         keyword: str,
         market: str,
-        screener_params: dict[str, object] | None,
+        screener_params: dict[str, object],
+        strategy_st: dict[str, object],
+        pf_mcap_top100: bool,
+        pf_buy_rules: bool,
+        pf_kim_candle: bool,
     ) -> None:
-        """검색·스크린 I/O 및 엔진 호출."""
+        """스크린 I/O 및 `execute_pipelined_screening` 단일 진입점."""
         picks: list[object] = []
 
         try:
-            if mode == GUI_SCREENER_MODE_WHOLE:
-                dmap = fetch_filtered_universe(market, keyword)
-                mcmap = fetch_listing_market_cap_krw_by_code(market)
-                for cdf, nm in sorted(dmap.items(), key=lambda x: x[0]):
-                    code = str(cdf).strip().zfill(6)
-                    mrv = mcmap.get(code) if mcmap else None
-                    try:
-                        mvn = float(mrv)
-                        mc_use = mvn if mvn == mvn and mvn > 0 else None
-                    except (TypeError, ValueError):
-                        mc_use = None
-                    picks.append(
-                        RankedUniversePick(
-                            code=code,
-                            name=str(nm),
-                            combined_score=0.0,
-                            market_cap_krw=mc_use,
-                        )
-                    )
-            elif mode == GUI_SCREENER_MODE_MCAP_TOP:
-                tn = getattr(self, "_screener_display_cap", 30)
-                picks = screen_universe_mcap_top(
-                    market=market, keyword=keyword, top_n=int(tn), progress_cb=None
-                )
-            elif mode == GUI_SCREENER_MODE_BREAKOUT:
-                if screener_params is None:
-                    raise ValueError(
-                        "돌파 에너지: 종료일·설정을 읽지 못했습니다."
-                    )
-                p = screener_params
-                picks = screen_universe_breakout_energy(
-                    market=market,
-                    keyword=keyword,
-                    end_date=str(p["end_date"]),
-                    top_n=int(p["top_n"]),
-                    progress_cb=None,
-                    min_market_cap_krw=float(p["min_market_cap_krw"]),
-                )
-            elif mode == GUI_SCREENER_MODE_SCREENER:
-                if screener_params is None:
-                    raise ValueError(
-                        "스크리너: 종료일·설정을 읽지 못했습니다."
-                    )
-                p = screener_params
-                plist = screen_universe(
-                    market=market,
-                    keyword="",
-                    end_date=str(p["end_date"]),
-                    lookback_trading_days=int(p["lookback"]),
-                    top_n=int(p["top_n"]),
-                    volatility_metric="atr14",
-                    progress_cb=None,
-                    min_market_cap_krw=float(p["min_market_cap_krw"]),
-                    hard_ma_pair_trend_filter=bool(p["hard_ma_pair_trend_filter"]),
-                    pullback_rank_cap_pct=float(p["pullback_rank_cap_pct"]),
-                )
-                if keyword:
-                    kl = keyword.lower()
-                    picks = [
-                        e
-                        for e in plist
-                        if kl in str(e.code).lower() or kl in str(e.name).lower()
-                    ]
-                else:
-                    picks = plist
-            elif mode == GUI_SCREENER_MODE_ENTRY_EVENT:
-                if screener_params is None:
-                    raise ValueError(
-                        "당일 타점 추적: 종료일·설정을 읽지 못했습니다."
-                    )
-                p = screener_params
-                lc = load_config()
-                st_blob = lc.get("strategy") if isinstance(lc.get("strategy"), dict) else {}
-                et_list = screen_universe_entry_event(
-                    market=market,
-                    keyword=keyword,
-                    end_date=str(p["end_date"]),
-                    top_n=int(p["top_n"]),
-                    strategy_st=st_blob,
-                    progress_cb=None,
-                    min_market_cap_krw=float(p["min_market_cap_krw"]),
-                )
-                picks = et_list
-            elif mode == GUI_SCREENER_MODE_KIM_LINE_1BAR:
-                if screener_params is None:
-                    raise ValueError(
-                        "김직선 1봉 캔들: 종료일·설정을 읽지 못했습니다."
-                    )
-                p = screener_params
-                picks = screen_universe_kim_line_one_bar(
-                    market=market,
-                    keyword=keyword,
-                    end_date=str(p["end_date"]),
-                    top_n=int(p["top_n"]),
-                    progress_cb=None,
-                    min_market_cap_krw=float(p["min_market_cap_krw"]),
-                )
-            else:
-                picks = []
+            p = screener_params
+            picks = execute_pipelined_screening(
+                market=market,
+                keyword=keyword,
+                end_date=str(p["end_date"]),
+                strategy_st=strategy_st,
+                stage_mcap_top100=bool(pf_mcap_top100),
+                stage_buy_rules=bool(pf_buy_rules),
+                stage_kim_candle=bool(pf_kim_candle),
+                top_display_n=int(p["top_n"]),
+                min_market_cap_krw=float(p["min_market_cap_krw"]),
+                progress_cb=None,
+            )
 
         except Exception as ex:
             self.after(
@@ -2242,7 +2175,7 @@ class BacktestGUI(ctk.CTk):
         messagebox.showerror("검색 실패", msg)
 
     def _on_run(self):
-        self._run_single_from_run_button()
+        self._on_search()
 
     def _finish_run(
         self,
@@ -2251,7 +2184,7 @@ class BacktestGUI(ctk.CTk):
         deferred_chart_px: tuple[int, int] | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="백테스트 실행")
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
         try:
             self.btn_rules_refresh.configure(state="normal")
         except (tk.TclError, AttributeError):
@@ -2271,11 +2204,18 @@ class BacktestGUI(ctk.CTk):
             lur = "KOSPI"
         self._last_run_listing_market = lur
 
-        self._set_summary(gui_summary_five_lines(res))
+        self._set_summary("")
 
         code_hist = str(getattr(self, "_pending_run_code", "") or "").zfill(6)
         if code_hist and code_hist != "000000":
             self._last_active_stock_code = code_hist
+            try:
+                shown_name = disp_name or code_hist
+                self.lbl_selected_stock.configure(
+                    text=f"현재 선택 종목 : {code_hist} {shown_name}"
+                )
+            except (tk.TclError, AttributeError):
+                pass
         disp_name = ""
         for row in res.summary_rows:
             if row[0] == "종목":
@@ -2313,16 +2253,16 @@ class BacktestGUI(ctk.CTk):
 
             def _chart_paint_task() -> None:
                 try:
-                    outp, skipped = materialize_backtest_chart_png(
+                    png_blob, skipped = materialize_backtest_chart_png_bytes(
                         replay_copy,
                         chart_render_px=px,
                         write_signal_debug_log=False,
                     )
                     self.after(
                         0,
-                        lambda p=outp,
+                        lambda b=png_blob,
                         sk=skipped,
-                        tt=tk_snap: self._materialized_chart_dispatch(tt, p, sk),
+                        tt=tk_snap: self._materialized_chart_dispatch_bytes(tt, b, sk),
                     )
                 except Exception as chart_ex:
                     em = str(chart_ex)
@@ -2350,6 +2290,22 @@ class BacktestGUI(ctk.CTk):
             return
         self._stop_chart_loading_spinner()
         self._apply_materialized_chart(report_path, trade_markers_skipped)
+
+    def _materialized_chart_dispatch_bytes(
+        self,
+        ticket: int,
+        png_bytes: bytes | None,
+        trade_markers_skipped: int,
+    ) -> None:
+        """연기 PNG를 디스크 없이 메모리 버퍼만으로 표시(v3.1 output/ I/O 차단)."""
+        if ticket != self._chart_materialize_ticket:
+            return
+        self._stop_chart_loading_spinner()
+        self.update_idletasks()
+        self.after_idle(
+            lambda b=png_bytes: self._update_chart_image_from_png_bytes(b)
+        )
+        self._finalize_run_status_stripes(trade_markers_skipped)
 
     def _chart_materialize_failed_for_ticket(self, ticket: int, msg: str) -> None:
         if ticket != self._chart_materialize_ticket:

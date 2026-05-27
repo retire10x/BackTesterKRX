@@ -2,7 +2,7 @@
 
 ## 1. 핵심 기능 체크리스트 (Feature Checklist)
 - [x] 기본 이평선(MA{N}) 골든/데드크로스 신호 생성 로직 (`strategy.py`)
-- [x] 다음 봉 시가 체결 및 거래 비용(설정 가능·기본 매수 0.015% / 매도·세금 0.18%) 반영 시뮬레이터 (`simulator.py`, GUI·YAML 연동)
+- [x] 다음 봉 시가 체결 및 거래 비용(설정 가능·기본 매수 0.015% / 매도·세금 0.20%) 반영 시뮬레이터 (`simulator.py`, GUI·YAML 연동)
 - [x] 가변 낙폭(Trailing Stop) 상/하단 분리 청산 기능 (`settings.yaml` 연동)
 - [x] 매수 진입 3대 필터(대세 Slope, 돌파 강도, 시간 버퍼) AND 결합 구현
 - [x] 차트 상단 4단 미디어 플레이어 내비게이션 버튼 (⏪, ◀, ▶, ⏩) UI 이동
@@ -23,8 +23,111 @@
 - [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
 - [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
 - [x] **v4.13** 스크리너 「김직선 1봉 캔들 추적」: 장대양봉+20일 최대 거래량 기준봉 후 당일 고가돌파/중심선지지(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
+- [x] **v4.14** GUI 라디오 폐지·**순차 AND 파이프라인** 체크(시총 Top100·매수 규칙 종봉·김직선 1봉); `execute_pipelined_screening`·`PipelineScreenerPick`·통합 목록 포맷; YAML `universe.screener_pipeline`
+- [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한
+- [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
+- [x] **v4.16_Patch** 김직선 1봉: 기준봉 거래량 **300% 또는 20일 TOP3**, 고가돌파 허용 `τ ∈ [T-3,T]`, 패턴 문자열 **`고가돌파 (경과일: N일)`**·파이프라인·GUI 동일 정렬 키
+
+- [x] **v3.0** [1단계] Clean-up: v2.0 SRS·`src/v2_*` 모듈 폐기, `load_v3_0_overnight_scalper_data` 로더
+- [x] **v3.0** [2단계] Signal Generator: 거래량 150%·장대양봉 4%·위꼬리≤20% 종가 진입 (`src/v3_signal_generator.py`)
+- [x] **v3.0** [3단계] Execution Engine: 종가 매수·익일 시가 청산·BUY 0.015% / SELL 0.20% 고정 (`src/v3_execution_engine.py`)
+- [x] **v3.0** [4단계] Analytics: OVERNIGHT PERFORMANCE REPORT 단일 출력 (`src/v3_metrics.py`)
+- [x] **v3.0** 인수검증: `main.py --mode cli` 대시보드만·`SELL_COST=0.0020` 고정
+- [x] **v3.0** Code Freeze: `v3_signal_generator`·`v3_execution_engine` 진입/청산 로직 고정
+- [x] **v3.0** 다중 기간 CLI 검증: 세션 A/B/C (`--start`/`--end`만 변경)·`output/v3_multi_period_report.md`
+- [x] **v3.1** Overnight Scanner GUI: 좌측 검색=스캔 트리거·결과 리스트 `코드|종목명|당일상승률|시총|거래대금`(억 반올림·극대 시총 `천억` 축약) 표시 · `fetch_pykrx_marcap_trade_krw_by_code`/상장 시총·종가×거래량 폴백
+- [x] **v3.1** 레이아웃 다이어트: 우측 상단 매매 규칙/요약 로그 제거·차트 뷰어 확장
+- [x] **v3.1** 레거시 네비/단축키 유지: `[⏪][◀][▶][⏩]` + 키 `1/2/7/8` 기간 이동 시 리스트 비갱신
+- [x] **v3.1** 차트 전용 전환: 주도주/이력 더블클릭 시 백테스트 미실행·기간 OHLC 차트만 렌더
+- [x] **v3.1** 스캐너 디버그 보강: KOSPI 전수(`universe_limit=0`)·단계별 생존 카운트 로그 파일 출력
+- [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-27 (**v3.1** 최종 배포 — 리스트 시총·대금·PNG 억제)
+- **리스트:** 스캔 결과에 시가총액·당일 거래대금 컬럼 추가(억 단위 반올림, 극대 시총은 `N천억` 표기)
+- **I/O:** GUI 백테스트 연기 차트는 `materialize_backtest_chart_png_bytes` 로 캔버스만 갱신 · 차트 전용 경로는 기존처럼 메모리 PNG(`render_backtest_chart_png_bytes`)
+- **머지 준비:** `main` 통합 시 상기 항목과 DoD(스캔·내비 반복 시 `output/` 신규 차트 PNG 없음)로 검증 권장
+
+### 2026-05-27 (**v3.1** 스캔 0건 긴급 검증/보정)
+- **원인 보정:** `gui._run_v3_overnight_scan` 의 `universe_limit=200` 하드컷 제거 → KOSPI 전수 스캔(`0=unlimited`)으로 변경
+- **디버그 출력:** 스캔 시점마다 `Target/Prev_1/Prev_2` 날짜, 임계값(Vol/Return/Tail), 단계별 생존 수를 터미널 출력 + `output/v31_scanner_debug_log.txt` 저장
+- **검증 결과(2026-05-27):** Total 948 / Pass1 212 / Pass2 11 / Pass3 5 (최종)
+
+### 2026-05-27 (**v3.1** 더블클릭 차트 전용 모드)
+- **동작 전환:** `list_codes`·`list_history` 더블클릭 라우팅을 백테스트 실행에서 `차트 전용 렌더(_run_chart_only)`로 전환
+- **패닝 일관성:** `[⏪][◀][▶][⏩]`·단축키 `1/2/7/8` 기간 이동 시에도 동일 차트 전용 경로만 호출(리스트 재스캔 없음)
+- **렌더 방식:** `load_ohlcv` 기간 데이터 + **`render_backtest_chart_png_bytes`(디스크 저장 없음)** 로 우측 차트 갱신
+
+### 2026-05-27 (**v3.1** Overnight Scanner GUI 전면 개편)
+- **코드 프리즈 준수:** `src/v3_signal_generator.py`·`src/v3_execution_engine.py` 수학 로직/비용 체계 미변경(`SELL_COST=0.0020` 유지)
+- **스캐너 연동:** `gui.py` 검색/하단 실행 버튼을 v3.1 오버나이트 스캐너로 통합(종료일 기준 유니버스 스캔 후 `코드 | 종목명 | 당일상승률` 리스트 표시)
+- **화면 리팩토링:** 우측 상단 매수/매도 규칙 패널 완전 제거, 우측 상단에 현재 선택 종목 라벨 추가, 차트/내비 공간 상단 확장
+- **레거시 자산 유지:** 차트 내비 버튼([⏪][◀][▶][⏩])과 키보드 단축키(`1`,`2`,`7`,`8`) 유지; 기간 이동은 우측 차트만 갱신하고 좌측 리스트는 고정
+- **로그 정리:** 좌측 성과 텍스트 박스 비활성화 및 실행 버튼명을 `오버나이트 주도주 스캔`으로 교체
+
+### 2026-05-27 (**v3.0** Code Freeze · 다중 기간 백테스트 · 배포 준비)
+- **Freeze:** `src/v3_signal_generator.py`, `src/v3_execution_engine.py` 로직 변경 금지 확정 · `SELL_COST=0.0020` 재확인
+- **CLI:** `merge_v3_cli_into_config` — `--start`/`--end`로 기간만 덮어쓰기 · 실행 시 BUY/SELL 비용 로그 출력
+- **검증:** 세션 A(2025-05~2026-05) PF 2.51 / B(2022 하락) PF 1.10 / C(2023~2025 3년) PF 1.28 · 보고서 `output/v3_multi_period_report.md`
+
+### 2026-05-27 (**v3.0** Overnight Scalper — 브랜치 공식 수립)
+- **레거시 폐기:** `docs/작업지시서-v2.0-Intraday-Gap-Scalper.md`, `src/v2_*.py` 삭제
+- **신규:** `src/v3_signal_generator.py`, `v3_execution_engine.py`, `v3_metrics.py`, `load_v3_0_overnight_scalper_data`
+- **CLI:** `python main.py --mode cli` → v3.0 OVERNIGHT 대시보드만 출력
+- **문서:** `docs/작업지시서-v3.0-Overnight-Scalper.md`
+
+### 2026-05-27 (**v2.0** Sign-off — quiet CLI·SRS 동기화·인수 마감) [v3.0에서 폐기]
+- **`v2_signal_generator.py`:** `verbose=False` 기본·종목별 로그 옵션화
+- **`main.py`·`config/settings.yaml`:** `v2_0.quiet_signal_log: true` — 파이프라인 요약 1줄 + PERFORMANCE REPORT
+- **`docs/작업지시서-v2.0-Intraday-Gap-Scalper.md`:** [3단계] Open→Close Bias-Free 플랫 엔진 명세로 동기화
+- **레거시:** `기본 도구.txt`·`백테스팅 핵심 지식 베이스 리스트.txt`·`backtest_smart_money`/`backtest_trend_following` — 저장소 내 미존재(이미 정리됨)
+
+### 2026-05-27 (**v2.0** Intraday Gap Scalper 요구사항 문서화)
+- **문서:** `docs/작업지시서-v2.0-Intraday-Gap-Scalper.md` 신규 작성(4단계 로드맵 + 인수 조건 + 정합성 주의사항 포함)
+- **진행:** `progress.md` Feature Checklist에 v2.0 구현 태스크 5개 추가
+- **보정:** `vol_ratio(=전일/전전일 거래량)`로 정합 고정 및 `SELL_COST=0.20%`로 통일
+- **구현 착수:** `main.py`에 v2.0 CLI(데이터로더 검증) 분기 추가 + `src/data_loader.py`에 pykrx 기반 v2.0 Data Loader 구현
+- **구현:** `src/v2_signal_generator.py` 신규 생성 및 `main.py --mode cli` 파이프라인에 Signal Generator 연동
+- **구현:** `src/v2_execution_engine.py` 당일 Open→Close 플랫 청산·`trade_return` 계산 및 CLI 파이프라인 연동
+- **구현:** `src/v2_metrics.py` 성과 집계·`print_v2_dashboard` 및 CLI 파이프라인 최종 연동
+
+### 2026-05-25 (**v4.16_Patch** 김직선 3단계 거래량·고가돌파 창 완화)
+- **`stock_screener.py`:** 기준봉 포함 20영업일 거래량이 **평균 대비 ≥300%** 이거나 순위 **TOP3** 일 때 세력 기준봉 인정. 고가 돌파(종가 확인) 허용 `τ ∈ [T-3,T]`, 종가 기준 고가 유지 **`kim_breakout_age_trading_days`**, 패턴 레이블 `고가돌파 (경과일: N일)`. **`pipeline_screener_pick_sort_tuple`** 로 시총 정렬 후에도 고가·경과 우선 표시 일치.
+- **`gui.py`:** `_screener_list_sort_key`·창 제목 v4.16_Patch.
+
+### 2026-05-24 (**v4.15** 매매 패널 추출 헬퍼 단일화 · 골든 OFF 시에도 2단계 필터 종봉 AND)
+- **`gui_helpers.py`:** `merge_live_trade_panel_into_strategy` 로 interval·이평(백테: 검증된 값)·골든/데드·진입 필터·가변 낙폭까지 한 경로 반영; `extract_live_strategy_config`(검색: 이평 클램프 + 실패 시 `RuntimeError`).
+- **`try_build_config`:** 차트 플래그 전에 동일 헬퍼 호출하여 중복 제거.
+- **`stock_screener.py`:** `run_buy_stage_screen = stage_buy_rules` 만으로 OHLC·`_pipeline_buy_rules_terminal_qualifies` 실행. `_pipeline_buy_rules_terminal_qualifies` 는 골든 ON→`Signal==1` 필요, 골든 OFF→Signal 생략·`_buy_filters_pass` 만 엄격 적용.
+- **`gui.py`:** 검색 스냅샷은 `extract_live_strategy_config`; 창 제목 v4.15.
+
+### 2026-05-24 (**v4.14_Patch** 스크리너 2단계 strategy 누수 수정)
+- **원인:** `execute_pipelined_screening(..., strategy_st=load_config()['strategy'])` 만 사용해 **디스크 YAML** 기준으로 종봉·골든·진입 필터를 평가함. 사용자가 우측 패널에서 체크를 바꿔도 검색 결과(특히 1단계+2단계)가 거의 안 바뀌는 **GUI↔백엔드 단절**이었음(.py 내 `_buy_filters_pass` 무조건 True 버그 아님).
+- **`gui_helpers.py`:** 패치 당시 `live_strategy_blob_for_pipeline_search`; v4.15에서 `extract_live_strategy_config`(코어 `merge_live_trade_panel_into_strategy`)로 통합.
+- **`gui.py`:** 검색 시작 직전 스냅샷 후 워커에 `strategy_st` 전달. 창 제목 v4.14_Patch.
+- **`stock_screener.py`:** `strategy_cross_flags_from_cfg` 결과에 대해 `golden_buy_enabled` 를 **`.get(..., True)` 없이 명시 불리언**으로 사용(폴백 혼선 제거).
+
+### 2026-05-24 (GUI: 검색 결과 100건 재잘림 제거 · 파이프라인 체크 인터락 해제)
+- **원인:** `execute_pipelined_screening` 은 시총 1단계만 켠 경우 `disp_cap`≥100으로 반환했으나, `update_gui_with_screener_results` 가 YAML `top_n`(예: 30)으로 `_screener_display_cap` 을 두고 `packed[:limit]` 재슬라이스해 목록을 30으로 맞춤.
+- **`gui.py`:** 엔진이 돌려준 픽 리스트 전량 표시(**GUI 재상한 폐기**), `_screener_display_cap` 속성 및 `_search_screen_universe_params` 대입 삭제. 파이프 체크 3개 `trace` 에서 검색 결과 지우던 `_on_pipeline_filter_changed` **제거**(체크만 바꿔도 기존 리스트 유지).
+- **`config/settings.yaml` · `stock_screener.default_screener_config`:** `universe.screener.top_n` 기본 **100**(1단계 Top 100 레이블·`PIPELINE_MC_TOP_N_DEFAULT` 와 정합).
+- **`main.py`:** CLI 스크리너 배치 시 `top_n` 폴백 리터럴 100.
+
+### 2026-05-24 (GUI·YAML: 매매 규칙 체크박스 전부 기본 OFF)
+- **`gui.py`:** 우측 매매 규칙 패널 — 골든/데드·대세·돌파·시간버퍼 BooleanVar 초기값 `false`. 초기화 말미 `var_filter_trend.set(True)` 제거로 `apply_yaml_to_widgets` 가 설정한 `filter_trend_slope` 가 더 이상 덮어쓰이지 않음; 인터락은 `_sync_buy_filters_interlock()` 만 호출.
+- **`config/settings.yaml`:** `golden_buy_enabled`·`dead_cross_sell_enabled`·`filter_breakout_strength`·`filter_time_buffer` 기본 `false` (트레일·곡선 가속도는 기존대로 `false`).
+- **`metrics.py`:** `strategy_cross_flags_from_cfg` 에서 위 스위치 키 생략 시 폴백을 `False` 로 통일.
+
+### 2026-05-23 (퀀트 파이프라인 패치 v4.14_Fix)
+- **`stock_screener.py` (`execute_pipelined_screening`):** 레거시 **시총 3000억 하한**으로 OHLC 단계 후보 탈락 제거. `stage_mcap_top100`일 때 YAML `top_n`(기본 30)만으로 결과가 상단 슬라이스 되던 버그 수정. 2단계 체크+**골든 매수 OFF** 시 빈 결과·무의미 조기종료 제거 — **골든 ON일 때만** 종봉 매수 규칙 게이트(`effective_buy_rules`) 적용·그 외 바이패스.
+- **`gui.py`:** 창 제목 v4.14_Fix.
+
+### 2026-05-23 (퀀트 필터 파이프라인 통합 v4.14)
+- **`stock_screener.py`:** `execute_pipelined_screening` — 유니버스 후 (선택)`_narrow_universe_by_mcap_top`(Marcap 순위와 교집합)→(선택) 스레드 풀 OHLC·터미널 매수 규칙(`_pipeline_buy_rules_terminal_qualifies`)→(선택)`_evaluate_kim_line_one_bar_pattern`; 결과는 `PipelineScreenerPick` 로 정규화.
+- **`gui.py`:** 스크리너 라디오 제거·3단계 체크박스; 검색 데몬 스레드는 위 함수 단일 호출·`format_gui_list_pipeline`; 창 제목 v4.14.
+- **`gui_helpers.py`:** `universe.screener_pipeline` 저장/로드·레거시 `screener_mode` 마이그레이션.
+- **`config/settings.yaml`:** `screener_pipeline` 블록·`screener_mode` 주석 갱신.
 
 ### 2026-05-23 (김직선 1봉 캔들 스크리너 v4.13)
 - **`stock_screener.py`:** `screen_universe_kim_line_one_bar`·`_evaluate_kim_line_one_bar_pattern`·`KimLineOneBarPick`(고가돌파/중심선지지·기준봉 거래대금·기준선 대비 이격도).

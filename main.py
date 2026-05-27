@@ -21,6 +21,12 @@ from src.metrics import run_backtest_detailed
 from src.slope_ablation_batch import run_slope_ablation_batch
 from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
+# v3.0 (Overnight Scalper) CLI
+from src.data_loader import load_v3_0_overnight_scalper_data
+from src.v3_execution_engine import execute_v3_overnight_backtest
+from src.v3_metrics import run_v3_analytics
+from src.v3_signal_generator import generate_v3_overnight_signals
+
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
 WATCH_DEBOUNCE_SEC = 0.5
 # 자식 GUI 종료·재기동 루프 폴링 간격(초) — 낮을수록 재시작 반응이 빠름
@@ -101,7 +107,7 @@ def run_screener_batch_cli(cfg: dict) -> bool:
     scr = {**default_screener_config(), **raw_scr}
 
     lk = max(5, min(120, int(scr.get("lookback_trading_days", 20))))
-    tn = max(1, min(200, int(scr.get("top_n", 30))))
+    tn = max(1, min(200, int(scr.get("top_n", 100))))
     metric = "atr14"  # 엔진 고정(구 YAML volatility_metric 과 무관)
     ds = default_screener_config()
     try:
@@ -452,6 +458,31 @@ def main() -> None:
             raise SystemExit(2)
         run_gui_with_watchdog()
         return
+
+    # v3.0 진입점: --mode 로 간단 분기
+    # - --mode gui  : 기존 GUI 진입
+    # - --mode cli  : v3.0 Overnight Scalper 백테스트 (대시보드만 출력)
+    mode: str | None = None
+    config_path: str | None = None
+    raw = list(rest)
+    if raw:
+        for i in range(len(raw) - 1):
+            if raw[i] == "--mode":
+                mode = str(raw[i + 1]).strip().lower()
+            if raw[i] == "--config":
+                config_path = str(raw[i + 1]).strip()
+    if mode in ("gui", "cli"):
+        if mode == "gui":
+            from src.gui import main as gui_main
+
+            gui_main()
+            return
+        # mode == "cli"
+        base_cfg = load_config(config_path)
+        cfg = merge_v3_cli_into_config(base_cfg, raw)
+        run_v3_0_overnight_cli(cfg)
+        return
+
     if not rest:
         from src.gui import main as gui_main
 
@@ -459,6 +490,71 @@ def main() -> None:
         return
     sys.argv = [sys.argv[0]] + rest
     cli_main()
+
+
+def merge_v3_cli_into_config(cfg: dict, raw_argv: list[str]) -> dict:
+    """v3.0 CLI: --start / --end 로 YAML period 덮어쓰기 (엔진 로직 변경 없음)."""
+    out = copy.deepcopy(cfg)
+    i = 0
+    while i < len(raw_argv):
+        key = raw_argv[i]
+        if key == "--start" and i + 1 < len(raw_argv):
+            out.setdefault("period", {})["start_date"] = raw_argv[i + 1]
+            i += 2
+            continue
+        if key == "--end" and i + 1 < len(raw_argv):
+            out.setdefault("period", {})["end_date"] = raw_argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    return out
+
+
+def run_v3_0_overnight_cli(cfg: dict) -> None:
+    """v3.0 파이프라인: Data Loader → Signal → Execution → Analytics (대시보드만 출력)."""
+    from src.v3_execution_engine import BUY_COST, SELL_COST
+
+    period = cfg.get("period") or {}
+    start_d = str(period.get("start_date") or "").strip()
+    end_d = str(period.get("end_date") or "").strip()
+    if not start_d or not end_d:
+        raise SystemExit(
+            "[v3.0 cli] period.start_date / period.end_date 가 필요합니다. "
+            "YAML 또는 --start / --end 로 지정하세요."
+        )
+
+    print(
+        f"[v3.0] period={start_d} ~ {end_d} | "
+        f"BUY_COST={BUY_COST} ({BUY_COST * 100:.3f}%) | "
+        f"SELL_COST={SELL_COST} ({SELL_COST * 100:.2f}%)"
+    )
+
+    uni = cfg.get("universe") or {}
+    market = str(uni.get("market") or "KOSPI").strip().upper()
+    if market not in ("KOSPI", "KOSDAQ"):
+        market = "KOSPI"
+
+    v3_cfg = cfg.get("v3_0") or {}
+    limit = int(v3_cfg.get("universe_limit", 100))
+
+    items = load_v3_0_overnight_scalper_data(
+        start_date=start_d,
+        end_date=end_d,
+        market=market,
+        universe_limit=limit,
+    )
+
+    if not items:
+        run_v3_analytics([])
+        return
+
+    traded_frames: list = []
+    for _code, df in items:
+        df_sig = generate_v3_overnight_signals(df)
+        df_tr = execute_v3_overnight_backtest(df_sig)
+        traded_frames.append(df_tr)
+
+    run_v3_analytics(traded_frames)
 
 
 if __name__ == "__main__":

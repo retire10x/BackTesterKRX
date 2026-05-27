@@ -24,7 +24,7 @@ from src.metrics import BacktestResult, trend_overlay_flags_from_strategy
 from src.stock_screener import default_screener_config
 
 # =========================================================================
-# 스크리너 모드(GUI 라디오) 및 검색 결과 리스트 포맷 (티커 | 종목명 | 시총)
+# 레거시 screener_mode 문자열 마이그레이션 및 검색 결과 포맷(티커 | 종목명 | 시총 · v4.14 파이프라인 확장 컬럼)
 # =========================================================================
 
 GUI_SCREENER_MODE_WHOLE = "whole"
@@ -46,6 +46,35 @@ VALID_GUI_SCREENER_MODES_FROZEN = frozenset(
         GUI_SCREENER_MODE_KIM_LINE_1BAR,
     }
 )
+
+
+def migrate_legacy_screener_mode_to_pipeline(
+    legacy_mode_raw: object,
+) -> tuple[bool, bool, bool]:
+    """
+    예전 라디오 `universe.screener_mode` → 파이프라인 3단계 (시총·매수규칙·김직선) 체크 초기값.
+    ATR 랭킹·돌파 전용 라디오는 신규 UI에 없음 — 필요 시 사용자가 새 체크박스로 조합(v4.14).
+    """
+    if legacy_mode_raw is None:
+        return (False, False, False)
+    m = str(legacy_mode_raw).strip().lower()
+    if not m:
+        return (False, False, False)
+    if m == str(GUI_SCREENER_MODE_MCAP_TOP).lower():
+        return (True, False, False)
+    if m == str(GUI_SCREENER_MODE_ENTRY_EVENT).lower():
+        return (False, True, False)
+    if m == str(GUI_SCREENER_MODE_KIM_LINE_1BAR).lower():
+        return (False, False, True)
+    return (False, False, False)
+
+
+def default_screener_pipeline_dict() -> dict[str, bool]:
+    return {
+        "stage_mcap_top100": False,
+        "stage_buy_rules": False,
+        "stage_kim_line_1bar": False,
+    }
 
 
 def parse_gui_list_row_code(line: str) -> str:
@@ -170,6 +199,32 @@ def format_gui_list_kim_candle(
         tv_disp = "N/A"
     spread_s = f"{float(spread_pct):+.2f}%"
     return f"{base} | {pattern_label} | {tv_disp} | {spread_s}"
+
+
+def format_gui_list_pipeline(
+    code: str,
+    name: str,
+    market_cap_krw: float | None,
+    *,
+    entry_match_flag: str,
+    candle_pattern: str,
+    spread_from_ref_pct: float | None,
+) -> str:
+    """v4.14 통합 파이프라인 — 티커·종목명·시총 · 매수조건 플래그 · 캔들 패턴 · 이격도."""
+    base = format_gui_list_triple(code, name, market_cap_krw)
+    spread_s = (
+        "—"
+        if spread_from_ref_pct is None
+        or (
+            isinstance(spread_from_ref_pct, float)
+            and not np.isfinite(spread_from_ref_pct)
+        )
+        else f"{float(spread_from_ref_pct):+.2f}%"
+    )
+    return (
+        f"{base} | {str(entry_match_flag)} | "
+        f"{str(candle_pattern)} | {spread_s}"
+    )
 
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
@@ -464,7 +519,28 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         # 빈 문자열도 허용(시장 전체 후보 목록 등). 문자열 타입 고정 및 앞뒤 공백 제거.
         ui.var_keyword.set(str(uni["search_keyword"]).strip())
     scr_yaml = uni.get("screener") if isinstance(uni.get("screener"), dict) else {}
-    if hasattr(ui, "var_screener_mode"):
+    if hasattr(ui, "var_pf_mcap_top100"):
+        defs = default_screener_pipeline_dict()
+        pip = uni.get("screener_pipeline")
+        applied = False
+        if isinstance(pip, dict):
+            ui.var_pf_mcap_top100.set(
+                bool(pip.get("stage_mcap_top100", defs["stage_mcap_top100"]))
+            )
+            ui.var_pf_buy_rules.set(
+                bool(pip.get("stage_buy_rules", defs["stage_buy_rules"]))
+            )
+            ui.var_pf_kim_candle.set(
+                bool(pip.get("stage_kim_line_1bar", defs["stage_kim_line_1bar"]))
+            )
+            applied = True
+        if not applied:
+            sm_raw = uni.get("screener_mode")
+            s1, s2, s3 = migrate_legacy_screener_mode_to_pipeline(sm_raw)
+            ui.var_pf_mcap_top100.set(s1)
+            ui.var_pf_buy_rules.set(s2)
+            ui.var_pf_kim_candle.set(s3)
+    elif hasattr(ui, "var_screener_mode"):
         sm_raw = uni.get("screener_mode")
         if isinstance(sm_raw, str) and sm_raw.strip() in VALID_GUI_SCREENER_MODES_FROZEN:
             ui.var_screener_mode.set(sm_raw.strip())
@@ -572,6 +648,103 @@ def _has_explicit_stock_selection(
     return bool(yaml_cd and yaml_cd != "000000")
 
 
+def merge_live_trade_panel_into_strategy(
+    ui: "BacktestGUI",
+    strategy_out: dict,
+    *,
+    ma_period_preset: int | None = None,
+    clamp_invalid_ma_period: bool = False,
+) -> str | None:
+    """
+    차트 표시 플래그(`show_*`)를 제외한 **매매 신호·진입 필터·트레일** 키를
+    우측 패널·주기 위젯으로 `strategy_out` 에 제자리 반영한다.
+
+    - `try_build_config`·`extract_live_strategy_config` 가 **동일 규격**으로 사용한다.
+
+    매개변수:
+    - ``ma_period_preset``: ``None`` 이면 위젿에서 읽음. 검증 성공값(5·10·20)을 넘길 경우
+      (백테스트 경로에서 이미 검증한 뒤) 그대로 사용한다.
+    - ``clamp_invalid_ma_period``: 프리셋 없이 위젓 값이 무효일 때 ``20`` 으로 고정 검색 호환 경로용.
+
+    반환값: 검증 거부 등 실패 메시지(한 줄), 성공 시 ``None``.
+    """
+    iv = ui.var_interval.get()
+    if isinstance(iv, str) and iv.strip():
+        strategy_out["interval"] = str(iv).strip().lower()
+
+    if ma_period_preset is not None:
+        mn = int(ma_period_preset)
+        if mn not in (5, 10, 20):
+            return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        strategy_out["ma_period"] = mn
+    else:
+        try:
+            mn = int(ui.var_ma_period.get())
+        except ValueError:
+            if clamp_invalid_ma_period:
+                mn = 20
+            else:
+                return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        if mn not in (5, 10, 20):
+            if clamp_invalid_ma_period:
+                mn = 20
+            else:
+                return "매매 기준 이평은 5·10·20일선 중 하나여야 합니다."
+        strategy_out["ma_period"] = mn
+
+    strategy_out["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
+    strategy_out["dead_cross_sell_enabled"] = bool(ui.var_dead_sell.get())
+
+    try:
+        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
+    except ValueError:
+        slope_thr = float(strategy_out.get("slope_threshold", 0.01))
+    strategy_out["slope_threshold"] = slope_thr
+    strategy_out["filter_trend_slope"] = bool(ui.var_filter_trend.get())
+    strategy_out["filter_breakout_strength"] = bool(ui.var_filter_breakout.get())
+    strategy_out["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
+
+    if hasattr(ui, "check_slope_accel_var"):
+        strategy_out["use_slope_acceleration"] = bool(ui.check_slope_accel_var.get())
+
+    try:
+        t_ref = float(str(ui.var_trailing_reference_pct.get()).replace(",", "").strip())
+        t_below = float(str(ui.var_trailing_drop_below_pct.get()).replace(",", "").strip())
+        t_above = float(str(ui.var_trailing_drop_above_pct.get()).replace(",", "").strip())
+    except ValueError:
+        return "가변 낙폭 매도 수치(기준·미달·돌파 %)는 숫자로 입력하세요."
+    if t_ref <= 0 or t_below <= 0 or t_above <= 0:
+        return "가변 낙폭 매도 기준 및 낙폭 값은 모두 양수여야 합니다."
+    strategy_out["trailing_stop_enabled"] = bool(ui.var_trailing_stop.get())
+    strategy_out["trailing_reference_pct"] = t_ref
+    strategy_out["trailing_drop_below_pct"] = t_below
+    strategy_out["trailing_drop_above_pct"] = t_above
+
+    return None
+
+
+def extract_live_strategy_config(ui: "BacktestGUI") -> dict:
+    """
+    YAML ``strategy`` 딥카피 + 현재 패널 **매매(신호·필터·트레일)** 위젯을 오버레이한다.
+
+    `execute_pipelined_screening`·외부 검증 코드와 규격이 `try_build_config` 결과의
+    해당 키와 동일해야 한다 — 내부적으로 `merge_live_trade_panel_into_strategy` 를 사용한다.
+
+    **Tk 변수는 메인 스레드에서만 읽음.**
+    """
+    base = load_config()
+    st = copy.deepcopy(dict(base.get("strategy") or {}))
+    err = merge_live_trade_panel_into_strategy(
+        ui,
+        st,
+        ma_period_preset=None,
+        clamp_invalid_ma_period=True,
+    )
+    if err:
+        raise RuntimeError(err)
+    return st
+
+
 def try_build_config(
     ui: "BacktestGUI",
     *,
@@ -611,22 +784,43 @@ def try_build_config(
         if isinstance(yaml_uni.get("screener"), dict)
         else {}
     )
-    gui_mode = GUI_SCREENER_MODE_WHOLE
-    if hasattr(ui, "var_screener_mode"):
+    pf_mcap = False
+    pf_buy = False
+    pf_kim = False
+    gui_mode_placeholder = GUI_SCREENER_MODE_WHOLE
+    if hasattr(ui, "var_pf_mcap_top100"):
+        try:
+            pf_mcap = bool(ui.var_pf_mcap_top100.get())
+            pf_buy = bool(ui.var_pf_buy_rules.get())
+            pf_kim = bool(ui.var_pf_kim_candle.get())
+        except (tk.TclError, AttributeError):
+            pf_mcap, pf_buy, pf_kim = False, False, False
+    elif hasattr(ui, "var_screener_mode"):
         gmv = str(ui.var_screener_mode.get()).strip()
-        gui_mode = (
+        gui_mode_placeholder = (
             gmv if gmv in VALID_GUI_SCREENER_MODES_FROZEN else GUI_SCREENER_MODE_WHOLE
+        )
+        pf_mcap, pf_buy, pf_kim = migrate_legacy_screener_mode_to_pipeline(
+            gui_mode_placeholder
         )
 
     scr_merged = {**default_screener_config(), **yaml_scr}
     scr_merged["volatility_metric"] = "atr14"
-    scr_merged["enabled"] = gui_mode == GUI_SCREENER_MODE_SCREENER
+    # GUI v4.14 라디오 제거 후에도 YAML `enabled` 로 CLI 배치 스크린 동작 유지
     uni_block["screener"] = scr_merged
-    uni_block["screener_mode"] = gui_mode
+
+    uni_block["screener_pipeline"] = {
+        "stage_mcap_top100": pf_mcap,
+        "stage_buy_rules": pf_buy,
+        "stage_kim_line_1bar": pf_kim,
+    }
+    uni_block["screener_mode"] = "pipeline_and_v414"
+
+    any_pf = pf_mcap or pf_buy or pf_kim
 
     if (
         not silent
-        and gui_mode == GUI_SCREENER_MODE_WHOLE
+        and not any_pf
         and not kw
         and not _has_explicit_stock_selection(
             ui,
@@ -636,11 +830,12 @@ def try_build_config(
     ):
         if hasattr(ui, "set_status_message"):
             ui.set_status_message(
-                "오류: 「전체」 모드에서는 검색할 종목명을 입력하거나 목록에서 종목을 고르세요."
+                "오류: 검색 종목명을 입력하거나, 필터 단계 중 하나 이상을 켠 뒤 검색하세요."
             )
         messagebox.showwarning(
             "입력 오류",
-            "「전체」 모드에서는 상단 종목 검색창을 채워 검색하거나, 검색 결과·이력에서 종목을 선택하세요.",
+            "상단 종목 검색창을 입력하거나, 퀀트 필터 파이프라인 체크를 하나 이상 켠 뒤 검색할 수 있습니다.\n"
+            "또는 검색 결과·이력에서 종목을 먼저 선택하세요.",
         )
         return None
 
@@ -663,9 +858,7 @@ def try_build_config(
                 code = parse_gui_list_row_code(str(line)).strip().zfill(6)
             else:
                 code = str((cfg.get("universe") or {}).get("selected_code") or "").strip()
-                if (not code or code == "000000") and (
-                    gui_mode != GUI_SCREENER_MODE_WHOLE
-                ):
+                if (not code or code == "000000") and any_pf:
                     fallback = (
                         str((yaml_uni or {}).get("selected_code") or "").strip().zfill(6)
                     )
@@ -677,7 +870,7 @@ def try_build_config(
     if not code or code == "000000":
         if not silent:
             hint = ""
-            if gui_mode != GUI_SCREENER_MODE_WHOLE:
+            if any_pf:
                 hint = (
                     "\n\n자동 스캔 모드에서는 검색 결과에서 종목을 고르거나, "
                     "settings 의 universe.selected_code 에 6자리 코드가 있어야 합니다."
@@ -694,8 +887,6 @@ def try_build_config(
 
     cfg["universe"]["selected_code"] = code
 
-    interval = ui.var_interval.get()
-    cfg.setdefault("strategy", {})["interval"] = interval
     try:
         ma_n = int(ui.var_ma_period.get())
     except ValueError:
@@ -703,7 +894,12 @@ def try_build_config(
     if ma_n not in (5, 10, 20):
         messagebox.showerror("오류", "매매 기준 이평은 5·10·20일선 중 하나여야 합니다.")
         return None
-    cfg.setdefault("strategy", {})["ma_period"] = ma_n
+
+    st = cfg.setdefault("strategy", {})
+    m_err = merge_live_trade_panel_into_strategy(ui, st, ma_period_preset=ma_n)
+    if m_err:
+        messagebox.showerror("오류", m_err)
+        return None
 
     try:
         sd = ui._date_start.get_date()
@@ -761,51 +957,6 @@ def try_build_config(
     )
     cfg.get("strategy", {}).pop("show_chart_return", None)
     cfg.get("strategy", {}).pop("show_chart_scroll", None)
-
-    cfg.setdefault("strategy", {})["golden_buy_enabled"] = bool(ui.var_golden_buy.get())
-    cfg.setdefault("strategy", {})["dead_cross_sell_enabled"] = bool(
-        ui.var_dead_sell.get()
-    )
-
-    try:
-        slope_thr = float(str(ui.var_slope_threshold.get()).replace(",", "").strip())
-    except ValueError:
-        slope_thr = 0.01
-    cfg.setdefault("strategy", {})["slope_threshold"] = slope_thr
-    cfg.setdefault("strategy", {})["filter_trend_slope"] = bool(ui.var_filter_trend.get())
-    cfg.setdefault("strategy", {})["filter_breakout_strength"] = bool(
-        ui.var_filter_breakout.get()
-    )
-    cfg.setdefault("strategy", {})["filter_time_buffer"] = bool(ui.var_filter_timebuf.get())
-
-    try:
-        t_ref = float(
-            str(ui.var_trailing_reference_pct.get()).replace(",", "").strip()
-        )
-        t_below = float(
-            str(ui.var_trailing_drop_below_pct.get()).replace(",", "").strip()
-        )
-        t_above = float(
-            str(ui.var_trailing_drop_above_pct.get()).replace(",", "").strip()
-        )
-    except ValueError:
-        messagebox.showerror(
-            "오류",
-            "가변 낙폭 매도 수치(기준·미달·돌파 %)는 숫자로 입력하세요.",
-        )
-        return None
-    if t_ref <= 0 or t_below <= 0 or t_above <= 0:
-        messagebox.showerror(
-            "오류",
-            "가변 낙폭 매도 기준 및 낙폭 값은 모두 양수여야 합니다.",
-        )
-        return None
-    cfg.setdefault("strategy", {})["trailing_stop_enabled"] = bool(
-        ui.var_trailing_stop.get()
-    )
-    cfg.setdefault("strategy", {})["trailing_reference_pct"] = t_ref
-    cfg.setdefault("strategy", {})["trailing_drop_below_pct"] = t_below
-    cfg.setdefault("strategy", {})["trailing_drop_above_pct"] = t_above
 
     return cfg
 
