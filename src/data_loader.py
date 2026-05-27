@@ -6,7 +6,9 @@ v4.10: FDR 상장표 메모리 캐시(TTL)·OHLCV LRU—스크리너·백테스�
 from __future__ import annotations
 
 import calendar
+import contextlib
 import os
+import socket
 import threading
 import time
 from collections import OrderedDict
@@ -28,6 +30,18 @@ FDR_LISTING_CACHE_TTL_SEC = 600.0
 _OHLCV_LOCK = threading.Lock()
 _OHLCV_LRU: OrderedDict[tuple[str, str, str], pd.DataFrame] = OrderedDict()
 OHLCV_CACHE_MAX_ENTRIES = 96
+NETWORK_TIMEOUT_SEC = 3.0
+socket.setdefaulttimeout(NETWORK_TIMEOUT_SEC)
+
+
+@contextlib.contextmanager
+def _temporary_socket_timeout(timeout_sec: float):
+    prev = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(float(timeout_sec))
+    try:
+        yield
+    finally:
+        socket.setdefaulttimeout(prev)
 
 
 def months_before(d: date, months: int) -> date:
@@ -297,7 +311,10 @@ def fetch_pykrx_marcap_trade_krw_by_code(
         from pykrx import stock as pykrx_stock  # type: ignore
 
         d = pd.Timestamp(str(as_of_date).strip()[:10]).strftime("%Y%m%d")
-        raw = pykrx_stock.get_market_cap_by_ticker(d, market=m)
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            raw = pykrx_stock.get_market_cap_by_ticker(d, market=m)
+    except (TimeoutError, socket.timeout, OSError):
+        return {}
     except Exception:
         return {}
 
@@ -340,6 +357,7 @@ def scan_v3_overnight_candidates_bulk(
     end_date: str,
     *,
     market: str = "KOSPI",
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """
     v3.1 스캐너 고속 경로(벌크+벡터화).
@@ -369,10 +387,20 @@ def scan_v3_overnight_candidates_bulk(
     s_prev1 = d_prev1.strftime("%Y%m%d")
     s_prev2 = d_prev2.strftime("%Y%m%d")
 
+    if cancel_event is not None and cancel_event.is_set():
+        return {"ok": False, "reason": "cancelled"}
+
     try:
-        df_today = pykrx_stock.get_market_ohlcv_by_ticker(s_today, market=m)
-        df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev1, market=m)
-        df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev2, market=m)
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            df_today = pykrx_stock.get_market_ohlcv_by_ticker(s_today, market=m)
+            if cancel_event is not None and cancel_event.is_set():
+                return {"ok": False, "reason": "cancelled"}
+            df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev1, market=m)
+            if cancel_event is not None and cancel_event.is_set():
+                return {"ok": False, "reason": "cancelled"}
+            df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev2, market=m)
+    except (TimeoutError, socket.timeout, OSError):
+        return {"ok": False, "reason": "timeout_bulk_ohlcv"}
     except Exception:
         return {"ok": False, "reason": "ohlcv_bulk_failed"}
 
@@ -460,7 +488,8 @@ def scan_v3_overnight_candidates_bulk(
 
     cap_map: dict[str, tuple[float | None, float | None]] = {}
     try:
-        raw_cap = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            raw_cap = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
         if raw_cap is not None and not getattr(raw_cap, "empty", True):
             cap_col = None
             amt_col = None
@@ -484,6 +513,8 @@ def scan_v3_overnight_candidates_bulk(
                         except (TypeError, ValueError):
                             ta = None
                     cap_map[code] = (mc, ta)
+    except (TimeoutError, socket.timeout, OSError):
+        cap_map = {}
     except Exception:
         cap_map = {}
 
@@ -557,7 +588,8 @@ def load_v3_0_overnight_scalper_data(
             # 환경 준비가 확인될 때만 lazy import 합니다.
             from pykrx import stock as pykrx_stock  # type: ignore
 
-            tickers = pykrx_stock.get_market_ticker_list(sd, market=m) or []
+            with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+                tickers = pykrx_stock.get_market_ticker_list(sd, market=m) or []
             tickers = [str(x).strip().zfill(6) for x in tickers if str(x).strip()]
         except Exception:
             tickers = []
@@ -578,7 +610,8 @@ def load_v3_0_overnight_scalper_data(
             try:
                 from pykrx import stock as pykrx_stock  # type: ignore
 
-                raw = pykrx_stock.get_market_ohlcv_by_date(warm_start, ed, ticker)
+                with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+                    raw = pykrx_stock.get_market_ohlcv_by_date(warm_start, ed, ticker)
             except Exception:
                 continue
 

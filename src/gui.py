@@ -229,6 +229,39 @@ MAIN_WINDOW_MIN_W = 1280
 MAIN_WINDOW_MIN_H = 720
 
 
+class OvernightScanWorker(threading.Thread):
+    """v3.12: 스캐너 연산 전용 백그라운드 워커(Tk 메인 루프와 완전 분리)."""
+
+    def __init__(
+        self,
+        *,
+        owner: "BacktestGUI",
+        market: str,
+        end_date: str,
+    ) -> None:
+        super().__init__(daemon=True)
+        self.owner = owner
+        self.market = market
+        self.end_date = end_date
+        self.cancel_event = owner._scan_cancel_event
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            rows = self.owner._run_v3_overnight_scan(self.market, self.end_date)
+            if self.cancel_event.is_set():
+                self.owner.after(0, self.owner._finalize_v31_scan_cancelled)
+                return
+            self.owner.after(0, lambda rr=rows: self.owner._finalize_v31_scan(rr))
+        except Exception as ex:
+            if self.cancel_event.is_set():
+                self.owner.after(0, self.owner._finalize_v31_scan_cancelled)
+                return
+            self.owner.after(0, lambda m=str(ex): self.owner._finalize_search_failure(m))
+
+
 class BacktestGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -241,6 +274,8 @@ class BacktestGUI(ctk.CTk):
         self._candidates: list[tuple[str, str, float | None]] = []
         self._last_batch_picks: list[object] = []
         self._busy = False
+        self._scan_cancel_event = threading.Event()
+        self._scan_thread: OvernightScanWorker | None = None
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
@@ -470,6 +505,8 @@ class BacktestGUI(ctk.CTk):
 
         row_run = ctk.CTkFrame(left, fg_color="transparent")
         row_run.pack(fill="x", padx=14, pady=(8, 8))
+        row_run.grid_columnconfigure(0, weight=1)
+        row_run.grid_columnconfigure(1, weight=1)
         self.btn_run = ctk.CTkButton(
             row_run,
             text="오버나이트 주도주 스캔",
@@ -477,7 +514,18 @@ class BacktestGUI(ctk.CTk):
             font=gui_body_font(),
             command=self._on_search,
         )
-        self.btn_run.pack(fill="x")
+        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_scan_cancel = ctk.CTkButton(
+            row_run,
+            text="스캔 중단",
+            height=40,
+            font=gui_body_font(),
+            fg_color=("#d32f2f", "#9a1f1f"),
+            hover_color=("#b71c1c", "#7f1a1a"),
+            command=self._on_scan_cancel,
+            state="disabled",
+        )
+        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         self.var_filter_trend = ctk.BooleanVar(value=False)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
@@ -1890,6 +1938,14 @@ class BacktestGUI(ctk.CTk):
         except (tk.TclError, AttributeError):
             pass
         try:
+            self.btn_run.configure(state="disabled")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.btn_scan_cancel.configure(state="normal")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
             self.winfo_toplevel().configure(cursor="wait")
         except tk.TclError:
             pass
@@ -1902,6 +1958,14 @@ class BacktestGUI(ctk.CTk):
         """검색 종료 후 버튼·커서 원복."""
         try:
             self.btn_search.configure(state="normal")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.btn_scan_cancel.configure(state="disabled")
         except (tk.TclError, AttributeError):
             pass
         try:
@@ -1936,7 +2000,11 @@ class BacktestGUI(ctk.CTk):
         pass_tail = 0
         prev_1 = ""
         prev_2 = ""
-        bulk = scan_v3_overnight_candidates_bulk(end_date, market=scan_market)
+        bulk = scan_v3_overnight_candidates_bulk(
+            end_date,
+            market=scan_market,
+            cancel_event=self._scan_cancel_event,
+        )
 
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
         if bool(bulk.get("ok")):
@@ -1953,6 +2021,17 @@ class BacktestGUI(ctk.CTk):
                 name = str(name_map.get(c6, "")).strip() or c6
                 qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
         else:
+            reason = str(bulk.get("reason", ""))
+            if reason.startswith("timeout_"):
+                self.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "안전 모드 전환",
+                        "서버 응답 지연으로 인해 안전 모드(폴백)로 전환합니다.",
+                    ),
+                )
+            if reason == "cancelled":
+                return []
             # 2) 폴백 경로: 기존 per-ticker 로직(안정성 보존)
             warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
             universe = load_v3_0_overnight_scalper_data(
@@ -1963,6 +2042,8 @@ class BacktestGUI(ctk.CTk):
             )
             total_loaded = len(name_map) if name_map else len(universe)
             for code, df in universe:
+                if self._scan_cancel_event.is_set():
+                    return []
                 if df is None or df.empty:
                     continue
                 sig = generate_v3_overnight_signals(df)
@@ -2092,17 +2173,30 @@ class BacktestGUI(ctk.CTk):
             self.set_status_message("종료일을 확인하세요.")
             return
         self._busy = True
+        self._scan_cancel_event.clear()
         self._begin_search_loading_state()
         self.set_status_message("v3.1 오버나이트 스캐너 실행 중…")
+        self._scan_thread = OvernightScanWorker(
+            owner=self,
+            market=market,
+            end_date=end_date,
+        )
+        self._scan_thread.start()
 
-        def _work() -> None:
-            try:
-                rows = self._run_v3_overnight_scan(market, end_date)
-                self.after(0, lambda rr=rows: self._finalize_v31_scan(rr))
-            except Exception as ex:
-                self.after(0, lambda m=str(ex): self._finalize_search_failure(m))
+    def _on_scan_cancel(self) -> None:
+        """v3.11: 진행 중 스캔을 사용자가 즉시 중단."""
+        if self._scan_thread is not None:
+            self._scan_thread.cancel()
+        else:
+            self._scan_cancel_event.set()
+        self._busy = False
+        self._end_search_loading_state()
+        self.set_status_message("스캔이 중단되었습니다. (사용자 취소)")
 
-        threading.Thread(target=_work, daemon=True).start()
+    def _finalize_v31_scan_cancelled(self) -> None:
+        self._busy = False
+        self._end_search_loading_state()
+        self.set_status_message("스캔이 중단되었습니다. (사용자 취소)")
 
     def _finalize_v31_scan(
         self, rows: list[tuple[str, str, float, str, str]]
