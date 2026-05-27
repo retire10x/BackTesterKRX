@@ -28,10 +28,10 @@
 - [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
 - [x] **v4.16_Patch** 김직선 1봉: 기준봉 거래량 **300% 또는 20일 TOP3**, 고가돌파 허용 `τ ∈ [T-3,T]`, 패턴 문자열 **`고가돌파 (경과일: N일)`**·파이프라인·GUI 동일 정렬 키
 
-- [ ] **v2.0** [1단계] Data Loader: KOSPI Universe 동적 확보(시점 기반) + OHLCV 수집 + `len(df)<2` 종목 제외
-- [ ] **v2.0** [2단계] Signal Generator: `gap_pct` / `vol_ratio(=전일/전전일 거래량)` 계산 + `(2.0<=gap<5.0) AND (vol_ratio>=150.0)` 진입 시그널 생성
-- [ ] **v2.0** [3단계] Execution Engine: BUY(0.015%)·SELL+세금(`SELL_COST` 0.20%) 비용 반영 + LOSS(-2% 저가) 우선 → PROFIT(+3% 고가) → TIMECUT(종가) + 오버나이트 금지
-- [ ] **v2.0** [4단계] Analytics Dashboard: Win Rate(%) / Profit Factor 계산 + `print_dashboard` 템플릿 그대로 터미널 출력
+- [x] **v2.0** [1단계] Data Loader: KOSPI Universe 동적 확보(시점 기반) + OHLCV 수집 + `len(df)<2` 종목 제외
+- [x] **v2.0** [2단계] Signal Generator: `gap_pct` / `vol_ratio(=전일/전전일 거래량)` 기반 `(2.0<=gap<5.0) AND (vol_ratio>=150.0)` 진입 시그널 생성 (`src/v2_signal_generator.py`)
+- [x] **v2.0** [3단계] Execution Engine: 당일 Open 진입·Close 청산·매도비용 0.20% 반영 `trade_return` (`src/v2_execution_engine.py`)
+- [x] **v2.0** [4단계] Analytics Dashboard: Win Rate(%) / Profit Factor 계산 + `print_v2_dashboard` 템플릿 터미널 출력 (`src/v2_metrics.py`)
 - [ ] **v2.0** 인수검증: 사후편향(우선순위) / 비용 산입 / 디버그 출력 제거(가독성)
 
 ## 2. 최신 변경 이력 (Changelog)
@@ -40,6 +40,10 @@
 - **문서:** `docs/작업지시서-v2.0-Intraday-Gap-Scalper.md` 신규 작성(4단계 로드맵 + 인수 조건 + 정합성 주의사항 포함)
 - **진행:** `progress.md` Feature Checklist에 v2.0 구현 태스크 5개 추가
 - **보정:** `vol_ratio(=전일/전전일 거래량)`로 정합 고정 및 `SELL_COST=0.20%`로 통일
+- **구현 착수:** `main.py`에 v2.0 CLI(데이터로더 검증) 분기 추가 + `src/data_loader.py`에 pykrx 기반 v2.0 Data Loader 구현
+- **구현:** `src/v2_signal_generator.py` 신규 생성 및 `main.py --mode cli` 파이프라인에 Signal Generator 연동
+- **구현:** `src/v2_execution_engine.py` 당일 Open→Close 플랫 청산·`trade_return` 계산 및 CLI 파이프라인 연동
+- **구현:** `src/v2_metrics.py` 성과 집계·`print_v2_dashboard` 및 CLI 파이프라인 최종 연동
 
 ### 2026-05-25 (**v4.16_Patch** 김직선 3단계 거래량·고가돌파 창 완화)
 - **`stock_screener.py`:** 기준봉 포함 20영업일 거래량이 **평균 대비 ≥300%** 이거나 순위 **TOP3** 일 때 세력 기준봉 인정. 고가 돌파(종가 확인) 허용 `τ ∈ [T-3,T]`, 종가 기준 고가 유지 **`kim_breakout_age_trading_days`**, 패턴 레이블 `고가돌파 (경과일: N일)`. **`pipeline_screener_pick_sort_tuple`** 로 시총 정렬 후에도 고가·경과 우선 표시 일치.

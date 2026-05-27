@@ -21,6 +21,12 @@ from src.metrics import run_backtest_detailed
 from src.slope_ablation_batch import run_slope_ablation_batch
 from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
+# v2.0 (Intraday Gap Scalper) — [1단계] Data Loader 검증용
+from src.data_loader import load_v2_0_intraday_gap_scalper_data
+from src.v2_execution_engine import execute_v2_backtest
+from src.v2_metrics import run_v2_analytics
+from src.v2_signal_generator import generate_v2_gap_scalper_signals
+
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
 WATCH_DEBOUNCE_SEC = 0.5
 # 자식 GUI 종료·재기동 루프 폴링 간격(초) — 낮을수록 재시작 반응이 빠름
@@ -452,6 +458,30 @@ def main() -> None:
             raise SystemExit(2)
         run_gui_with_watchdog()
         return
+
+    # v2.0 진입점: --mode 로 간단 분기 (기존 인자/CLI 흐름은 그대로 유지).
+    # - --mode gui  : 기존 GUI 진입
+    # - --mode cli  : v2.0 Data Loader 검증(차후 v2.0 엔진으로 확장)
+    mode: str | None = None
+    config_path: str | None = None
+    raw = list(rest)
+    if raw:
+        for i in range(len(raw) - 1):
+            if raw[i] == "--mode":
+                mode = str(raw[i + 1]).strip().lower()
+            if raw[i] == "--config":
+                config_path = str(raw[i + 1]).strip()
+    if mode in ("gui", "cli"):
+        if mode == "gui":
+            from src.gui import main as gui_main
+
+            gui_main()
+            return
+        # mode == "cli"
+        base_cfg = load_config(config_path)
+        run_v2_0_cli_data_loader_validation(base_cfg)
+        return
+
     if not rest:
         from src.gui import main as gui_main
 
@@ -459,6 +489,47 @@ def main() -> None:
         return
     sys.argv = [sys.argv[0]] + rest
     cli_main()
+
+
+def run_v2_0_cli_data_loader_validation(cfg: dict) -> None:
+    """v2.0 파이프라인: Data Loader → Signal Generator → Execution Engine."""
+    period = cfg.get("period") or {}
+    start_d = str(period.get("start_date") or "").strip()
+    end_d = str(period.get("end_date") or "").strip()
+    if not start_d or not end_d:
+        raise SystemExit("[v2.0 cli] period.start_date / period.end_date 가 필요합니다.")
+
+    uni = cfg.get("universe") or {}
+    market = str(uni.get("market") or "KOSPI").strip().upper()
+    if market not in ("KOSPI", "KOSDAQ"):
+        market = "KOSPI"
+
+    v2_cfg = cfg.get("v2_0") or {}
+    limit = int(v2_cfg.get("universe_limit", 100))
+    costs = cfg.get("trading_costs") or {}
+    sell_cost = float(costs.get("sell_cost", 0.0020))
+
+    print(f"[v2.0 cli] DataLoader: market={market}, period={start_d}~{end_d}, limit={limit}")
+    items = load_v2_0_intraday_gap_scalper_data(
+        start_date=start_d,
+        end_date=end_d,
+        market=market,
+        universe_limit=limit,
+    )
+
+    print(f"[v2.0 cli] loaded tickers: {len(items)}")
+    if not items:
+        print("[v2.0 cli] NO DATA (tickers/period 데이터 점검 필요)")
+        return
+
+    traded_frames: list = []
+
+    for _code, df in items:
+        df_sig = generate_v2_gap_scalper_signals(df)
+        df_tr = execute_v2_backtest(df_sig, sell_cost=sell_cost)
+        traded_frames.append(df_tr)
+
+    run_v2_analytics(traded_frames)
 
 
 if __name__ == "__main__":
