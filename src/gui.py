@@ -30,7 +30,9 @@ from tkcalendar import DateEntry
 
 from src.data_loader import (
     default_backtest_period_range,
+    fetch_filtered_universe,
     fetch_listing_market_cap_krw_by_code,
+    load_v3_0_overnight_scalper_data,
     load_config,
     load_ohlcv,
     normalize_krx_listing_market,
@@ -70,6 +72,7 @@ from src.stock_screener import (
     execute_pipelined_screening,
     pipeline_screener_pick_sort_tuple,
 )
+from src.v3_signal_generator import generate_v3_overnight_signals
 
 # ==========================================
 # 스크리너 결과 → 리스트박스 표시용 정규화 (방어적 정렬·슬라이싱)
@@ -196,7 +199,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.16_Patch")
+        self.title("BackTesterKRX v3.1 Overnight Scanner")
 
         self._apply_initial_window_geometry()
 
@@ -275,13 +278,15 @@ class BacktestGUI(ctk.CTk):
         sf_kw.grid(row=0, column=1, sticky="nsew")
         ctk.CTkLabel(sf_kw, text="종목", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
         self.var_keyword = ctk.StringVar(value="")
-        ctk.CTkEntry(
+        self.entry_keyword = ctk.CTkEntry(
             sf_kw, textvariable=self.var_keyword, height=28, font=gui_body_font()
-        ).pack(fill="x", expand=True)
+        )
+        self.entry_keyword.pack(fill="x", expand=True)
+        self.entry_keyword.configure(state="disabled")
 
         self.btn_search = ctk.CTkButton(
             row_search,
-            text="검색",
+            text="검색 (스캔 실행)",
             height=28,
             font=gui_body_font(),
             command=self._on_search,
@@ -294,39 +299,9 @@ class BacktestGUI(ctk.CTk):
         row_mode.pack(fill="x", padx=14, pady=(4, 6))
         ctk.CTkLabel(
             row_mode,
-            text="퀀트 필터 파이프라인 (순차 AND)",
+            text="🎯 v3.1 오버나이트 발굴 주도주 리스트 (고정)",
             font=gui_body_font(),
         ).pack(anchor="w", pady=(0, 2))
-
-        def _mk_pipeline_cb(text: str, var: ctk.BooleanVar) -> ctk.CTkCheckBox:
-            cb = ctk.CTkCheckBox(
-                row_mode,
-                text=text,
-                variable=var,
-                checkbox_width=14,
-                checkbox_height=14,
-                font=gui_body_font(),
-            )
-            cb.pack(anchor="w", pady=1)
-            return cb
-
-        _mk_pipeline_cb(
-            "1단계: 시장별 시총 상위 Top 100 필터",
-            self.var_pf_mcap_top100,
-        )
-        _mk_pipeline_cb(
-            "2단계: 매수 규칙 — 우측 설정(골든·돌파·시간 버퍼 등)과 연동",
-            self.var_pf_buy_rules,
-        )
-        _mk_pipeline_cb(
-            "3단계: 김직선 1봉 캔들 (고가돌파 / 중심선지지)",
-            self.var_pf_kim_candle,
-        )
-        HoverTooltip(
-            row_mode,
-            "위에서 아래로 체크된 단계만 순서대로 적용됩니다. "
-            "2·3단계는 종료일까지의 일봉이 필요합니다.",
-        )
 
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
         list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
@@ -410,12 +385,14 @@ class BacktestGUI(ctk.CTk):
         ctk.CTkLabel(fsell, text="매도 수수료(세금 포함 %)", font=gui_body_font()).pack(
             anchor="w"
         )
-        ctk.CTkEntry(
+        self.entry_sell_fee = ctk.CTkEntry(
             fsell,
             textvariable=self.var_sell_fee_pct,
             height=28,
             font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0))
+        )
+        self.entry_sell_fee.pack(fill="x", pady=(2, 0))
+        self.entry_sell_fee.configure(state="disabled")
 
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
         hist_block.pack(fill="x", padx=14, pady=(4, 6))
@@ -460,21 +437,12 @@ class BacktestGUI(ctk.CTk):
         row_run.pack(fill="x", padx=14, pady=(8, 8))
         self.btn_run = ctk.CTkButton(
             row_run,
-            text="백테스트 실행",
+            text="오버나이트 주도주 스캔",
             height=40,
             font=gui_body_font(),
-            command=self._on_run,
+            command=self._on_search,
         )
         self.btn_run.pack(fill="x")
-
-        self.text_summary = ctk.CTkTextbox(
-            left,
-            height=128,
-            font=gui_body_font(),
-            wrap="word",
-        )
-        self.text_summary.pack(fill="both", expand=False, padx=14, pady=(0, 14))
-        self.text_summary.configure(state="disabled")
 
         self.var_filter_trend = ctk.BooleanVar(value=False)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
@@ -500,325 +468,21 @@ class BacktestGUI(ctk.CTk):
         right.grid_rowconfigure(1, weight=0)
         right.grid_rowconfigure(2, weight=1, minsize=120)
         right.grid_columnconfigure(0, weight=1)
-
-        rules_panel = ctk.CTkFrame(
-            right,
-            corner_radius=8,
-            border_width=1,
-            border_color=("gray65", "gray45"),
-            fg_color=("gray92", "gray18"),
-        )
-        rules_panel.grid(row=0, column=0, sticky="new", padx=8, pady=(4, 4))
-
-        rules_head = ctk.CTkFrame(rules_panel, fg_color="transparent")
-        rules_head.pack(fill="x", padx=8, pady=(8, 4))
-
-        rules_head_row0 = ctk.CTkFrame(rules_head, fg_color="transparent")
-        rules_head_row0.pack(fill="x")
-
-        titles_left = ctk.CTkFrame(rules_head_row0, fg_color="transparent")
-        titles_left.pack(side="left", fill="x", expand=True)
-        ctk.CTkLabel(
-            titles_left,
-            text="매매 규칙 · v4.6",
-            font=gui_body_font(),
-            anchor="w",
-        ).pack(anchor="w")
-
-        self.btn_rules_refresh = ctk.CTkButton(
-            rules_head_row0,
-            text="Refresh",
-            width=82,
-            height=28,
-            font=gui_body_font(),
-            command=self._on_rules_refresh_chart,
-        )
-        self.btn_rules_refresh.pack(side="right", anchor="n", padx=(8, 0))
-        HoverTooltip(
-            self.btn_rules_refresh,
-            "현재 활성 종목·조회 기간에 지금 패널의 매수·매도 조건을 반영해 차트(PNG)를 다시 계산합니다.",
-        )
-
-        def _bump_slope(delta: float) -> None:
-            try:
-                v = float(str(self.var_slope_threshold.get()).replace(",", "").strip())
-            except ValueError:
-                v = 0.01
-            v = max(0.0001, min(1.0, v + delta))
-            s = f"{v:.4f}".rstrip("0").rstrip(".")
-            self.var_slope_threshold.set(s or "0")
-
-        # 좌우 격자 레이아웃을 위한 컨테이너 프레임 생성
-        grid_container = ctk.CTkFrame(rules_panel, fg_color="transparent")
-        grid_container.pack(fill="x", padx=10, pady=(0, 10))
-        grid_container.grid_columnconfigure(0, weight=1, uniform="rules_col")
-        grid_container.grid_columnconfigure(1, weight=1, uniform="rules_col")
-
-        # 매수 카드(좌) · 매도 카드(우) — 동일 행 2열
-        buy_frame = ctk.CTkFrame(
-            grid_container,
-            corner_radius=6,
-            border_width=1,
-            border_color=("gray75", "gray30"),
-            fg_color=("gray95", "gray20"),
-        )
-        buy_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=4)
-
-        sell_frame = ctk.CTkFrame(
-            grid_container,
-            corner_radius=6,
-            border_width=1,
-            border_color=("gray75", "gray30"),
-            fg_color=("gray95", "gray20"),
-        )
-        sell_frame.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=4)
-
-        tt_golden = (
-            " 골든크로스 신호\n"
-            "위의 '추세' 조건이 충족된 상승장 안에서, 단기 주가가 이동평균선을 위로 돌파할 때 최종 매수 진입을 시도합니다."
-        )
-        tt_dead = (
-            "종가가 매매 기준 이동평균선을 하향 돌파(데드크로스)할 때 기본 매도 신호 후보 발생"
-        )
-        tt_trend = (
-            " 장기 추세 필터 (기본 활성화)\n"
-            "지난 6개월간의 평균 주가(120일선)가 하루 0.01%(연 약 2.5%) 이상 완만하게 우상향하는지 검사합니다. "
-            "하락장 분별을 위한 필수 안전장치입니다."
-        )
-        tt_breakout = (
-            "거래량 > 직전 5봉 평균×1.5 또는 종가 > MA20×1.02 (골든 후보 봉 AND)"
-        )
-        tt_timebuf = (
-            "골든 후보 봉(i) 즉시 매수 안 함 — i+1, i+2 종가까지 MA20 위 안착 후 다음 봉 시가 진입 시에도 활성 필터 AND"
-        )
-        tt_slope_accel = (
-            "최근 5봉 MA20 상에 OLS 기울기가 0보다 큰 경우에만 매수 후보 통과(단기 우상향 유지·눌림·초입 필터)"
-        )
-        tt_trailing_short = (
-            "매수 이후 최고가 대비 설정 % 하락 시, 데드크로스 매도 신호보다 앞선 시점에서 다음 봉 시가 조기 청산"
-        )
-
-        # 🟢 매수 조건 내용 배치
-        lbl_buy_title = ctk.CTkLabel(
-            buy_frame,
-            text="🟢 매수 진입 조건 (AND 결합)",
+        top_selected = ctk.CTkFrame(right, fg_color="transparent")
+        top_selected.grid(row=0, column=0, sticky="ew", padx=8, pady=(6, 4))
+        self.lbl_selected_stock = ctk.CTkLabel(
+            top_selected,
+            text="현재 선택 종목 : -",
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
             anchor="w",
         )
-        lbl_buy_title.pack(anchor="w", padx=10, pady=(8, 6))
+        self.lbl_selected_stock.pack(side="left")
 
-        buy_flow = ctk.CTkFrame(buy_frame, fg_color="transparent")
-        buy_flow.pack(fill="x", padx=10, pady=(0, 10))
-        buy_row0 = ctk.CTkFrame(buy_flow, fg_color="transparent")
-        buy_row0.pack(fill="x", anchor="w")
-        buy_row1 = ctk.CTkFrame(buy_flow, fg_color="transparent")
-        buy_row1.pack(fill="x", anchor="w", pady=(6, 0))
+        self.btn_rules_refresh = None
 
-        self.cb_trend = ctk.CTkCheckBox(
-            buy_row0,
-            text="추세",
-            variable=self.var_filter_trend,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_trend.pack(side="left", padx=(0, 2))
-        HoverTooltip(self.cb_trend, tt_trend)
+        # v3.1: 우측 매매 규칙 툴박스 제거(화면 다이어트)
 
-        self.slope_spin = ctk.CTkFrame(buy_row0, fg_color="transparent")
-        self.slope_spin.pack(side="left", padx=(0, 8))
-        self.btn_slope_up = ctk.CTkButton(
-            self.slope_spin,
-            text="▴",
-            width=20,
-            height=20,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(0.01),
-        )
-        self.btn_slope_up.pack(side="left", padx=(0, 1))
-        self.entry_slope_threshold = ctk.CTkEntry(
-            self.slope_spin,
-            width=48,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_slope_threshold,
-        )
-        self.entry_slope_threshold.pack(side="left")
-        self.btn_slope_down = ctk.CTkButton(
-            self.slope_spin,
-            text="▾",
-            width=20,
-            height=20,
-            font=gui_body_font(),
-            corner_radius=3,
-            command=lambda: _bump_slope(-0.01),
-        )
-        self.btn_slope_down.pack(side="left", padx=(1, 0))
-        HoverTooltip(self.entry_slope_threshold, tt_trend)
-
-        ctk.CTkLabel(buy_row0, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        self.cb_golden = ctk.CTkCheckBox(
-            buy_row0,
-            text="골든 매수",
-            variable=self.var_golden_buy,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_golden.pack(side="left", padx=(0, 8))
-        HoverTooltip(self.cb_golden, tt_golden)
-
-        self.cb_breakout = ctk.CTkCheckBox(
-            buy_row1,
-            text="돌파 강도",
-            variable=self.var_filter_breakout,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_breakout.pack(side="left", padx=(0, 8))
-        HoverTooltip(self.cb_breakout, tt_breakout)
-
-        ctk.CTkLabel(buy_row1, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        self.cb_timebuf = ctk.CTkCheckBox(
-            buy_row1,
-            text="시간 버퍼",
-            variable=self.var_filter_timebuf,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_timebuf.pack(side="left")
-        HoverTooltip(self.cb_timebuf, tt_timebuf)
-
-        ctk.CTkLabel(buy_row1, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(8, 8)
-        )
-
-        self.cb_slope_accel = ctk.CTkCheckBox(
-            buy_row1,
-            text="곡선 가속도",
-            variable=self.check_slope_accel_var,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        self.cb_slope_accel.pack(side="left")
-        HoverTooltip(self.cb_slope_accel, tt_slope_accel)
-
-        # 🔴 매도 조건 내용 배치
-        lbl_sell_title = ctk.CTkLabel(
-            sell_frame,
-            text="🔴 매도 청산 조건 (OR 결합)",
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
-            anchor="w",
-        )
-        lbl_sell_title.pack(anchor="w", padx=10, pady=(8, 6))
-
-        sell_row0 = ctk.CTkFrame(sell_frame, fg_color="transparent")
-        sell_row0.pack(fill="x", anchor="w", padx=10, pady=(0, 0))
-        sell_row1 = ctk.CTkFrame(sell_frame, fg_color="transparent")
-        sell_row1.pack(fill="x", anchor="w", padx=10, pady=(6, 10))
-
-        cb_dead = ctk.CTkCheckBox(
-            sell_row0,
-            text="데드 매도",
-            variable=self.var_dead_sell,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_dead.pack(side="left", padx=(0, 8))
-        HoverTooltip(cb_dead, tt_dead)
-
-        ctk.CTkLabel(sell_row0, text="|", font=gui_body_font(), text_color="gray50").pack(
-            side="left", padx=(0, 8)
-        )
-
-        cb_trailing = ctk.CTkCheckBox(
-            sell_row0,
-            text="가변 낙폭",
-            variable=self.var_trailing_stop,
-            font=gui_body_font(),
-            checkbox_width=18,
-            checkbox_height=18,
-        )
-        cb_trailing.pack(side="left", padx=(0, 6))
-        HoverTooltip(cb_trailing, tt_trailing_short)
-
-        ctk.CTkLabel(sell_row1, text="기준", font=gui_body_font()).pack(
-            side="left", padx=(0, 2)
-        )
-        self.entry_trailing_ref = ctk.CTkEntry(
-            sell_row1,
-            width=36,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_reference_pct,
-        )
-        self.entry_trailing_ref.pack(side="left")
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(
-            side="left", padx=(2, 6)
-        )
-
-        ctk.CTkLabel(sell_row1, text="미달", font=gui_body_font()).pack(side="left")
-        self.entry_trailing_below = ctk.CTkEntry(
-            sell_row1,
-            width=32,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_drop_below_pct,
-        )
-        self.entry_trailing_below.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(
-            side="left", padx=(0, 6)
-        )
-
-        ctk.CTkLabel(sell_row1, text="돌파", font=gui_body_font()).pack(side="left")
-        self.entry_trailing_above = ctk.CTkEntry(
-            sell_row1,
-            width=32,
-            height=22,
-            font=gui_body_font(),
-            textvariable=self.var_trailing_drop_above_pct,
-        )
-        self.entry_trailing_above.pack(side="left", padx=(2, 2))
-        ctk.CTkLabel(sell_row1, text="%", font=gui_body_font()).pack(side="left")
-
-        def _trailing_tooltip_detail() -> str:
-            try:
-                g = float(
-                    str(self.var_trailing_reference_pct.get()).replace(",", "").strip()
-                )
-                b = float(
-                    str(self.var_trailing_drop_below_pct.get())
-                    .replace(",", "")
-                    .strip()
-                )
-                a = float(
-                    str(self.var_trailing_drop_above_pct.get())
-                    .replace(",", "")
-                    .strip()
-                )
-                g_s, b_s, a_s = f"{g:g}", f"{b:g}", f"{a:g}"
-            except ValueError:
-                g_s, b_s, a_s = "?", "?", "?"
-            return (
-                f"{tt_trailing_short} (피크 기준 수익률 {g_s}% 미만·이상 분기별로 고점 대비 {b_s}% / {a_s}% 하락)"
-            )
-
-        HoverTooltip(self.entry_trailing_ref, _trailing_tooltip_detail)
-        HoverTooltip(self.entry_trailing_below, _trailing_tooltip_detail)
-        HoverTooltip(self.entry_trailing_above, _trailing_tooltip_detail)
-
-        # 차트 컨트롤 패널 (매매 규칙과 차트 사이)
+        # 차트 컨트롤 패널 (레거시 버튼 유지)
         self.chart_control_panel = ctk.CTkFrame(
             right, fg_color="transparent"
         )
@@ -1002,9 +666,7 @@ class BacktestGUI(ctk.CTk):
             pady=(0, 10),
         )
 
-        self._set_summary(
-            "「백테스트 실행」 후 이곳에 성과 요약(5줄)이 표시됩니다."
-        )
+        self._set_summary("")
         self._update_period_label()
 
         # 매수 필터 인터락 등록 (YAML 반영값 유지 — 예전처럼 추세를 True로 강제 덮어쓰지 않음)
@@ -1018,7 +680,12 @@ class BacktestGUI(ctk.CTk):
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
-        self._chart_flat_show_message("백테스트 실행 후 차트가 표시됩니다.")
+        self._chart_flat_show_message("좌측 리스트에서 종목을 더블클릭하면 차트가 표시됩니다.")
+        self.var_sell_fee_pct.set("0.2")
+        self.bind("<KeyPress-1>", lambda _e: self._on_chart_pan_bdays(-7))
+        self.bind("<KeyPress-2>", lambda _e: self._on_chart_pan_bdays(-1))
+        self.bind("<KeyPress-7>", lambda _e: self._on_chart_pan_bdays(1))
+        self.bind("<KeyPress-8>", lambda _e: self._on_chart_pan_bdays(7))
         self.protocol("WM_DELETE_WINDOW", self._on_user_close)
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
@@ -1305,22 +972,11 @@ class BacktestGUI(ctk.CTk):
             self._chart_flat_show_message(f"이미지 로드 실패: {e}")
 
     def _set_summary(self, text: str):
-        self.text_summary.configure(state="normal")
-        self.text_summary.delete("1.0", "end")
-        self.text_summary.insert("1.0", text)
-        self.text_summary.configure(state="disabled")
+        _ = text
 
     def _sync_buy_filters_interlock(self, *_args: object) -> None:
-        """'추세' 필터 체크박스 상태에 따라 우측 매수 필터 및 OLS 임계값 스핀을 비활성화(인터락)."""
-        trend_active = bool(self.var_filter_trend.get())
-        target_state = "normal" if trend_active else "disabled"
-
-        self.cb_golden.configure(state=target_state)
-        self.cb_breakout.configure(state=target_state)
-        self.cb_timebuf.configure(state=target_state)
-        self.btn_slope_up.configure(state=target_state)
-        self.btn_slope_down.configure(state=target_state)
-        self.entry_slope_threshold.configure(state=target_state)
+        """v3.1: 우측 규칙 패널 제거로 인터락 동작 비활성화."""
+        return
 
     def set_status_message(self, msg: str) -> None:
         """좌측 하단 상태 표시줄에 한 줄 메시지를 표시합니다."""
@@ -2018,69 +1674,80 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.update_gui_with_screener_results(picks, announce=True)
 
+    def _run_v3_overnight_scan(self, market: str, end_date: str) -> list[tuple[str, str, float]]:
+        warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
+        try:
+            name_map = fetch_filtered_universe(market, "")
+        except Exception:
+            name_map = {}
+        universe = load_v3_0_overnight_scalper_data(
+            start_date=warm_start,
+            end_date=end_date,
+            market=market,
+            universe_limit=200,
+        )
+        out: list[tuple[str, str, float]] = []
+        for code, df in universe:
+            if df is None or df.empty:
+                continue
+            sig = generate_v3_overnight_signals(df)
+            if sig.empty or "buy_signal" not in sig.columns:
+                continue
+            last = sig.iloc[-1]
+            if int(last.get("buy_signal", 0) or 0) != 1:
+                continue
+            o = float(last.get("Open", 0.0) or 0.0)
+            c = float(last.get("Close", 0.0) or 0.0)
+            if o <= 0:
+                continue
+            rise_pct = (c - o) / o * 100.0
+            name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
+            out.append((str(code).zfill(6), name, rise_pct))
+        out.sort(key=lambda z: z[2], reverse=True)
+        return out
+
     def _on_search(self) -> None:
-        """파이프라인 AND 검색 · 단계 전부 미체크 시에는 키워드 검색 필수."""
+        """v3.1 오버나이트 스캐너 실행: 리스트는 코드|종목명|당일 상승률 고정."""
         if self._busy:
             self.set_status_message(
                 "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
             )
             return
-
-        keyword = self.var_keyword.get().strip()
         market = self.var_market.get().strip().upper() or "KOSPI"
         if market not in ("KOSPI", "KOSDAQ", "ETF"):
             market = "KOSPI"
-
         try:
-            pf_mcap = bool(self.var_pf_mcap_top100.get())
-            pf_buy = bool(self.var_pf_buy_rules.get())
-            pf_kim = bool(self.var_pf_kim_candle.get())
-        except (tk.TclError, AttributeError):
-            pf_mcap = pf_buy = pf_kim = False
-        any_pf = pf_mcap or pf_buy or pf_kim
-
-        self._clear_search_results_listbox()
-
-        if not any_pf and not keyword:
-            self.set_status_message(
-                "종목 검색어를 입력하거나, 필터 단계 중 하나 이상을 켠 뒤 검색하세요."
-            )
-            messagebox.showwarning(
-                "검색 조건",
-                "필터를 모두 끈 상태에서는 상단 종목 검색창 입력이 필요합니다.\n"
-                "또는 퀀트 필터 파이프라인 체크를 하나 이상 켜 주세요.",
-            )
+            end_date = self._date_end.get_date().strftime("%Y-%m-%d")
+        except (ValueError, tk.TclError):
+            self.set_status_message("종료일을 확인하세요.")
             return
-
-        sp_cal = self._search_screen_universe_params()
-        if sp_cal is None:
-            return
-
-        try:
-            strategy_st_snap = extract_live_strategy_config(self)
-        except RuntimeError as e:
-            messagebox.showerror("매매 규칙 설정", str(e))
-            return
-
         self._busy = True
         self._begin_search_loading_state()
-        self.set_status_message(
-            "유니버스·일봉 조회 및 퀀트 파이프라인 실행 중…"
-        )
+        self.set_status_message("v3.1 오버나이트 스캐너 실행 중…")
 
-        threading.Thread(
-            target=self._exec_search_worker,
-            kwargs={
-                "keyword": keyword,
-                "market": market,
-                "screener_params": sp_cal,
-                "strategy_st": dict(strategy_st_snap),
-                "pf_mcap_top100": pf_mcap,
-                "pf_buy_rules": pf_buy,
-                "pf_kim_candle": pf_kim,
-            },
-            daemon=True,
-        ).start()
+        def _work() -> None:
+            try:
+                rows = self._run_v3_overnight_scan(market, end_date)
+                self.after(0, lambda rr=rows: self._finalize_v31_scan(rr))
+            except Exception as ex:
+                self.after(0, lambda m=str(ex): self._finalize_search_failure(m))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _finalize_v31_scan(self, rows: list[tuple[str, str, float]]) -> None:
+        self._busy = False
+        self._end_search_loading_state()
+        self.list_codes.delete(0, tk.END)
+        self._candidates = []
+        for code, name, rise_pct in rows:
+            line = f"{code} | {name} | {rise_pct:+.2f} %"
+            self.list_codes.insert(tk.END, line)
+            self._candidates.append((code, name, None))
+        if rows:
+            self.list_codes.selection_set(0)
+            self.set_status_message(f"🔥 총 {len(rows)}개 주도주 포착 완료 (리스트 고정)")
+        else:
+            self.set_status_message("조건에 맞는 오버나이트 주도주가 없습니다.")
 
     def _exec_search_worker(
         self,
@@ -2132,7 +1799,7 @@ class BacktestGUI(ctk.CTk):
         messagebox.showerror("검색 실패", msg)
 
     def _on_run(self):
-        self._run_single_from_run_button()
+        self._on_search()
 
     def _finish_run(
         self,
@@ -2141,7 +1808,7 @@ class BacktestGUI(ctk.CTk):
         deferred_chart_px: tuple[int, int] | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="백테스트 실행")
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
         try:
             self.btn_rules_refresh.configure(state="normal")
         except (tk.TclError, AttributeError):
@@ -2161,11 +1828,18 @@ class BacktestGUI(ctk.CTk):
             lur = "KOSPI"
         self._last_run_listing_market = lur
 
-        self._set_summary(gui_summary_five_lines(res))
+        self._set_summary("")
 
         code_hist = str(getattr(self, "_pending_run_code", "") or "").zfill(6)
         if code_hist and code_hist != "000000":
             self._last_active_stock_code = code_hist
+            try:
+                shown_name = disp_name or code_hist
+                self.lbl_selected_stock.configure(
+                    text=f"현재 선택 종목 : {code_hist} {shown_name}"
+                )
+            except (tk.TclError, AttributeError):
+                pass
         disp_name = ""
         for row in res.summary_rows:
             if row[0] == "종목":
