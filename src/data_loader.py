@@ -353,19 +353,37 @@ def fetch_pykrx_marcap_trade_krw_by_code(
     return out
 
 
+_V31_PYKRX_EN_TO_KO: dict[str, str] = {
+    "open": "시가",
+    "high": "고가",
+    "low": "저가",
+    "close": "종가",
+    "volume": "거래량",
+    "amount": "거래대금",
+    "amount_cum": "거래대금",
+    "value": "거래대금",
+    "fluctuation": "등락률",
+    "change": "등락률",
+}
+
+
 def scan_v3_overnight_candidates_bulk(
     end_date: str,
     *,
     market: str = "KOSPI",
     cancel_event: threading.Event | None = None,
+    universe_limit: int | None = None,
 ) -> dict[str, object]:
     """
     v3.1 스캐너 고속 경로(벌크+벡터화).
 
-    - pykrx `get_market_ohlcv_by_ticker` 3회(today/prev_1/prev_2) 호출
-    - DataFrame join + 벡터화 조건식으로 최종 후보 산출
-    - 시총/거래대금은 `get_market_cap_by_ticker` 1회 호출 후 join
+    - pykrx `get_market_ohlcv_by_ticker` 3회(t0 / prev_1 / prev_2)
+    - `resolve_overnight_scan_anchor` 와 동일한 영업일 인덱스 (CLI와 공통)
+    - 설정 `v3_0.universe_limit`(기본 100)·시가총액 상위 순으로 벌크 병합 직후 슬라이스
+    - 시총/거래대금 출력은 벌크 시총 테이블 1회 재사용(join 후 최종 종목 한정 가능)
     """
+    from src.utils.date_helper import resolve_overnight_scan_anchor
+
     m = str(market or "KOSPI").strip().upper()
     if m not in ("KOSPI", "KOSDAQ"):
         m = "KOSPI"
@@ -380,42 +398,52 @@ def scan_v3_overnight_candidates_bulk(
     except Exception:
         return {"ok": False, "reason": "pykrx_import_failed"}
 
-    d_today = pd.Timestamp(str(end_date).strip()[:10]).normalize()
-    d_prev1 = d_today - BDay(1)
-    d_prev2 = d_today - BDay(2)
-    s_today = d_today.strftime("%Y%m%d")
-    s_prev1 = d_prev1.strftime("%Y%m%d")
-    s_prev2 = d_prev2.strftime("%Y%m%d")
+    lim = universe_limit
+    if lim is None:
+        try:
+            vpart = load_config().get("v3_0") or {}
+            lim = int(vpart.get("universe_limit", 100))
+        except Exception:
+            lim = 100
+    lim = max(20, min(300, int(lim)))
 
     if cancel_event is not None and cancel_event.is_set():
         return {"ok": False, "reason": "cancelled"}
 
-    try:
-        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-            df_today = pykrx_stock.get_market_ohlcv_by_ticker(s_today, market=m)
-            if cancel_event is not None and cancel_event.is_set():
-                return {"ok": False, "reason": "cancelled"}
-            df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev1, market=m)
-            if cancel_event is not None and cancel_event.is_set():
-                return {"ok": False, "reason": "cancelled"}
-            df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev2, market=m)
-    except (TimeoutError, socket.timeout, OSError):
-        return {"ok": False, "reason": "timeout_bulk_ohlcv"}
-    except Exception:
-        return {"ok": False, "reason": "ohlcv_bulk_failed"}
+    ainfo = resolve_overnight_scan_anchor(str(end_date).strip()[:10])
+    d_today = pd.Timestamp(ainfo.anchor_date).normalize()
+    d_prev1 = pd.Timestamp(ainfo.prev_1).normalize()
+    d_prev2 = pd.Timestamp(ainfo.prev_2).normalize()
 
-    if (
-        df_today is None
-        or getattr(df_today, "empty", True)
-        or df_prev1 is None
-        or getattr(df_prev1, "empty", True)
-        or df_prev2 is None
-        or getattr(df_prev2, "empty", True)
-    ):
-        return {"ok": False, "reason": "ohlcv_bulk_empty"}
+    def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
+        """pykrx/래퍼에 따라 영문·소문영문 컬럼이 오는 경우까지 한글 정규화."""
+        x = df.copy()
+        low = {str(c).strip().lower(): c for c in x.columns}
+        for en, ko in _V31_PYKRX_EN_TO_KO.items():
+            if ko in x.columns:
+                continue
+            if en in low:
+                x = x.rename(columns={low[en]: ko})
+        titled = (
+            ("Open", "시가"),
+            ("High", "고가"),
+            ("Low", "저가"),
+            ("Close", "종가"),
+            ("Volume", "거래량"),
+            ("Amount", "거래대금"),
+        )
+        for c in list(x.columns):
+            cs = str(c).strip()
+            for tn, ko in titled:
+                if cs != tn:
+                    continue
+                if ko not in x.columns:
+                    x = x.rename(columns={c: ko})
+                break
+        return x
 
     def _prep(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
-        x = df.copy()
+        x = _normalize_pykrx_columns_to_ko(df)
         x.index = x.index.map(lambda v: str(v).zfill(6))
         # pykrx 일자별 전종목 시세 컬럼: 시가/고가/저가/종가/거래량/거래대금/등락률
         x = x.rename(
@@ -443,13 +471,95 @@ def scan_v3_overnight_candidates_bulk(
             out[c] = pd.to_numeric(out[c], errors="coerce")
         return out
 
-    t0 = _prep(df_today, "_t0")
-    t1 = _prep(df_prev1, "_t1")
-    t2 = _prep(df_prev2, "_t2")
+    def _fetch_merge_triplet(
+        ts0: pd.Timestamp, ts1: pd.Timestamp, ts2: pd.Timestamp
+    ) -> tuple[pd.DataFrame | None, str]:
+        s0 = ts0.strftime("%Y%m%d")
+        s1 = ts1.strftime("%Y%m%d")
+        s2 = ts2.strftime("%Y%m%d")
+        try:
+            with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+                df_today = pykrx_stock.get_market_ohlcv_by_ticker(s0, market=m)
+                if cancel_event is not None and cancel_event.is_set():
+                    return None, "cancelled"
+                df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s1, market=m)
+                if cancel_event is not None and cancel_event.is_set():
+                    return None, "cancelled"
+                df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s2, market=m)
+        except (TimeoutError, socket.timeout, OSError):
+            return None, "timeout_bulk_ohlcv"
+        except Exception:
+            return None, "ohlcv_bulk_failed"
 
-    merged = t0.join(t1, how="inner").join(t2, how="inner")
-    if merged.empty:
-        return {"ok": False, "reason": "ohlcv_join_empty"}
+        if (
+            df_today is None
+            or getattr(df_today, "empty", True)
+            or df_prev1 is None
+            or getattr(df_prev1, "empty", True)
+            or df_prev2 is None
+            or getattr(df_prev2, "empty", True)
+        ):
+            return None, "ohlcv_bulk_empty"
+
+        t0 = _prep(df_today, "_t0")
+        t1 = _prep(df_prev1, "_t1")
+        t2 = _prep(df_prev2, "_t2")
+
+        merged_inner = t0.join(t1, how="inner").join(t2, how="inner")
+        if merged_inner.empty:
+            return None, "ohlcv_join_empty"
+        return merged_inner, "ok"
+
+    merged, triple_ok = _fetch_merge_triplet(d_today, d_prev1, d_prev2)
+    if merged is None:
+        if triple_ok == "cancelled":
+            return {"ok": False, "reason": "cancelled"}
+        return {"ok": False, "reason": triple_ok}
+
+    s_today = d_today.strftime("%Y%m%d")
+    rank_cap_map: dict[str, float] = {}
+    rank_cap_trade: dict[str, float | None] = {}
+    try:
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            raw_cap_rank = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
+        if raw_cap_rank is not None and not getattr(raw_cap_rank, "empty", True):
+            rc = None
+            ac = None
+            for z in raw_cap_rank.columns:
+                zs = str(z)
+                if rc is None and ("시가총액" in zs or zs.lower() == "marcap"):
+                    rc = z
+                if ac is None and ("거래대금" in zs or "amount" in zs.lower()):
+                    ac = z
+            if rc is not None:
+                for idx2, row2 in raw_cap_rank.iterrows():
+                    code7 = str(idx2).strip().zfill(6)
+                    try:
+                        mcv = float(row2[rc])
+                    except (TypeError, ValueError):
+                        continue
+                    if not (np.isfinite(mcv) and mcv > 0):
+                        continue
+                    rank_cap_map[code7] = mcv
+                    tg = None
+                    if ac is not None:
+                        try:
+                            tg = float(row2[ac])
+                        except (TypeError, ValueError):
+                            tg = None
+                    rank_cap_trade[code7] = tg
+    except Exception:
+        rank_cap_map = {}
+        rank_cap_trade = {}
+
+    mcap_scores = merged.index.map(lambda c: float(rank_cap_map.get(str(c).zfill(6), -1.0)))
+    merged["_mcap_sort_tmp"] = mcap_scores
+    merged["tmp_code"] = merged.index.astype(str).str.zfill(6)
+    merged = merged.sort_values(
+        by=["_mcap_sort_tmp", "tmp_code"],
+        ascending=[False, True],
+    ).head(lim)
+    merged = merged.drop(columns=["_mcap_sort_tmp", "tmp_code"], errors="ignore")
 
     o = merged.get("Open_t0")
     h = merged.get("High_t0")
@@ -472,6 +582,27 @@ def scan_v3_overnight_candidates_bulk(
     cond3 = merged["tail_ratio"] <= 0.2
     final = merged[cond1 & cond2 & cond3].copy()
 
+    v0z = pd.to_numeric(v0, errors="coerce").fillna(0.0)
+    v0_zero_frac = float((v0z <= 0).mean()) if len(v0z) else 1.0
+    try:
+        mx_vg = float(np.nanmax(merged["vol_growth"].to_numpy(dtype=float)))
+    except (TypeError, ValueError):
+        mx_vg = 0.0
+    try:
+        mx_ret = float(np.nanmax(merged["return_pct"].to_numpy(dtype=float)))
+    except (TypeError, ValueError):
+        mx_ret = 0.0
+
+    _stats_diag = {
+        "requested_end_date": ainfo.requested_calendar_date.isoformat(),
+        "effective_anchor_date": d_today.strftime("%Y-%m-%d"),
+        "anchor_policy_reason": ainfo.anchor_policy_reason,
+        "universe_limit_applied": int(lim),
+        "volume_t0_zero_frac": round(v0_zero_frac, 4),
+        "max_vol_growth_sample": round(mx_vg, 4),
+        "max_intraday_return_pct_sample": round(mx_ret, 4),
+    }
+
     if final.empty:
         return {
             "ok": True,
@@ -481,54 +612,26 @@ def scan_v3_overnight_candidates_bulk(
                 "pass_vol": int(cond1.sum()),
                 "pass_ret": int((cond1 & cond2).sum()),
                 "pass_tail": 0,
-                "prev_1": d_prev1.strftime("%Y-%m-%d"),
-                "prev_2": d_prev2.strftime("%Y-%m-%d"),
+                "prev_1": ainfo.prev_1.isoformat(),
+                "prev_2": ainfo.prev_2.isoformat(),
+                **_stats_diag,
             },
         }
 
-    cap_map: dict[str, tuple[float | None, float | None]] = {}
-    try:
-        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-            raw_cap = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
-        if raw_cap is not None and not getattr(raw_cap, "empty", True):
-            cap_col = None
-            amt_col = None
-            for c0 in raw_cap.columns:
-                cs = str(c0)
-                if cap_col is None and ("시가총액" in cs or cs.lower() == "marcap"):
-                    cap_col = c0
-                if amt_col is None and ("거래대금" in cs or "amount" in cs.lower()):
-                    amt_col = c0
-            if cap_col is not None:
-                for idx, row in raw_cap.iterrows():
-                    code = str(idx).zfill(6)
-                    try:
-                        mc = float(row[cap_col])
-                    except (TypeError, ValueError):
-                        mc = None
-                    ta = None
-                    if amt_col is not None:
-                        try:
-                            ta = float(row[amt_col])
-                        except (TypeError, ValueError):
-                            ta = None
-                    cap_map[code] = (mc, ta)
-    except (TimeoutError, socket.timeout, OSError):
-        cap_map = {}
-    except Exception:
-        cap_map = {}
-
+    idx_order = sorted(
+        final.index,
+        key=lambda c: (-float(pd.to_numeric(final.loc[c, "return_pct"], errors="coerce")), str(c).zfill(6)),
+    )
     out_rows: list[tuple[str, float, float | None, float | None]] = []
-    for code, row in final.sort_values("return_pct", ascending=False).iterrows():
+    for code in idx_order:
+        row = final.loc[code]
         code6 = str(code).zfill(6)
         rise = float(row["return_pct"])
         proxy_amt = None
         if pd.notna(row.get("Close_t0")) and pd.notna(row.get("Volume_t0")):
             proxy_amt = float(row["Close_t0"]) * float(row["Volume_t0"])
-        mar_krw = None
-        trd_krw = None
-        if code6 in cap_map:
-            mar_krw, trd_krw = cap_map[code6]
+        mar_krw: float | None = rank_cap_map.get(code6)
+        trd_krw: float | None = rank_cap_trade.get(code6)
         if trd_krw is None:
             trd_krw = proxy_amt
         out_rows.append((code6, rise, mar_krw, trd_krw))
@@ -541,8 +644,9 @@ def scan_v3_overnight_candidates_bulk(
             "pass_vol": int(cond1.sum()),
             "pass_ret": int((cond1 & cond2).sum()),
             "pass_tail": int(len(final)),
-            "prev_1": d_prev1.strftime("%Y-%m-%d"),
-            "prev_2": d_prev2.strftime("%Y-%m-%d"),
+            "prev_1": ainfo.prev_1.isoformat(),
+            "prev_2": ainfo.prev_2.isoformat(),
+            **_stats_diag,
         },
     }
 
@@ -589,20 +693,64 @@ def load_v3_0_overnight_scalper_data(
             from pykrx import stock as pykrx_stock  # type: ignore
 
             with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-                tickers = pykrx_stock.get_market_ticker_list(sd, market=m) or []
+                ref_ymd = pd.Timestamp(ed).strftime("%Y%m%d")
+                tickers = pykrx_stock.get_market_ticker_list(ref_ymd, market=m) or []
             tickers = [str(x).strip().zfill(6) for x in tickers if str(x).strip()]
         except Exception:
             tickers = []
 
     if universe_limit and universe_limit > 0:
-        tickers = tickers[: int(universe_limit)]
+        lim = int(universe_limit)
+        cap_ranked = False
+        if source == "pykrx" and tickers:
+            try:
+                from pykrx import stock as pykrx_stock  # type: ignore
+
+                d_cap = pd.Timestamp(ed).strftime("%Y%m%d")
+                with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+                    cap_raw = pykrx_stock.get_market_cap_by_ticker(d_cap, market=m)
+                if cap_raw is not None and not getattr(cap_raw, "empty", True):
+                    cap_col = None
+                    for c0 in cap_raw.columns:
+                        cs = str(c0)
+                        if "시가총액" in cs or cs.lower() == "marcap":
+                            cap_col = c0
+                            break
+                    if cap_col is not None:
+                        cap_map: dict[str, float] = {}
+                        for idx, row in cap_raw.iterrows():
+                            code = str(idx).strip().zfill(6)
+                            try:
+                                mv = float(row[cap_col])
+                            except (TypeError, ValueError):
+                                continue
+                            if np.isfinite(mv) and mv > 0:
+                                cap_map[code] = mv
+                        tickers = sorted(
+                            tickers,
+                            key=lambda c: (-float(cap_map.get(c, 0.0)), str(c)),
+                        )[:lim]
+                        cap_ranked = True
+            except Exception:
+                cap_ranked = False
+
+        if not cap_ranked:
+            tickers = tickers[:lim]
 
     if not tickers:
         source = "fdr"
         uni_map = fetch_filtered_universe(m, "")
         tickers = sorted(str(c).strip().zfill(6) for c in uni_map.keys() if str(c).strip())
         if universe_limit and universe_limit > 0:
-            tickers = tickers[: int(universe_limit)]
+            lim = int(universe_limit)
+            cap_map = fetch_listing_market_cap_krw_by_code(m)
+            if cap_map:
+                tickers = sorted(
+                    tickers,
+                    key=lambda c: (-float(cap_map.get(c, 0.0)), str(c)),
+                )[:lim]
+            else:
+                tickers = tickers[:lim]
 
     out: list[tuple[str, pd.DataFrame]] = []
     for ticker in tickers:

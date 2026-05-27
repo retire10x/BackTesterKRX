@@ -67,6 +67,7 @@ from src.metrics import (
     normalize_interval,
     run_backtest_detailed,
 )
+from src.utils.date_helper import resolve_overnight_scan_anchor
 from src.stock_screener import (
     EntryEventTrackPick,
     KimLineOneBarPick,
@@ -107,6 +108,48 @@ def _format_marcap_display_krw(value_krw: float | None) -> str:
     if eok >= 1_000_000:
         return f"{int(round(eok / 1000)):,d}천억"
     return f"{eok:,d}억"
+
+
+def _prime_krx_env_from_dotenv() -> None:
+    """
+    GUI 실행 시 `.env`를 수동 로드해 KRX 인증 누락으로 인한 벌크 실패를 줄인다.
+    - python-dotenv 의존성 없이 최소 파서만 사용.
+    - 이미 프로세스 환경에 값이 있으면 덮어쓰지 않는다.
+    """
+    if str(os.getenv("KRX_ID") or "").strip() and str(os.getenv("KRX_PW") or "").strip():
+        return
+    env_path = os.path.join(os.getcwd(), ".env")
+    if not os.path.isfile(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return
+
+    parsed: dict[str, str] = {}
+    for raw in lines:
+        line = str(raw).strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        key = str(k).strip()
+        val = str(v).strip().strip('"').strip("'")
+        if key:
+            parsed[key] = val
+
+    aliases = {
+        "KRX_ID": ("KRX_ID", "PYKRX_ID"),
+        "KRX_PW": ("KRX_PW", "PYKRX_PW"),
+    }
+    for target, keys in aliases.items():
+        if str(os.getenv(target) or "").strip():
+            continue
+        for k in keys:
+            vv = str(parsed.get(k) or "").strip()
+            if vv:
+                os.environ[target] = vv
+                break
 
 
 # ==========================================
@@ -1985,6 +2028,7 @@ class BacktestGUI(ctk.CTk):
         """
         반환: (코드, 종목명, 당일 시가대비 상승률%, 시총 표시 문자열, 거래대금 표시 문자열)
         """
+        _prime_krx_env_from_dotenv()
         try:
             name_map = fetch_filtered_universe(market, "")
         except Exception:
@@ -2000,13 +2044,28 @@ class BacktestGUI(ctk.CTk):
         pass_tail = 0
         prev_1 = ""
         prev_2 = ""
+        requested_scan_date = str(end_date).strip()[:10]
+        ainfo_pre = resolve_overnight_scan_anchor(requested_scan_date)
+        parity_limit = 100
+        try:
+            parity_limit = int((load_config().get("v3_0") or {}).get("universe_limit", 100))
+        except Exception:
+            parity_limit = 100
+        parity_limit = max(20, min(300, parity_limit))
+        bulk_end_date = requested_scan_date
         bulk = scan_v3_overnight_candidates_bulk(
-            end_date,
+            bulk_end_date,
             market=scan_market,
             cancel_event=self._scan_cancel_event,
+            universe_limit=parity_limit,
         )
 
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
+        diag_vol_zero = ""
+        diag_policy = ""
+        diag_mx_vg = ""
+        diag_mx_ret = ""
+        effective_anchor = ainfo_pre.anchor_date.strftime("%Y-%m-%d")
         if bool(bulk.get("ok")):
             rows = bulk.get("rows") or []
             st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
@@ -2016,31 +2075,73 @@ class BacktestGUI(ctk.CTk):
             pass_tail = int((st or {}).get("pass_tail", len(rows)))
             prev_1 = str((st or {}).get("prev_1", ""))
             prev_2 = str((st or {}).get("prev_2", ""))
+            eff_raw = str((st or {}).get("effective_anchor_date") or "").strip()
+            if eff_raw:
+                effective_anchor = eff_raw[:10]
+            vz = (st or {}).get("volume_t0_zero_frac")
+            if vz is not None:
+                diag_vol_zero = str(vz)
+            pol = (st or {}).get("anchor_policy_reason")
+            if pol is not None:
+                diag_policy = str(pol)
+            mxvg = (st or {}).get("max_vol_growth_sample")
+            if mxvg is not None:
+                diag_mx_vg = str(mxvg)
+            mxrt = (st or {}).get("max_intraday_return_pct_sample")
+            if mxrt is not None:
+                diag_mx_ret = str(mxrt)
             for code, rise_pct, mar_krw, trd_krw in rows:
                 c6 = str(code).zfill(6)
                 name = str(name_map.get(c6, "")).strip() or c6
                 qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
         else:
             reason = str(bulk.get("reason", ""))
+            fallback_limit = 100
+            try:
+                v3_cfg = (load_config().get("v3_0") or {})
+                fallback_limit = int(v3_cfg.get("universe_limit", 100))
+            except Exception:
+                fallback_limit = 100
+            fallback_limit = max(20, min(300, fallback_limit))
             if reason.startswith("timeout_"):
                 self.after(
                     0,
                     lambda: messagebox.showwarning(
                         "안전 모드 전환",
-                        "서버 응답 지연으로 인해 안전 모드(폴백)로 전환합니다.",
+                        (
+                            "서버 응답 지연으로 인해 안전 모드(폴백)로 전환합니다.\n"
+                            f"GUI 폴백은 상위 {fallback_limit}개 종목만 스캔합니다."
+                        ),
+                    ),
+                )
+            elif reason in ("krx_auth_missing", "ohlcv_bulk_failed", "ohlcv_bulk_empty"):
+                self.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "벌크 스캔 실패",
+                        (
+                            f"벌크 스캔 사유: {reason}\n"
+                            f"GUI 폴백은 상위 {fallback_limit}개 종목만 스캔합니다."
+                        ),
                     ),
                 )
             if reason == "cancelled":
                 return []
+            ainfo_fb = resolve_overnight_scan_anchor(requested_scan_date)
+            anchor_fb = ainfo_fb.anchor_date.strftime("%Y-%m-%d")
+            effective_anchor = anchor_fb
+            prev_1 = ainfo_fb.prev_1.strftime("%Y-%m-%d")
+            prev_2 = ainfo_fb.prev_2.strftime("%Y-%m-%d")
             # 2) 폴백 경로: 기존 per-ticker 로직(안정성 보존)
-            warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
+            warm_start = (pd.Timestamp(anchor_fb) - BDay(15)).strftime("%Y-%m-%d")
             universe = load_v3_0_overnight_scalper_data(
                 start_date=warm_start,
-                end_date=end_date,
+                end_date=anchor_fb,
                 market=scan_market,
-                universe_limit=0,
+                universe_limit=fallback_limit,
             )
             total_loaded = len(name_map) if name_map else len(universe)
+            diag_policy = diag_policy or ainfo_fb.anchor_policy_reason
             for code, df in universe:
                 if self._scan_cancel_event.is_set():
                     return []
@@ -2049,9 +2150,6 @@ class BacktestGUI(ctk.CTk):
                 sig = generate_v3_overnight_signals(df)
                 if sig.empty or "buy_signal" not in sig.columns:
                     continue
-                if len(sig.index) >= 3:
-                    prev_1 = sig.index[-2].strftime("%Y-%m-%d")
-                    prev_2 = sig.index[-3].strftime("%Y-%m-%d")
                 last = sig.iloc[-1]
                 prev_v = (
                     float(sig["Volume"].shift(1).iloc[-1])
@@ -2096,9 +2194,11 @@ class BacktestGUI(ctk.CTk):
                 name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
                 qualifiers.append((str(code).zfill(6), name, rise_pct, None, proxy_amt))
 
-        qualifiers.sort(key=lambda z: z[2], reverse=True)
+        qualifiers.sort(key=lambda z: (-float(z[2]), str(z[0]).zfill(6)))
 
-        krx_map = fetch_pykrx_marcap_trade_krw_by_code(end_date, market=scan_market)
+        krx_map = fetch_pykrx_marcap_trade_krw_by_code(
+            effective_anchor, market=scan_market
+        )
         listing_mk = normalize_krx_listing_market(market) or "KOSPI"
         try:
             listing_caps = fetch_listing_market_cap_krw_by_code(listing_mk)
@@ -2132,8 +2232,13 @@ class BacktestGUI(ctk.CTk):
             "=====================================================",
             "⚙️ [DEBUG] v3.1 SCANNER INTERNAL PARAMETERS & LOG",
             "=====================================================",
-            f" - Target Date : {str(end_date).strip()[:10]}",
+            f" - Requested End Date : {requested_scan_date}",
+            f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
             f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
+            f" - Anchor policy (v3.13)       : {diag_policy or '-'}",
+            f" - Volume t0 zero frac (diag) : {diag_vol_zero or '-'}",
+            f" - Max vol_growth (diag)       : {diag_mx_vg or '-'}",
+            f" - Max intraday return % (diag): {diag_mx_ret or '-'}",
             "-----------------------------------------------------",
             " [Applied Rules]",
             "  1) Vol Growth  >= 1.50 (150%)",
