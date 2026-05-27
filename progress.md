@@ -28,15 +28,28 @@
 - [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
 - [x] **v4.16_Patch** 김직선 1봉: 기준봉 거래량 **300% 또는 20일 TOP3**, 고가돌파 허용 `τ ∈ [T-3,T]`, 패턴 문자열 **`고가돌파 (경과일: N일)`**·파이프라인·GUI 동일 정렬 키
 
-- [x] **v2.0** [1단계] Data Loader: KOSPI Universe 동적 확보(시점 기반) + OHLCV 수집 + `len(df)<2` 종목 제외
-- [x] **v2.0** [2단계] Signal Generator: `gap_pct` / `vol_ratio(=전일/전전일 거래량)` 기반 `(2.0<=gap<5.0) AND (vol_ratio>=150.0)` 진입 시그널 생성 (`src/v2_signal_generator.py`)
-- [x] **v2.0** [3단계] Execution Engine: 당일 Open 진입·Close 청산·매도비용 0.20% 반영 `trade_return` (`src/v2_execution_engine.py`)
-- [x] **v2.0** [4단계] Analytics Dashboard: Win Rate(%) / Profit Factor 계산 + `print_v2_dashboard` 템플릿 터미널 출력 (`src/v2_metrics.py`)
-- [x] **v2.0** 인수검증: Look-ahead-safe shift·sell_cost 0.20%·quiet CLI 출력 (`quiet_signal_log`)
+- [x] **v3.0** [1단계] Clean-up: v2.0 SRS·`src/v2_*` 모듈 폐기, `load_v3_0_overnight_scalper_data` 로더
+- [x] **v3.0** [2단계] Signal Generator: 거래량 150%·장대양봉 4%·위꼬리≤20% 종가 진입 (`src/v3_signal_generator.py`)
+- [x] **v3.0** [3단계] Execution Engine: 종가 매수·익일 시가 청산·BUY 0.015% / SELL 0.20% 고정 (`src/v3_execution_engine.py`)
+- [x] **v3.0** [4단계] Analytics: OVERNIGHT PERFORMANCE REPORT 단일 출력 (`src/v3_metrics.py`)
+- [x] **v3.0** 인수검증: `main.py --mode cli` 대시보드만·`SELL_COST=0.0020` 고정
+- [x] **v3.0** Code Freeze: `v3_signal_generator`·`v3_execution_engine` 진입/청산 로직 고정
+- [x] **v3.0** 다중 기간 CLI 검증: 세션 A/B/C (`--start`/`--end`만 변경)·`output/v3_multi_period_report.md`
 
 ## 2. 최신 변경 이력 (Changelog)
 
-### 2026-05-27 (**v2.0** Sign-off — quiet CLI·SRS 동기화·인수 마감)
+### 2026-05-27 (**v3.0** Code Freeze · 다중 기간 백테스트 · 배포 준비)
+- **Freeze:** `src/v3_signal_generator.py`, `src/v3_execution_engine.py` 로직 변경 금지 확정 · `SELL_COST=0.0020` 재확인
+- **CLI:** `merge_v3_cli_into_config` — `--start`/`--end`로 기간만 덮어쓰기 · 실행 시 BUY/SELL 비용 로그 출력
+- **검증:** 세션 A(2025-05~2026-05) PF 2.51 / B(2022 하락) PF 1.10 / C(2023~2025 3년) PF 1.28 · 보고서 `output/v3_multi_period_report.md`
+
+### 2026-05-27 (**v3.0** Overnight Scalper — 브랜치 공식 수립)
+- **레거시 폐기:** `docs/작업지시서-v2.0-Intraday-Gap-Scalper.md`, `src/v2_*.py` 삭제
+- **신규:** `src/v3_signal_generator.py`, `v3_execution_engine.py`, `v3_metrics.py`, `load_v3_0_overnight_scalper_data`
+- **CLI:** `python main.py --mode cli` → v3.0 OVERNIGHT 대시보드만 출력
+- **문서:** `docs/작업지시서-v3.0-Overnight-Scalper.md`
+
+### 2026-05-27 (**v2.0** Sign-off — quiet CLI·SRS 동기화·인수 마감) [v3.0에서 폐기]
 - **`v2_signal_generator.py`:** `verbose=False` 기본·종목별 로그 옵션화
 - **`main.py`·`config/settings.yaml`:** `v2_0.quiet_signal_log: true` — 파이프라인 요약 1줄 + PERFORMANCE REPORT
 - **`docs/작업지시서-v2.0-Intraday-Gap-Scalper.md`:** [3단계] Open→Close Bias-Free 플랫 엔진 명세로 동기화

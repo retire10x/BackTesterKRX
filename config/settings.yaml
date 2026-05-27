@@ -72,7 +72,6 @@ trading_costs:
 portfolio:
   initial_cash: 5000000
 
-# v2.0 Intraday Gap Scalper (CLI: python main.py --mode cli)
-v2_0:
+# v3.0 Overnight Scalper (CLI: python main.py --mode cli --config config/settings.yaml)
+v3_0:
   universe_limit: 100
-  quiet_signal_log: true   # true: 파이프라인 요약 1줄 + PERFORMANCE REPORT만 출력

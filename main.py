@@ -21,11 +21,11 @@ from src.metrics import run_backtest_detailed
 from src.slope_ablation_batch import run_slope_ablation_batch
 from src.stock_screener import default_screener_config, screen_universe, summary_line_for_entry
 
-# v2.0 (Intraday Gap Scalper) — [1단계] Data Loader 검증용
-from src.data_loader import load_v2_0_intraday_gap_scalper_data
-from src.v2_execution_engine import execute_v2_backtest
-from src.v2_metrics import run_v2_analytics
-from src.v2_signal_generator import generate_v2_gap_scalper_signals
+# v3.0 (Overnight Scalper) CLI
+from src.data_loader import load_v3_0_overnight_scalper_data
+from src.v3_execution_engine import execute_v3_overnight_backtest
+from src.v3_metrics import run_v3_analytics
+from src.v3_signal_generator import generate_v3_overnight_signals
 
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
 WATCH_DEBOUNCE_SEC = 0.5
@@ -459,9 +459,9 @@ def main() -> None:
         run_gui_with_watchdog()
         return
 
-    # v2.0 진입점: --mode 로 간단 분기 (기존 인자/CLI 흐름은 그대로 유지).
+    # v3.0 진입점: --mode 로 간단 분기
     # - --mode gui  : 기존 GUI 진입
-    # - --mode cli  : v2.0 Data Loader 검증(차후 v2.0 엔진으로 확장)
+    # - --mode cli  : v3.0 Overnight Scalper 백테스트 (대시보드만 출력)
     mode: str | None = None
     config_path: str | None = None
     raw = list(rest)
@@ -479,7 +479,8 @@ def main() -> None:
             return
         # mode == "cli"
         base_cfg = load_config(config_path)
-        run_v2_0_cli_data_loader_validation(base_cfg)
+        cfg = merge_v3_cli_into_config(base_cfg, raw)
+        run_v3_0_overnight_cli(cfg)
         return
 
     if not rest:
@@ -491,56 +492,69 @@ def main() -> None:
     cli_main()
 
 
-def run_v2_0_cli_data_loader_validation(cfg: dict) -> None:
-    """v2.0 파이프라인: Data Loader → Signal Generator → Execution Engine → Analytics."""
+def merge_v3_cli_into_config(cfg: dict, raw_argv: list[str]) -> dict:
+    """v3.0 CLI: --start / --end 로 YAML period 덮어쓰기 (엔진 로직 변경 없음)."""
+    out = copy.deepcopy(cfg)
+    i = 0
+    while i < len(raw_argv):
+        key = raw_argv[i]
+        if key == "--start" and i + 1 < len(raw_argv):
+            out.setdefault("period", {})["start_date"] = raw_argv[i + 1]
+            i += 2
+            continue
+        if key == "--end" and i + 1 < len(raw_argv):
+            out.setdefault("period", {})["end_date"] = raw_argv[i + 1]
+            i += 2
+            continue
+        i += 1
+    return out
+
+
+def run_v3_0_overnight_cli(cfg: dict) -> None:
+    """v3.0 파이프라인: Data Loader → Signal → Execution → Analytics (대시보드만 출력)."""
+    from src.v3_execution_engine import BUY_COST, SELL_COST
+
     period = cfg.get("period") or {}
     start_d = str(period.get("start_date") or "").strip()
     end_d = str(period.get("end_date") or "").strip()
     if not start_d or not end_d:
-        raise SystemExit("[v2.0 cli] period.start_date / period.end_date 가 필요합니다.")
+        raise SystemExit(
+            "[v3.0 cli] period.start_date / period.end_date 가 필요합니다. "
+            "YAML 또는 --start / --end 로 지정하세요."
+        )
+
+    print(
+        f"[v3.0] period={start_d} ~ {end_d} | "
+        f"BUY_COST={BUY_COST} ({BUY_COST * 100:.3f}%) | "
+        f"SELL_COST={SELL_COST} ({SELL_COST * 100:.2f}%)"
+    )
 
     uni = cfg.get("universe") or {}
     market = str(uni.get("market") or "KOSPI").strip().upper()
     if market not in ("KOSPI", "KOSDAQ"):
         market = "KOSPI"
 
-    v2_cfg = cfg.get("v2_0") or {}
-    limit = int(v2_cfg.get("universe_limit", 100))
-    quiet = bool(v2_cfg.get("quiet_signal_log", True))
-    costs = cfg.get("trading_costs") or {}
-    sell_cost = float(costs.get("sell_cost", 0.0020))
+    v3_cfg = cfg.get("v3_0") or {}
+    limit = int(v3_cfg.get("universe_limit", 100))
 
-    if not quiet:
-        print(
-            f"[v2.0 cli] DataLoader: market={market}, period={start_d}~{end_d}, limit={limit}"
-        )
-    items = load_v2_0_intraday_gap_scalper_data(
+    items = load_v3_0_overnight_scalper_data(
         start_date=start_d,
         end_date=end_d,
         market=market,
         universe_limit=limit,
     )
 
-    print(f"[v2.0 cli] loaded tickers: {len(items)}")
     if not items:
-        print("[v2.0 cli] NO DATA (tickers/period 데이터 점검 필요)")
+        run_v3_analytics([])
         return
 
     traded_frames: list = []
-    total_signals = 0
-
     for _code, df in items:
-        df_sig = generate_v2_gap_scalper_signals(df, verbose=not quiet)
-        df_tr = execute_v2_backtest(df_sig, sell_cost=sell_cost)
+        df_sig = generate_v3_overnight_signals(df)
+        df_tr = execute_v3_overnight_backtest(df_sig)
         traded_frames.append(df_tr)
-        total_signals += int(df_tr["buy_signal"].sum())
 
-    if quiet:
-        print(
-            f"[Signal] pipeline: {total_signals} signals across {len(items)} tickers"
-        )
-
-    run_v2_analytics(traded_frames)
+    run_v3_analytics(traded_frames)
 
 
 if __name__ == "__main__":

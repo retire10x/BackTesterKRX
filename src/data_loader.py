@@ -222,10 +222,10 @@ def clear_ohlcv_cache() -> None:
 
 
 # ============================================================
-# v2.0 (Intraday Gap Scalper) — [1단계] Data Loader
+# v3.0 (Overnight Scalper) — Data Loader
 # ============================================================
 
-def _normalize_v2_0_pykrx_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
+def _normalize_pykrx_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     pykrx `get_market_ohlcv_by_date()` 반환 컬럼을 엔진 공용 포맷으로 정규화.
 
@@ -264,7 +264,6 @@ def _normalize_v2_0_pykrx_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     needed = ["Open", "High", "Low", "Close", "Volume"]
     missing = [c for c in needed if c not in out.columns]
     if missing:
-        # v2.0 엔진의 신호/청산은 OHLCV 필수이므로, 누락되면 빈 df로 반환
         return pd.DataFrame()
 
     out = out[needed].copy()
@@ -274,24 +273,20 @@ def _normalize_v2_0_pykrx_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def load_v2_0_intraday_gap_scalper_data(
+def load_v3_0_overnight_scalper_data(
     *,
     start_date: str,
     end_date: str,
     market: str = "KOSPI",
     universe_limit: int = 100,
-    warm_bdays: int = 3,
+    warm_bdays: int = 2,
 ) -> list[tuple[str, pd.DataFrame]]:
     """
-    v2.0용 KOSPI Universe 동적 확보 + 일봉 OHLCV 로드 + Look-ahead-safe 전처리
+    v3.0 오버나이트 스캘퍼용 Universe + 일봉 OHLCV 로드.
 
-    - Universe: `pykrx.stock.get_market_ticker_list(start_date, market=...)`
-    - OHLCV: `pykrx.stock.get_market_ohlcv_by_date(warm_start, end_date, ticker)`
-    - 전처리:
-        * gap_pct = (오늘 Open - 전일 Close) / 전일 Close * 100
-        * vol_ratio = (전일 Volume / 전전일 Volume) * 100  (요청 보정 반영)
-    - 시그널 생성에서 필요한 과거봉은 `shift()`로 계산되며,
-      warm_bdays 이전 데이터만 로드해도 (시프트 기반이라) 미래 참조가 발생하지 않습니다.
+    - Universe: pykrx 시점 기준 ticker list (미설정 시 FDR 폴백)
+    - OHLCV: Open/High/Low/Close/Volume 정규화만 수행 (시그널·청산은 v3 모듈에서 shift 처리)
+    - 최소 3거래일 이상 데이터가 있는 종목만 반환 (익일 시가 청산 필요)
     """
     sd = str(start_date).strip()[:10]
     ed = str(end_date).strip()[:10]
@@ -354,15 +349,15 @@ def load_v2_0_intraday_gap_scalper_data(
                 continue
             raw = raw.sort_index()
 
-            if len(raw) < 2:
+            if len(raw) < 3:
                 continue
 
-            df = _normalize_v2_0_pykrx_ohlcv_columns(raw)
-            if df.empty or len(df) < 2:
+            df = _normalize_pykrx_ohlcv_columns(raw)
+            if df.empty or len(df) < 3:
                 continue
         else:
             df_raw = load_ohlcv(ticker, warm_start, ed)
-            if df_raw is None or df_raw.empty or len(df_raw) < 2:
+            if df_raw is None or df_raw.empty or len(df_raw) < 3:
                 continue
             df_raw = ensure_datetime_index(df_raw)
             # 프로젝트 공용 포맷(Open/High/Low/Close/Volume)을 그대로 사용
@@ -374,31 +369,11 @@ def load_v2_0_intraday_gap_scalper_data(
             for c in needed:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
-        # 사용자 지정 기간으로 슬라이싱(전처리에 필요한 warm rows는 shift 계산에만 사용)
         df = df.loc[(df.index >= pd.Timestamp(sd)) & (df.index <= pd.Timestamp(ed))].copy()
-        if len(df) < 2:
+        if len(df) < 3:
             continue
 
-        prev_close = df["Close"].shift(1)
-        prev_vol = df["Volume"].shift(1)
-        prevprev_vol = df["Volume"].shift(2)
-
-        # 0/NaN 방어
-        gap_pct = np.where(
-            (prev_close > 0) & np.isfinite(prev_close),
-            (df["Open"] - prev_close) / prev_close * 100.0,
-            np.nan,
-        )
-        vol_ratio = np.where(
-            (prevprev_vol > 0) & np.isfinite(prevprev_vol) & np.isfinite(prev_vol),
-            (prev_vol / prevprev_vol) * 100.0,
-            np.nan,
-        )
-
-        df["gap_pct"] = gap_pct.astype(float)
-        df["vol_ratio"] = vol_ratio.astype(float)
-        df.attrs["v2_source"] = source
-
+        df.attrs["v3_source"] = source
         out.append((ticker, df))
 
     return out
