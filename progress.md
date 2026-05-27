@@ -32,9 +32,15 @@
 - [x] **v2.0** [2단계] Signal Generator: `gap_pct` / `vol_ratio(=전일/전전일 거래량)` 기반 `(2.0<=gap<5.0) AND (vol_ratio>=150.0)` 진입 시그널 생성 (`src/v2_signal_generator.py`)
 - [x] **v2.0** [3단계] Execution Engine: 당일 Open 진입·Close 청산·매도비용 0.20% 반영 `trade_return` (`src/v2_execution_engine.py`)
 - [x] **v2.0** [4단계] Analytics Dashboard: Win Rate(%) / Profit Factor 계산 + `print_v2_dashboard` 템플릿 터미널 출력 (`src/v2_metrics.py`)
-- [ ] **v2.0** 인수검증: 사후편향(우선순위) / 비용 산입 / 디버그 출력 제거(가독성)
+- [x] **v2.0** 인수검증: Look-ahead-safe shift·sell_cost 0.20%·quiet CLI 출력 (`quiet_signal_log`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-27 (**v2.0** Sign-off — quiet CLI·SRS 동기화·인수 마감)
+- **`v2_signal_generator.py`:** `verbose=False` 기본·종목별 로그 옵션화
+- **`main.py`·`config/settings.yaml`:** `v2_0.quiet_signal_log: true` — 파이프라인 요약 1줄 + PERFORMANCE REPORT
+- **`docs/작업지시서-v2.0-Intraday-Gap-Scalper.md`:** [3단계] Open→Close Bias-Free 플랫 엔진 명세로 동기화
+- **레거시:** `기본 도구.txt`·`백테스팅 핵심 지식 베이스 리스트.txt`·`backtest_smart_money`/`backtest_trend_following` — 저장소 내 미존재(이미 정리됨)
 
 ### 2026-05-27 (**v2.0** Intraday Gap Scalper 요구사항 문서화)
 - **문서:** `docs/작업지시서-v2.0-Intraday-Gap-Scalper.md` 신규 작성(4단계 로드맵 + 인수 조건 + 정합성 주의사항 포함)

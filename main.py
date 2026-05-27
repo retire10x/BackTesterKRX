@@ -492,7 +492,7 @@ def main() -> None:
 
 
 def run_v2_0_cli_data_loader_validation(cfg: dict) -> None:
-    """v2.0 파이프라인: Data Loader → Signal Generator → Execution Engine."""
+    """v2.0 파이프라인: Data Loader → Signal Generator → Execution Engine → Analytics."""
     period = cfg.get("period") or {}
     start_d = str(period.get("start_date") or "").strip()
     end_d = str(period.get("end_date") or "").strip()
@@ -506,10 +506,14 @@ def run_v2_0_cli_data_loader_validation(cfg: dict) -> None:
 
     v2_cfg = cfg.get("v2_0") or {}
     limit = int(v2_cfg.get("universe_limit", 100))
+    quiet = bool(v2_cfg.get("quiet_signal_log", True))
     costs = cfg.get("trading_costs") or {}
     sell_cost = float(costs.get("sell_cost", 0.0020))
 
-    print(f"[v2.0 cli] DataLoader: market={market}, period={start_d}~{end_d}, limit={limit}")
+    if not quiet:
+        print(
+            f"[v2.0 cli] DataLoader: market={market}, period={start_d}~{end_d}, limit={limit}"
+        )
     items = load_v2_0_intraday_gap_scalper_data(
         start_date=start_d,
         end_date=end_d,
@@ -523,11 +527,18 @@ def run_v2_0_cli_data_loader_validation(cfg: dict) -> None:
         return
 
     traded_frames: list = []
+    total_signals = 0
 
     for _code, df in items:
-        df_sig = generate_v2_gap_scalper_signals(df)
+        df_sig = generate_v2_gap_scalper_signals(df, verbose=not quiet)
         df_tr = execute_v2_backtest(df_sig, sell_cost=sell_cost)
         traded_frames.append(df_tr)
+        total_signals += int(df_tr["buy_signal"].sum())
+
+    if quiet:
+        print(
+            f"[Signal] pipeline: {total_signals} signals across {len(items)} tickers"
+        )
 
     run_v2_analytics(traded_frames)
 

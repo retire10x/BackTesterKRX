@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 
-def generate_v2_gap_scalper_signals(df: pd.DataFrame) -> pd.DataFrame:
+def generate_v2_gap_scalper_signals(df: pd.DataFrame, *, verbose: bool = False) -> pd.DataFrame:
     """
     v2.0 인트라데이 갭 스캘퍼 전략의 진입 신호를 생성합니다.
 
@@ -35,10 +35,14 @@ def generate_v2_gap_scalper_signals(df: pd.DataFrame) -> pd.DataFrame:
 
     signal_df.loc[gap_condition & vol_condition, "buy_signal"] = 1
 
-    signal_count = int(pd.to_numeric(signal_df["buy_signal"], errors="coerce").fillna(0).sum())
-    print(
-        f"[Signal] 시그널 생성 완료: 총 {len(signal_df):,}개 행 중 {signal_count:,}개의 진입 신호 발생"
-    )
+    if verbose:
+        signal_count = int(
+            pd.to_numeric(signal_df["buy_signal"], errors="coerce").fillna(0).sum()
+        )
+        print(
+            f"[Signal] 시그널 생성 완료: 총 {len(signal_df):,}개 행 중 "
+            f"{signal_count:,}개의 진입 신호 발생"
+        )
 
     return signal_df
 
