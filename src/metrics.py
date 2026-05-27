@@ -22,6 +22,7 @@ import pandas as pd
 
 from .backtest_chart import (
     DEFAULT_CLI_SAVE_DPI,
+    figure_to_png_bytes,
     make_backtest_figure,
     save_backtest_report_png,
     save_figure_as_png,
@@ -315,6 +316,85 @@ def materialize_backtest_chart_png(
         _write_signal_debug_file(name=name, selected=selected, trades=trades, sim=sim)
 
     return out_png, skipped
+
+
+def materialize_backtest_chart_png_bytes(
+    replay: dict,
+    *,
+    chart_render_px: tuple[int, int] | None = None,
+    chart_render_dpi: int | None = None,
+    write_signal_debug_log: bool = False,
+) -> tuple[bytes, int]:
+    """
+    `materialize_backtest_chart_png` 과 동일한 Figure 품질이지만 `output/` 등 디스크에 쓰지 않음.
+    GUI 전용(v3.1): 스캔·차트 내비 시 PNG 파일 생성 억제.
+    """
+    sim = replay["sim"]
+    trades = replay["trades"]
+    name = str(replay["name"])
+    selected = str(replay.get("selected_code") or "")
+    bar_label = str(replay["bar_label"])
+    ma_n = int(replay["ma_n"])
+    ret_series = replay["ret_series"]
+    full_close = replay["full_close"]
+    trend_flags = replay["trend_flags"]
+    show_chart_candle = bool(replay.get("show_chart_candle", True))
+    show_chart_volume = bool(replay.get("show_chart_volume", True))
+    show_return_overlay = bool(replay.get("show_return_overlay", False))
+
+    trend_ma: dict[int, pd.Series] = {}
+    for p in TREND_MA_PERIODS:
+        if not trend_flags.get(p):
+            continue
+        trend_ma[p] = rolling_trend_ma_series(full_close, p)
+    trend_plot = (
+        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    )
+
+    dpi_save = DEFAULT_CLI_SAVE_DPI
+    figsize_inch: tuple[float, float] | None = None
+    layout_preset = "report"
+
+    if chart_render_px is not None:
+        gx, gy = int(chart_render_px[0]), int(chart_render_px[1])
+        gx = max(320, gx)
+        gy = max(200, gy)
+        dpi_save = (
+            int(chart_render_dpi)
+            if chart_render_dpi is not None
+            else GUI_CHART_RENDER_DPI_DEFAULT
+        )
+        dpi_save = max(72, min(dpi_save, 300))
+        iw = max(4.0, gx / float(dpi_save))
+        ih = max(2.85, gy / float(dpi_save))
+        figsize_inch = (iw, ih)
+        layout_preset = "gui_target"
+    else:
+        dpi_save = DEFAULT_CLI_SAVE_DPI
+
+    fig = make_backtest_figure(
+        sim,
+        trades,
+        name,
+        bar_label,
+        ma_n,
+        ret_series,
+        trend_ma=trend_plot,
+        show_candle=show_chart_candle,
+        show_volume=show_chart_volume,
+        show_return_overlay=show_return_overlay,
+        figsize=figsize_inch,
+    )
+    skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
+    try:
+        blob = figure_to_png_bytes(fig, dpi=dpi_save, layout_preset=layout_preset)
+    finally:
+        plt.close(fig)
+
+    if write_signal_debug_log and selected:
+        _write_signal_debug_file(name=name, selected=selected, trades=trades, sim=sim)
+
+    return blob, skipped
 
 
 def run_backtest_detailed(
@@ -728,6 +808,7 @@ __all__ = [
     "TREND_MA_PERIODS",
     "make_backtest_figure",
     "materialize_backtest_chart_png",
+    "materialize_backtest_chart_png_bytes",
     "metrics_total_cagr_mdd_equity",
     "normalize_interval",
     "rolling_trend_ma_series",

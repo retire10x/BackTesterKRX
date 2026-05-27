@@ -273,6 +273,249 @@ def _normalize_pykrx_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def fetch_pykrx_marcap_trade_krw_by_code(
+    as_of_date: str,
+    *,
+    market: str = "KOSPI",
+) -> dict[str, tuple[float | None, float | None]]:
+    """
+    pykrx 일자별 시가총액·거래대금(원화) — v3.1 스캐너 표시용.
+
+    - KRX_ID/KRX_PW 미설정 시 빈 dict 반환(호출부에서 OHLCV 근사 대체).
+    - market: KOSPI 또는 KOSDAQ 만 지원.
+    """
+    m = str(market or "KOSPI").strip().upper()
+    if m not in ("KOSPI", "KOSDAQ"):
+        return {}
+
+    krx_id = str(os.getenv("KRX_ID") or "").strip()
+    krx_pw = str(os.getenv("KRX_PW") or "").strip()
+    if len(krx_id) < 2 or len(krx_pw) < 2:
+        return {}
+
+    try:
+        from pykrx import stock as pykrx_stock  # type: ignore
+
+        d = pd.Timestamp(str(as_of_date).strip()[:10]).strftime("%Y%m%d")
+        raw = pykrx_stock.get_market_cap_by_ticker(d, market=m)
+    except Exception:
+        return {}
+
+    if raw is None or getattr(raw, "empty", True):
+        return {}
+
+    cap_col = None
+    amt_col = None
+    for c in raw.columns:
+        cs = str(c)
+        if cap_col is None and ("시가총액" in cs or cs.lower() == "marcap"):
+            cap_col = c
+        if amt_col is None and ("거래대금" in cs or "amount" in cs.lower()):
+            amt_col = c
+    if cap_col is None or amt_col is None:
+        return {}
+
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for idx, row in raw.iterrows():
+        code = str(idx).strip().zfill(6)
+        if not code or code == "000000":
+            continue
+        try:
+            mc = float(row[cap_col])
+        except (TypeError, ValueError):
+            mc = None
+        try:
+            ta = float(row[amt_col])
+        except (TypeError, ValueError):
+            ta = None
+        if mc is not None and (not np.isfinite(mc) or mc < 0):
+            mc = None
+        if ta is not None and (not np.isfinite(ta) or ta < 0):
+            ta = None
+        out[code] = (mc, ta)
+    return out
+
+
+def scan_v3_overnight_candidates_bulk(
+    end_date: str,
+    *,
+    market: str = "KOSPI",
+) -> dict[str, object]:
+    """
+    v3.1 스캐너 고속 경로(벌크+벡터화).
+
+    - pykrx `get_market_ohlcv_by_ticker` 3회(today/prev_1/prev_2) 호출
+    - DataFrame join + 벡터화 조건식으로 최종 후보 산출
+    - 시총/거래대금은 `get_market_cap_by_ticker` 1회 호출 후 join
+    """
+    m = str(market or "KOSPI").strip().upper()
+    if m not in ("KOSPI", "KOSDAQ"):
+        m = "KOSPI"
+
+    krx_id = str(os.getenv("KRX_ID") or "").strip()
+    krx_pw = str(os.getenv("KRX_PW") or "").strip()
+    if len(krx_id) < 2 or len(krx_pw) < 2:
+        return {"ok": False, "reason": "krx_auth_missing"}
+
+    try:
+        from pykrx import stock as pykrx_stock  # type: ignore
+    except Exception:
+        return {"ok": False, "reason": "pykrx_import_failed"}
+
+    d_today = pd.Timestamp(str(end_date).strip()[:10]).normalize()
+    d_prev1 = d_today - BDay(1)
+    d_prev2 = d_today - BDay(2)
+    s_today = d_today.strftime("%Y%m%d")
+    s_prev1 = d_prev1.strftime("%Y%m%d")
+    s_prev2 = d_prev2.strftime("%Y%m%d")
+
+    try:
+        df_today = pykrx_stock.get_market_ohlcv_by_ticker(s_today, market=m)
+        df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev1, market=m)
+        df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s_prev2, market=m)
+    except Exception:
+        return {"ok": False, "reason": "ohlcv_bulk_failed"}
+
+    if (
+        df_today is None
+        or getattr(df_today, "empty", True)
+        or df_prev1 is None
+        or getattr(df_prev1, "empty", True)
+        or df_prev2 is None
+        or getattr(df_prev2, "empty", True)
+    ):
+        return {"ok": False, "reason": "ohlcv_bulk_empty"}
+
+    def _prep(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
+        x = df.copy()
+        x.index = x.index.map(lambda v: str(v).zfill(6))
+        # pykrx 일자별 전종목 시세 컬럼: 시가/고가/저가/종가/거래량/거래대금/등락률
+        x = x.rename(
+            columns={
+                "시가": f"Open{suffix}",
+                "고가": f"High{suffix}",
+                "저가": f"Low{suffix}",
+                "종가": f"Close{suffix}",
+                "거래량": f"Volume{suffix}",
+                "거래대금": f"Amount{suffix}",
+                "등락률": f"ChangePct{suffix}",
+            }
+        )
+        keep = [
+            f"Open{suffix}",
+            f"High{suffix}",
+            f"Low{suffix}",
+            f"Close{suffix}",
+            f"Volume{suffix}",
+            f"Amount{suffix}",
+            f"ChangePct{suffix}",
+        ]
+        out = x[[c for c in keep if c in x.columns]].copy()
+        for c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+        return out
+
+    t0 = _prep(df_today, "_t0")
+    t1 = _prep(df_prev1, "_t1")
+    t2 = _prep(df_prev2, "_t2")
+
+    merged = t0.join(t1, how="inner").join(t2, how="inner")
+    if merged.empty:
+        return {"ok": False, "reason": "ohlcv_join_empty"}
+
+    o = merged.get("Open_t0")
+    h = merged.get("High_t0")
+    c = merged.get("Close_t0")
+    v0 = merged.get("Volume_t0")
+    v1 = merged.get("Volume_t1")
+    if o is None or h is None or c is None or v0 is None or v1 is None:
+        return {"ok": False, "reason": "ohlcv_columns_missing"}
+
+    vol_growth = np.where(v1 > 0, v0 / v1, 0.0)
+    return_pct = np.where(o > 0, (c - o) / o * 100.0, 0.0)
+    tail_ratio = np.where((h - o) > 0, (h - c) / (h - o), 1.0)
+
+    merged["vol_growth"] = pd.to_numeric(vol_growth, errors="coerce")
+    merged["return_pct"] = pd.to_numeric(return_pct, errors="coerce")
+    merged["tail_ratio"] = pd.to_numeric(tail_ratio, errors="coerce")
+
+    cond1 = merged["vol_growth"] >= 1.5
+    cond2 = merged["return_pct"] >= 4.0
+    cond3 = merged["tail_ratio"] <= 0.2
+    final = merged[cond1 & cond2 & cond3].copy()
+
+    if final.empty:
+        return {
+            "ok": True,
+            "rows": [],
+            "stats": {
+                "total_loaded": int(len(merged)),
+                "pass_vol": int(cond1.sum()),
+                "pass_ret": int((cond1 & cond2).sum()),
+                "pass_tail": 0,
+                "prev_1": d_prev1.strftime("%Y-%m-%d"),
+                "prev_2": d_prev2.strftime("%Y-%m-%d"),
+            },
+        }
+
+    cap_map: dict[str, tuple[float | None, float | None]] = {}
+    try:
+        raw_cap = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
+        if raw_cap is not None and not getattr(raw_cap, "empty", True):
+            cap_col = None
+            amt_col = None
+            for c0 in raw_cap.columns:
+                cs = str(c0)
+                if cap_col is None and ("시가총액" in cs or cs.lower() == "marcap"):
+                    cap_col = c0
+                if amt_col is None and ("거래대금" in cs or "amount" in cs.lower()):
+                    amt_col = c0
+            if cap_col is not None:
+                for idx, row in raw_cap.iterrows():
+                    code = str(idx).zfill(6)
+                    try:
+                        mc = float(row[cap_col])
+                    except (TypeError, ValueError):
+                        mc = None
+                    ta = None
+                    if amt_col is not None:
+                        try:
+                            ta = float(row[amt_col])
+                        except (TypeError, ValueError):
+                            ta = None
+                    cap_map[code] = (mc, ta)
+    except Exception:
+        cap_map = {}
+
+    out_rows: list[tuple[str, float, float | None, float | None]] = []
+    for code, row in final.sort_values("return_pct", ascending=False).iterrows():
+        code6 = str(code).zfill(6)
+        rise = float(row["return_pct"])
+        proxy_amt = None
+        if pd.notna(row.get("Close_t0")) and pd.notna(row.get("Volume_t0")):
+            proxy_amt = float(row["Close_t0"]) * float(row["Volume_t0"])
+        mar_krw = None
+        trd_krw = None
+        if code6 in cap_map:
+            mar_krw, trd_krw = cap_map[code6]
+        if trd_krw is None:
+            trd_krw = proxy_amt
+        out_rows.append((code6, rise, mar_krw, trd_krw))
+
+    return {
+        "ok": True,
+        "rows": out_rows,
+        "stats": {
+            "total_loaded": int(len(merged)),
+            "pass_vol": int(cond1.sum()),
+            "pass_ret": int((cond1 & cond2).sum()),
+            "pass_tail": int(len(final)),
+            "prev_1": d_prev1.strftime("%Y-%m-%d"),
+            "prev_2": d_prev2.strftime("%Y-%m-%d"),
+        },
+    }
+
+
 def load_v3_0_overnight_scalper_data(
     *,
     start_date: str,

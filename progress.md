@@ -35,11 +35,29 @@
 - [x] **v3.0** 인수검증: `main.py --mode cli` 대시보드만·`SELL_COST=0.0020` 고정
 - [x] **v3.0** Code Freeze: `v3_signal_generator`·`v3_execution_engine` 진입/청산 로직 고정
 - [x] **v3.0** 다중 기간 CLI 검증: 세션 A/B/C (`--start`/`--end`만 변경)·`output/v3_multi_period_report.md`
-- [x] **v3.1** Overnight Scanner GUI: 좌측 검색=스캔 트리거·결과 리스트 `코드|종목명|당일상승률` 고정 표시
+- [x] **v3.1** Overnight Scanner GUI: 좌측 검색=스캔 트리거·결과 리스트 `코드|종목명|당일상승률|시총|거래대금`(억 반올림·극대 시총 `천억` 축약) 표시 · `fetch_pykrx_marcap_trade_krw_by_code`/상장 시총·종가×거래량 폴백
 - [x] **v3.1** 레이아웃 다이어트: 우측 상단 매매 규칙/요약 로그 제거·차트 뷰어 확장
 - [x] **v3.1** 레거시 네비/단축키 유지: `[⏪][◀][▶][⏩]` + 키 `1/2/7/8` 기간 이동 시 리스트 비갱신
+- [x] **v3.1** 차트 전용 전환: 주도주/이력 더블클릭 시 백테스트 미실행·기간 OHLC 차트만 렌더
+- [x] **v3.1** 스캐너 디버그 보강: KOSPI 전수(`universe_limit=0`)·단계별 생존 카운트 로그 파일 출력
+- [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-27 (**v3.1** 최종 배포 — 리스트 시총·대금·PNG 억제)
+- **리스트:** 스캔 결과에 시가총액·당일 거래대금 컬럼 추가(억 단위 반올림, 극대 시총은 `N천억` 표기)
+- **I/O:** GUI 백테스트 연기 차트는 `materialize_backtest_chart_png_bytes` 로 캔버스만 갱신 · 차트 전용 경로는 기존처럼 메모리 PNG(`render_backtest_chart_png_bytes`)
+- **머지 준비:** `main` 통합 시 상기 항목과 DoD(스캔·내비 반복 시 `output/` 신규 차트 PNG 없음)로 검증 권장
+
+### 2026-05-27 (**v3.1** 스캔 0건 긴급 검증/보정)
+- **원인 보정:** `gui._run_v3_overnight_scan` 의 `universe_limit=200` 하드컷 제거 → KOSPI 전수 스캔(`0=unlimited`)으로 변경
+- **디버그 출력:** 스캔 시점마다 `Target/Prev_1/Prev_2` 날짜, 임계값(Vol/Return/Tail), 단계별 생존 수를 터미널 출력 + `output/v31_scanner_debug_log.txt` 저장
+- **검증 결과(2026-05-27):** Total 948 / Pass1 212 / Pass2 11 / Pass3 5 (최종)
+
+### 2026-05-27 (**v3.1** 더블클릭 차트 전용 모드)
+- **동작 전환:** `list_codes`·`list_history` 더블클릭 라우팅을 백테스트 실행에서 `차트 전용 렌더(_run_chart_only)`로 전환
+- **패닝 일관성:** `[⏪][◀][▶][⏩]`·단축키 `1/2/7/8` 기간 이동 시에도 동일 차트 전용 경로만 호출(리스트 재스캔 없음)
+- **렌더 방식:** `load_ohlcv` 기간 데이터 + **`render_backtest_chart_png_bytes`(디스크 저장 없음)** 로 우측 차트 갱신
 
 ### 2026-05-27 (**v3.1** Overnight Scanner GUI 전면 개편)
 - **코드 프리즈 준수:** `src/v3_signal_generator.py`·`src/v3_execution_engine.py` 수학 로직/비용 체계 미변경(`SELL_COST=0.0020` 유지)

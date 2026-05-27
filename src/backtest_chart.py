@@ -13,6 +13,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import io
 import os
 import sys
 import warnings
@@ -21,6 +22,7 @@ import numpy as np
 import pandas as pd
 from matplotlib import ticker as mticker
 from matplotlib.figure import Figure
+import matplotlib.pyplot as plt
 
 from .backtest_constants import (
     FIG_ATTR_TRADE_MARKERS_SKIPPED,
@@ -84,22 +86,8 @@ def _scaled_rc_for_figure_inches(fig_w_in: float, fig_h_in: float) -> dict:
     }
 
 
-def save_figure_as_png(
-    fig: Figure,
-    out_path: str,
-    dpi: int = DEFAULT_CLI_SAVE_DPI,
-    *,
-    layout_preset: str = "report",
-) -> None:
-    """
-    layout_preset:
-      - ``report``: 기존 고해상도 보고서용 여백(기본 DPI 300 등).
-      - ``gui_target``: GUI 패널 폭에 대응한 좁폭 레이아웃(좌우·하단 라벨 클립 완화).
-    bbox_inches='tight' 는 mplfinance 패널에서 잘림을 유발할 수 있어 figure bbox 기준 저장을 유지.
-    """
-    dn = os.path.dirname(out_path)
-    if dn:
-        os.makedirs(dn, exist_ok=True)
+def _prepare_figure_for_png_export(fig: Figure, *, layout_preset: str) -> None:
+    """tight_layout / subplots_adjust / autofmt — 디스크·메모리 PNG 공통."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -130,7 +118,40 @@ def save_figure_as_png(
             fig.autofmt_xdate()
         except Exception:
             pass
+
+
+def save_figure_as_png(
+    fig: Figure,
+    out_path: str,
+    dpi: int = DEFAULT_CLI_SAVE_DPI,
+    *,
+    layout_preset: str = "report",
+) -> None:
+    """
+    layout_preset:
+      - ``report``: 기존 고해상도 보고서용 여백(기본 DPI 300 등).
+      - ``gui_target``: GUI 패널 폭에 대응한 좁폭 레이아웃(좌우·하단 라벨 클립 완화).
+    bbox_inches='tight' 는 mplfinance 패널에서 잘림을 유발할 수 있어 figure bbox 기준 저장을 유지.
+    """
+    dn = os.path.dirname(out_path)
+    if dn:
+        os.makedirs(dn, exist_ok=True)
+    _prepare_figure_for_png_export(fig, layout_preset=layout_preset)
     fig.savefig(out_path, dpi=dpi)
+
+
+def figure_to_png_bytes(
+    fig: Figure,
+    *,
+    dpi: int = DEFAULT_CLI_SAVE_DPI,
+    layout_preset: str = "report",
+) -> bytes:
+    """Figure → PNG 바이너리. v3.1 GUI: output/ 디스크 쓰기 없이 표시용."""
+    _prepare_figure_for_png_export(fig, layout_preset=layout_preset)
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def _mplfinance_primary_axes(axlist: list) -> list:
@@ -722,4 +743,45 @@ def save_backtest_report_png(
         show_return_overlay=show_return_overlay,
         figsize=figsize,
     )
-    save_figure_as_png(fig, out_path, dpi=save_dpi, layout_preset=layout_preset)
+    try:
+        save_figure_as_png(fig, out_path, dpi=save_dpi, layout_preset=layout_preset)
+    finally:
+        plt.close(fig)
+
+
+def render_backtest_chart_png_bytes(
+    sim: pd.DataFrame,
+    trades: list[dict],
+    name: str,
+    bar_label: str,
+    ma_n: int,
+    ret_series: pd.Series,
+    trend_ma: dict[int, pd.Series] | None = None,
+    *,
+    show_candle: bool = True,
+    show_volume: bool = True,
+    show_return_overlay: bool = False,
+    figsize: tuple[float, float] | None = None,
+    save_dpi: int = DEFAULT_CLI_SAVE_DPI,
+    layout_preset: str = "report",
+) -> bytes:
+    """
+    v3.1 GUI 등: 동일 품질 차트를 PNG 바이트로 반환. 디스크 저장 없음(output/ I/O 절감).
+    """
+    fig = make_backtest_figure(
+        sim,
+        trades,
+        name,
+        bar_label,
+        ma_n,
+        ret_series,
+        trend_ma=trend_ma,
+        show_candle=show_candle,
+        show_volume=show_volume,
+        show_return_overlay=show_return_overlay,
+        figsize=figsize,
+    )
+    try:
+        return figure_to_png_bytes(fig, dpi=save_dpi, layout_preset=layout_preset)
+    finally:
+        plt.close(fig)

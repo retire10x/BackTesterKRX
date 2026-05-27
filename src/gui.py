@@ -3,12 +3,14 @@
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
 본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
-메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 `materialize_backtest_chart_png` 로 PNG 생성. **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. **v4.16_Patch** 김직선 3단계: 기준봉 거래량 300%/TOP3·고가돌파 허용 `τ∈[T-3,T]`·경과일·정렬. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config`.
+메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 차트 후처리(**v3.1 GUI:** `materialize_backtest_chart_png_bytes` 로 메모리 PNG만 생성·디스크 미기록 / CLI·레거시는 `materialize_backtest_chart_png`). **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. **v4.16_Patch** 김직선 3단계: 기준봉 거래량 300%/TOP3·고가돌파 허용 `τ∈[T-3,T]`·경과일·정렬. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config`.
 """
 from __future__ import annotations
 
 import copy
+import io
 import json
+import math
 import os
 import threading
 from collections import deque
@@ -32,11 +34,13 @@ from src.data_loader import (
     default_backtest_period_range,
     fetch_filtered_universe,
     fetch_listing_market_cap_krw_by_code,
+    fetch_pykrx_marcap_trade_krw_by_code,
     load_v3_0_overnight_scalper_data,
     load_config,
     load_ohlcv,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
+    scan_v3_overnight_candidates_bulk,
 )
 from src.gui_helpers import (
     HoverTooltip,
@@ -56,9 +60,10 @@ from src.gui_helpers import (
     GUI_FONT_SIZE,
 )
 from src.backtest_constants import TREND_MA_PERIODS
+from src.backtest_chart import render_backtest_chart_png_bytes
 from src.metrics import (
     BacktestResult,
-    materialize_backtest_chart_png,
+    materialize_backtest_chart_png_bytes,
     normalize_interval,
     run_backtest_detailed,
 )
@@ -73,6 +78,36 @@ from src.stock_screener import (
     pipeline_screener_pick_sort_tuple,
 )
 from src.v3_signal_generator import generate_v3_overnight_signals
+
+
+def _format_round_eok_krw(value_krw: float | None) -> str:
+    """원화 금액을 억 단위 반올림 후 `12,345억` 형식(거래대금 등)."""
+    if value_krw is None:
+        return "-"
+    try:
+        v = float(value_krw)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(v) or v <= 0:
+        return "-"
+    return f"{int(round(v / 1e8)):,d}억"
+
+
+def _format_marcap_display_krw(value_krw: float | None) -> str:
+    """시총: 억 반올림. 극대 시총은 UI 가독용 `4,800천억` 형(100만 억 원 이상)."""
+    if value_krw is None:
+        return "-"
+    try:
+        v = float(value_krw)
+    except (TypeError, ValueError):
+        return "-"
+    if not math.isfinite(v) or v <= 0:
+        return "-"
+    eok = int(round(v / 1e8))
+    if eok >= 1_000_000:
+        return f"{int(round(eok / 1000)):,d}천억"
+    return f"{eok:,d}억"
+
 
 # ==========================================
 # 스크리너 결과 → 리스트박스 표시용 정규화 (방어적 정렬·슬라이싱)
@@ -239,8 +274,8 @@ class BacktestGUI(ctk.CTk):
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
         self.var_pf_buy_rules = ctk.BooleanVar(value=False)
         self.var_pf_kim_candle = ctk.BooleanVar(value=False)
-        # (코드, 표시명, 시총 스냅샷 또는 None, 상장 시장 KOSPI/KOSDAQ/ETF)
-        self._history_deque: deque[tuple[str, str, float | None, str]] = deque(
+        # (코드, 표시명, 시총 스냅샷, 시장, 상승률문자열, 시총문자열, 거래대금문자열)
+        self._history_deque: deque[tuple] = deque(
             maxlen=BACKTEST_HISTORY_MAX
         )
 
@@ -299,7 +334,7 @@ class BacktestGUI(ctk.CTk):
         row_mode.pack(fill="x", padx=14, pady=(4, 6))
         ctk.CTkLabel(
             row_mode,
-            text="🎯 v3.1 오버나이트 발굴 주도주 리스트 (고정)",
+            text="🎯 주도주 리스트",
             font=gui_body_font(),
         ).pack(anchor="w", pady=(0, 2))
 
@@ -401,7 +436,7 @@ class BacktestGUI(ctk.CTk):
         hist_toolbar.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             hist_toolbar,
-            text=f"최근 백테스트 이력 (FIFO {BACKTEST_HISTORY_MAX})",
+            text=f"최근 이력(FIFO {BACKTEST_HISTORY_MAX})",
             font=gui_body_font(),
         ).pack(side="left", anchor="w")
         self.btn_history_del = ctk.CTkButton(
@@ -971,6 +1006,63 @@ class BacktestGUI(ctk.CTk):
             self._img_flat_ref = None
             self._chart_flat_show_message(f"이미지 로드 실패: {e}")
 
+    def _update_chart_image_from_png_bytes(self, png_bytes: bytes | None) -> None:
+        """v3.1: output/ PNG 없이 메모리 버퍼만으로 차트 캔버스 갱신."""
+        if not png_bytes:
+            self._last_chart_path = None
+            self._chart_canvas_image_item = None
+            self._img_flat_ref = None
+            self._chart_flat_show_message("차트 데이터가 없습니다.")
+            return
+
+        try:
+            try:
+                self.update_idletasks()
+                self.chart_frame.update_idletasks()
+                self.chart_overlay_host.update_idletasks()
+            except tk.TclError:
+                pass
+
+            fw, fh = self._chart_overlay_host_inner_pixel_size()
+            if fw <= 0 or fh <= 0:
+                return
+
+            with Image.open(io.BytesIO(png_bytes)) as pil_img:
+                rgb = pil_img.convert("RGB")
+                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(resized)
+                cvs_f = self._chart_flat_canvas
+
+                swapped = False
+                item_existing = getattr(self, "_chart_canvas_image_item", None)
+                if item_existing is not None:
+                    try:
+                        cvs_f.itemconfigure(item_existing, image=photo)
+                        swapped = True
+                    except tk.TclError:
+                        self._chart_canvas_image_item = None
+
+                try:
+                    cvs_f.configure(bg=self._chart_canvas_bg_plain())
+                    if not swapped:
+                        try:
+                            cvs_f.delete("all")
+                        except tk.TclError:
+                            pass
+                        self._chart_canvas_image_item = cvs_f.create_image(
+                            0, 0, anchor=tk.NW, image=photo, tags=("chart_main",)
+                        )
+                except tk.TclError:
+                    return
+
+                self._img_flat_ref = photo
+                self._last_chart_path = None
+        except Exception as e:
+            self._last_chart_path = None
+            self._chart_canvas_image_item = None
+            self._img_flat_ref = None
+            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
+
     def _set_summary(self, text: str):
         _ = text
 
@@ -1123,7 +1215,7 @@ class BacktestGUI(ctk.CTk):
         return cc if cc and cc != "000000" else ""
 
     def _on_rules_refresh_chart(self) -> None:
-        """우측 매매 규칙 변경 후, 현재 조회 중인 종목·기간으로 차트만 재생성한다."""
+        """현재 선택 종목의 기간 차트만 다시 렌더링(v3.1: 비백테스트)."""
         if self._busy:
             self.set_status_message("다른 작업이 진행 중입니다. 완료 후 다시 시도하세요.")
             return
@@ -1132,10 +1224,10 @@ class BacktestGUI(ctk.CTk):
         if not code or code == "000000":
             messagebox.showinfo(
                 "차트 새로고침",
-                "먼저 백테스트를 실행해 활성 종목이 있거나, 차트 조회 상태가 필요합니다.",
+                "먼저 리스트에서 종목을 선택해 차트를 표시하세요.",
             )
             self.set_status_message(
-                "활성 종목이 없습니다. 검색 결과·이력에서 선택 후 백테스트를 실행하세요."
+                "활성 종목이 없습니다. 검색 결과·이력에서 종목을 선택하세요."
             )
             return
 
@@ -1151,13 +1243,7 @@ class BacktestGUI(ctk.CTk):
             )
             return
 
-        self.set_status_message(
-            "매수·매도 조건 변경을 반영해 현재 종목 차트를 다시 계산합니다…"
-        )
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _schedule_auto_run_after_shift(self) -> None:
         if self._shift_auto_run_after_id is not None:
@@ -1181,18 +1267,113 @@ class BacktestGUI(ctk.CTk):
         )
         if cfg is None:
             self.lbl_status.configure(
-                text="기간 이동: 먼저 한 종목 백테스트를 완료하거나 검색 후 차트가 열린 뒤 패닝하세요.",
+                text="기간 이동: 먼저 리스트에서 종목을 선택해 차트를 연 뒤 패닝하세요.",
             )
             return
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _on_chart_pan_bdays(self, delta_bdays: int) -> None:
         """차트 좌·우 오버레이: 영업일 기준으로 기간 이동 후 자동 재실행."""
         self._shift_period_trading_days(delta_bdays)
         self._schedule_auto_run_after_shift()
+
+    def _run_chart_only(self, cfg: dict | None) -> None:
+        """v3.1: 백테스트 없이 선택 종목의 기간별 차트만 생성/표시."""
+        if cfg is None or self._busy:
+            return
+
+        code = str((cfg.get("universe") or {}).get("selected_code") or "").strip().zfill(6)
+        if not code or code == "000000":
+            self.set_status_message("차트 표시 대상 종목 코드가 없습니다.")
+            return
+
+        period = cfg.get("period") or {}
+        start_s = str(period.get("start_date") or "").strip()
+        end_s = str(period.get("end_date") or "").strip()
+        if not start_s or not end_s:
+            self.set_status_message("기간(start/end)을 확인하세요.")
+            return
+
+        self._pending_run_code = code
+        self._busy = True
+        self._update_period_label()
+        self.btn_run.configure(state="disabled", text="차트 로딩 중…")
+        self.set_status_message("기간별 차트 생성 중…")
+        chart_px = self._chart_render_targets_for_engine()
+        show_candle = bool((cfg.get("strategy") or {}).get("show_chart_candle", True))
+        show_volume = bool((cfg.get("strategy") or {}).get("show_chart_volume", True))
+        show_overlay = bool((cfg.get("strategy") or {}).get("show_return_overlay", False))
+        ma_n = int((cfg.get("strategy") or {}).get("ma_period", 20))
+        trend_periods = [p for p in TREND_MA_PERIODS if bool(self._trend_vars[p].get())]
+
+        def work() -> None:
+            try:
+                ohlcv = load_ohlcv(code, start_s, end_s)
+                if ohlcv is None or ohlcv.empty:
+                    raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
+
+                sim = ohlcv.copy()
+                for col in ("Open", "High", "Low", "Close"):
+                    if col not in sim.columns:
+                        raise RuntimeError(f"OHLCV 필수 컬럼 누락: {col}")
+                if "Volume" not in sim.columns:
+                    sim["Volume"] = 0.0
+
+                sim = sim.sort_index()
+                close = pd.to_numeric(sim["Close"], errors="coerce")
+                ret_series = pd.Series(0.0, index=sim.index)
+                trend_ma: dict[int, pd.Series] = {}
+                for p in trend_periods:
+                    trend_ma[p] = close.rolling(int(p), min_periods=1).mean()
+
+                figsize = None
+                save_dpi = 300
+                layout_preset = "report"
+                if chart_px is not None:
+                    w_px, h_px = chart_px
+                    dpi = 100
+                    figsize = (
+                        max(3.2, float(w_px) / dpi),
+                        max(2.2, float(h_px) / dpi),
+                    )
+                    save_dpi = dpi
+                    layout_preset = "gui_target"
+
+                png_bytes = render_backtest_chart_png_bytes(
+                    sim=sim,
+                    trades=[],
+                    name=code,
+                    bar_label="일봉",
+                    ma_n=ma_n,
+                    ret_series=ret_series,
+                    trend_ma=trend_ma,
+                    show_candle=show_candle,
+                    show_volume=show_volume,
+                    show_return_overlay=show_overlay,
+                    figsize=figsize,
+                    save_dpi=save_dpi,
+                    layout_preset=layout_preset,
+                )
+
+                self.after(0, lambda b=png_bytes: self._finish_chart_only(code, b))
+            except Exception as e:
+                self.after(0, lambda m=str(e): self._finish_chart_only_error(m))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finish_chart_only(self, code: str, png_bytes: bytes) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self._last_active_stock_code = code
+        self._update_chart_image_from_png_bytes(png_bytes)
+        self.set_status_message("완료")
+        self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {code}")
+
+    def _finish_chart_only_error(self, msg: str) -> None:
+        self._busy = False
+        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self._chart_flat_show_message(f"차트 생성 실패: {msg}")
+        self.set_status_message(f"차트 생성 실패: {msg}")
 
     def _run_backtest(self, cfg: dict | None) -> None:
         if cfg is None or self._busy:
@@ -1338,10 +1519,7 @@ class BacktestGUI(ctk.CTk):
         )
         if cfg is None:
             return
-        self.run_single_backtest(
-            cfg,
-            use_slope_acceleration=bool(self.check_slope_accel_var.get()),
-        )
+        self._run_chart_only(cfg)
 
     def _run_single_from_run_button(self) -> None:
         """버튼: 검색 결과 선택 우선, 없으면 이력에서 선택된 한 종목만 실행."""
@@ -1388,7 +1566,7 @@ class BacktestGUI(ctk.CTk):
             "알림",
             "검색 결과 또는 최근 실행 이력에서 종목 한 줄을 선택하세요.",
         )
-        self.set_status_message("목록에서 종목을 선택한 뒤 백테스트를 실행하세요.")
+        self.set_status_message("목록에서 종목을 선택하면 기간 차트가 표시됩니다.")
 
     @staticmethod
     def _disp_name_from_res(res: BacktestResult) -> str:
@@ -1442,10 +1620,20 @@ class BacktestGUI(ctk.CTk):
             c, nm, mc_stored, lm = history_row_normalize(tup)
             if not c:
                 continue
-            mc_disp = mc_stored
-            if mc_disp is None:
-                mc_disp = self._listing_cap_snapshot(c, lm)
-            line = format_gui_list_hist(c, nm, lm, mc_disp)
+            rise_s = ""
+            mc_s = ""
+            amt_s = ""
+            if len(tup) >= 7:
+                rise_s = str(tup[4] or "").strip()
+                mc_s = str(tup[5] or "").strip()
+                amt_s = str(tup[6] or "").strip()
+            if rise_s and mc_s and amt_s:
+                line = f"{c} | {nm} | {rise_s} | {mc_s} | {amt_s}"
+            else:
+                mc_disp = mc_stored
+                if mc_disp is None:
+                    mc_disp = self._listing_cap_snapshot(c, lm)
+                line = format_gui_list_hist(c, nm, lm, mc_disp)
             self.list_history.insert(tk.END, line)
 
     def _load_backtest_history_from_disk(self) -> None:
@@ -1464,14 +1652,21 @@ class BacktestGUI(ctk.CTk):
             seq = raw
         if not seq:
             return
-        pairs: list[tuple[str, str, float | None, str]] = []
+        pairs: list[tuple] = []
         for el in seq:
             if not isinstance(el, (list, tuple)) or len(el) < 2:
                 continue
             c_norm, nm, mc_val, lm = history_row_normalize(list(el[:4]))
             if not c_norm:
                 continue
-            pairs.append((c_norm, nm, mc_val, lm))
+            rise_s = ""
+            mc_s = ""
+            amt_s = ""
+            if len(el) >= 7:
+                rise_s = str(el[4] or "").strip()
+                mc_s = str(el[5] or "").strip()
+                amt_s = str(el[6] or "").strip()
+            pairs.append((c_norm, nm, mc_val, lm, rise_s, mc_s, amt_s))
             if len(pairs) >= BACKTEST_HISTORY_MAX:
                 break
         if not pairs:
@@ -1489,11 +1684,17 @@ class BacktestGUI(ctk.CTk):
         items: list[list[object]] = []
         for tup in self._history_deque:
             c, n, mc, lm = history_row_normalize(tup)
+            rise_s = str(tup[4] if len(tup) >= 5 else "" or "").strip()
+            mc_s = str(tup[5] if len(tup) >= 6 else "" or "").strip()
+            amt_s = str(tup[6] if len(tup) >= 7 else "" or "").strip()
             row: list[object] = [
                 c,
                 n,
                 None if mc is None else float(mc),
                 lm,
+                rise_s,
+                mc_s,
+                amt_s,
             ]
             items.append(row)
         with open(path, "w", encoding="utf-8") as f:
@@ -1521,6 +1722,10 @@ class BacktestGUI(ctk.CTk):
         *,
         market_cap_krw: float | None = None,
         listing_market: str | None = None,
+        rise_text: str = "",
+        marcap_text: str = "",
+        trade_amount_text: str = "",
+        skip_if_exists: bool = False,
     ) -> None:
         """최근 실행 이력 · v4.8: 종목별 상장 시장 필드 포함. 같은 종목 재실행 시 맨 위."""
         cd = str(code).strip().zfill(6)
@@ -1530,14 +1735,31 @@ class BacktestGUI(ctk.CTk):
         mc = market_cap_krw
         lm_norm = normalize_krx_listing_market(listing_market or self.var_market.get())
         lm = lm_norm if lm_norm is not None else "KOSPI"
-        rest_parts: list[tuple[str, str, float | None, str]] = []
+        rest_parts: list[tuple] = []
+        exists = False
         for tup in self._history_deque:
             c0, n0, m0, k0 = history_row_normalize(tup)
             if c0 == cd:
+                exists = True
                 continue
-            rest_parts.append((c0, n0, m0, k0))
+            rise_0 = str(tup[4] if len(tup) >= 5 else "" or "").strip()
+            mc_0 = str(tup[5] if len(tup) >= 6 else "" or "").strip()
+            amt_0 = str(tup[6] if len(tup) >= 7 else "" or "").strip()
+            rest_parts.append((c0, n0, m0, k0, rise_0, mc_0, amt_0))
+        if skip_if_exists and exists:
+            return
         nd = deque(maxlen=BACKTEST_HISTORY_MAX)
-        nd.appendleft((cd, nm, mc, lm))
+        nd.appendleft(
+            (
+                cd,
+                nm,
+                mc,
+                lm,
+                str(rise_text or "").strip(),
+                str(marcap_text or "").strip(),
+                str(trade_amount_text or "").strip(),
+            )
+        )
         nd.extend(rest_parts[: BACKTEST_HISTORY_MAX - 1])
         self._history_deque = deque(nd, maxlen=BACKTEST_HISTORY_MAX)
         self._sync_history_listbox()
@@ -1568,8 +1790,27 @@ class BacktestGUI(ctk.CTk):
             raw = self.list_codes.get(sel[0])
         except (tk.TclError, IndexError):
             return
-        cd, _nm = self._split_codes_list_line(str(raw))
-        self._run_single_with_code(cd, search_keyword_override="")
+        parts = [p.strip() for p in str(raw).split("|")]
+        if len(parts) < 5:
+            return
+        cd = parse_gui_list_row_code(parts[0])
+        nm = parts[1] if len(parts) >= 2 else cd
+        rise_s = parts[2] if len(parts) >= 3 else ""
+        mc_s = parts[3].replace("시총", "", 1).strip() if len(parts) >= 4 else ""
+        amt_s = parts[4].replace("대금", "", 1).strip() if len(parts) >= 5 else ""
+        if not cd:
+            return
+        self._push_history(
+            cd,
+            nm,
+            market_cap_krw=None,
+            listing_market=self.var_market.get(),
+            rise_text=rise_s,
+            marcap_text=mc_s,
+            trade_amount_text=amt_s,
+            skip_if_exists=True,
+        )
+        self.set_status_message(f"최근 이력에 추가됨: {cd} {nm}")
 
     def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
         sel = self.list_history.curselection()
@@ -1674,40 +1915,169 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.update_gui_with_screener_results(picks, announce=True)
 
-    def _run_v3_overnight_scan(self, market: str, end_date: str) -> list[tuple[str, str, float]]:
-        warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
+    def _run_v3_overnight_scan(
+        self, market: str, end_date: str
+    ) -> list[tuple[str, str, float, str, str]]:
+        """
+        반환: (코드, 종목명, 당일 시가대비 상승률%, 시총 표시 문자열, 거래대금 표시 문자열)
+        """
         try:
             name_map = fetch_filtered_universe(market, "")
         except Exception:
             name_map = {}
-        universe = load_v3_0_overnight_scalper_data(
-            start_date=warm_start,
-            end_date=end_date,
-            market=market,
-            universe_limit=200,
-        )
-        out: list[tuple[str, str, float]] = []
-        for code, df in universe:
-            if df is None or df.empty:
-                continue
-            sig = generate_v3_overnight_signals(df)
-            if sig.empty or "buy_signal" not in sig.columns:
-                continue
-            last = sig.iloc[-1]
-            if int(last.get("buy_signal", 0) or 0) != 1:
-                continue
-            o = float(last.get("Open", 0.0) or 0.0)
-            c = float(last.get("Close", 0.0) or 0.0)
-            if o <= 0:
-                continue
-            rise_pct = (c - o) / o * 100.0
-            name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
-            out.append((str(code).zfill(6), name, rise_pct))
-        out.sort(key=lambda z: z[2], reverse=True)
+        total_loaded = 0
+        scan_market = str(market or "KOSPI").strip().upper()
+        if scan_market not in ("KOSPI", "KOSDAQ"):
+            scan_market = "KOSPI"
+
+        # 1) 우선 고속 경로: pykrx 벌크 3회 + 벡터화 필터
+        pass_vol = 0
+        pass_ret = 0
+        pass_tail = 0
+        prev_1 = ""
+        prev_2 = ""
+        bulk = scan_v3_overnight_candidates_bulk(end_date, market=scan_market)
+
+        qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
+        if bool(bulk.get("ok")):
+            rows = bulk.get("rows") or []
+            st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
+            total_loaded = int((st or {}).get("total_loaded", len(rows)))
+            pass_vol = int((st or {}).get("pass_vol", 0))
+            pass_ret = int((st or {}).get("pass_ret", 0))
+            pass_tail = int((st or {}).get("pass_tail", len(rows)))
+            prev_1 = str((st or {}).get("prev_1", ""))
+            prev_2 = str((st or {}).get("prev_2", ""))
+            for code, rise_pct, mar_krw, trd_krw in rows:
+                c6 = str(code).zfill(6)
+                name = str(name_map.get(c6, "")).strip() or c6
+                qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
+        else:
+            # 2) 폴백 경로: 기존 per-ticker 로직(안정성 보존)
+            warm_start = (pd.Timestamp(end_date) - BDay(15)).strftime("%Y-%m-%d")
+            universe = load_v3_0_overnight_scalper_data(
+                start_date=warm_start,
+                end_date=end_date,
+                market=scan_market,
+                universe_limit=0,
+            )
+            total_loaded = len(name_map) if name_map else len(universe)
+            for code, df in universe:
+                if df is None or df.empty:
+                    continue
+                sig = generate_v3_overnight_signals(df)
+                if sig.empty or "buy_signal" not in sig.columns:
+                    continue
+                if len(sig.index) >= 3:
+                    prev_1 = sig.index[-2].strftime("%Y-%m-%d")
+                    prev_2 = sig.index[-3].strftime("%Y-%m-%d")
+                last = sig.iloc[-1]
+                prev_v = (
+                    float(sig["Volume"].shift(1).iloc[-1])
+                    if pd.notna(sig["Volume"].shift(1).iloc[-1])
+                    else 0.0
+                )
+                today_v = (
+                    float(sig["Volume"].iloc[-1])
+                    if pd.notna(sig["Volume"].iloc[-1])
+                    else 0.0
+                )
+                vol_growth = (today_v / prev_v) if prev_v > 0 else 0.0
+                if int(last.get("buy_signal", 0) or 0) != 1:
+                    o_chk = float(last.get("Open", 0.0) or 0.0)
+                    c_chk = float(last.get("Close", 0.0) or 0.0)
+                    h_chk = float(last.get("High", 0.0) or 0.0)
+                    return_chk = (
+                        ((c_chk - o_chk) / o_chk * 100.0) if o_chk > 0 else 0.0
+                    )
+                    tail_chk = (
+                        ((h_chk - c_chk) / (h_chk - o_chk))
+                        if (h_chk - o_chk) > 0
+                        else 1.0
+                    )
+                    if vol_growth >= 1.5:
+                        pass_vol += 1
+                        if return_chk >= 4.0:
+                            pass_ret += 1
+                            if tail_chk <= 0.2:
+                                pass_tail += 1
+                    continue
+                o = float(last.get("Open", 0.0) or 0.0)
+                c = float(last.get("Close", 0.0) or 0.0)
+                vl = float(last.get("Volume", 0.0) or 0.0)
+                if o <= 0:
+                    continue
+                pass_vol += 1
+                pass_ret += 1
+                pass_tail += 1
+                rise_pct = (c - o) / o * 100.0
+                proxy_amt = (c * vl) if vl >= 0 else None
+                name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
+                qualifiers.append((str(code).zfill(6), name, rise_pct, None, proxy_amt))
+
+        qualifiers.sort(key=lambda z: z[2], reverse=True)
+
+        krx_map = fetch_pykrx_marcap_trade_krw_by_code(end_date, market=scan_market)
+        listing_mk = normalize_krx_listing_market(market) or "KOSPI"
+        try:
+            listing_caps = fetch_listing_market_cap_krw_by_code(listing_mk)
+        except Exception:
+            listing_caps = {}
+        if not isinstance(listing_caps, dict):
+            listing_caps = {}
+
+        out: list[tuple[str, str, float, str, str]] = []
+        for code, name, rise_pct, mar_seed, trd_seed in qualifiers:
+            mar_krw: float | None = mar_seed
+            trd_krw: float | None = trd_seed
+            tp = krx_map.get(code)
+            if tp:
+                mar_api, trd_api = tp
+                if mar_api is not None:
+                    mar_krw = mar_api
+                if trd_api is not None:
+                    trd_krw = trd_api
+            if mar_krw is None:
+                v = listing_caps.get(code)
+                if v is not None and math.isfinite(float(v)) and float(v) > 0:
+                    mar_krw = float(v)
+            if trd_krw is not None and (not math.isfinite(float(trd_krw)) or float(trd_krw) <= 0):
+                trd_krw = None
+            mc_s = _format_marcap_display_krw(mar_krw)
+            amt_s = _format_round_eok_krw(trd_krw)
+            out.append((code, name, rise_pct, mc_s, amt_s))
+
+        debug_lines = [
+            "=====================================================",
+            "⚙️ [DEBUG] v3.1 SCANNER INTERNAL PARAMETERS & LOG",
+            "=====================================================",
+            f" - Target Date : {str(end_date).strip()[:10]}",
+            f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
+            "-----------------------------------------------------",
+            " [Applied Rules]",
+            "  1) Vol Growth  >= 1.50 (150%)",
+            "  2) Return Pct  >= 4.00%",
+            "  3) Tail Ratio  <= 0.20 (20%)",
+            "-----------------------------------------------------",
+            " [Pipeline Filtering Pass Count]",
+            f"  ▶ Total {market} Tickers Loaded   : {total_loaded}개",
+            f"  ▶ Pass 1 (Vol Growth >= 150%) : {pass_vol}개 종목 생존",
+            f"  ▶ Pass 2 (Return Pct >= 4%)   : {pass_ret}개 종목 생존",
+            f"  ▶ Pass 3 (Tail Ratio <= 20%)  : {pass_tail}개 종목 생존 (최종)",
+            "=====================================================",
+        ]
+        debug_text = "\n".join(debug_lines)
+        print(debug_text)
+        try:
+            os.makedirs("output", exist_ok=True)
+            with open("output/v31_scanner_debug_log.txt", "w", encoding="utf-8") as f:
+                f.write(debug_text + "\n")
+        except OSError:
+            pass
         return out
 
     def _on_search(self) -> None:
-        """v3.1 오버나이트 스캐너 실행: 리스트는 코드|종목명|당일 상승률 고정."""
+        """v3.1 오버나이트 스캐너 실행: 리스트는 코드|종목명|당일 상승률|시총|거래대금."""
         if self._busy:
             self.set_status_message(
                 "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
@@ -1734,18 +2104,24 @@ class BacktestGUI(ctk.CTk):
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _finalize_v31_scan(self, rows: list[tuple[str, str, float]]) -> None:
+    def _finalize_v31_scan(
+        self, rows: list[tuple[str, str, float, str, str]]
+    ) -> None:
         self._busy = False
         self._end_search_loading_state()
         self.list_codes.delete(0, tk.END)
         self._candidates = []
-        for code, name, rise_pct in rows:
-            line = f"{code} | {name} | {rise_pct:+.2f} %"
+        for code, name, rise_pct, mc_s, amt_s in rows:
+            line = (
+                f"{code} | {name} | {rise_pct:+.2f} % | 시총 {mc_s} | 대금 {amt_s}"
+            )
             self.list_codes.insert(tk.END, line)
             self._candidates.append((code, name, None))
         if rows:
             self.list_codes.selection_set(0)
-            self.set_status_message(f"🔥 총 {len(rows)}개 주도주 포착 완료 (리스트 고정)")
+            self.set_status_message(
+                f"🔥 총 {len(rows)}개 주도주 포착 완료 (시총/대금 필드 탑재)"
+            )
         else:
             self.set_status_message("조건에 맞는 오버나이트 주도주가 없습니다.")
 
@@ -1877,16 +2253,16 @@ class BacktestGUI(ctk.CTk):
 
             def _chart_paint_task() -> None:
                 try:
-                    outp, skipped = materialize_backtest_chart_png(
+                    png_blob, skipped = materialize_backtest_chart_png_bytes(
                         replay_copy,
                         chart_render_px=px,
                         write_signal_debug_log=False,
                     )
                     self.after(
                         0,
-                        lambda p=outp,
+                        lambda b=png_blob,
                         sk=skipped,
-                        tt=tk_snap: self._materialized_chart_dispatch(tt, p, sk),
+                        tt=tk_snap: self._materialized_chart_dispatch_bytes(tt, b, sk),
                     )
                 except Exception as chart_ex:
                     em = str(chart_ex)
@@ -1914,6 +2290,22 @@ class BacktestGUI(ctk.CTk):
             return
         self._stop_chart_loading_spinner()
         self._apply_materialized_chart(report_path, trade_markers_skipped)
+
+    def _materialized_chart_dispatch_bytes(
+        self,
+        ticket: int,
+        png_bytes: bytes | None,
+        trade_markers_skipped: int,
+    ) -> None:
+        """연기 PNG를 디스크 없이 메모리 버퍼만으로 표시(v3.1 output/ I/O 차단)."""
+        if ticket != self._chart_materialize_ticket:
+            return
+        self._stop_chart_loading_spinner()
+        self.update_idletasks()
+        self.after_idle(
+            lambda b=png_bytes: self._update_chart_image_from_png_bytes(b)
+        )
+        self._finalize_run_status_stripes(trade_markers_skipped)
 
     def _chart_materialize_failed_for_ticket(self, ticket: int, msg: str) -> None:
         if ticket != self._chart_materialize_ticket:
