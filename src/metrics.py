@@ -360,7 +360,7 @@ def run_backtest_detailed(
 
     costs = cfg.get("trading_costs", {})
     buy_c = float(costs.get("buy_cost", 0.00015))
-    sell_c = float(costs.get("sell_cost", 0.0018))
+    sell_c = float(costs.get("sell_cost", 0.0020))
 
     port = cfg.get("portfolio", {})
     initial = float(port.get("initial_cash", 5_000_000))

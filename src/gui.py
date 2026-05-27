@@ -231,7 +231,7 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_show_return_overlay = ctk.BooleanVar(value=False)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
-        self.var_sell_fee_pct = ctk.StringVar(value="0.18")
+        self.var_sell_fee_pct = ctk.StringVar(value="0.20")
         self.var_cash = ctk.StringVar(value="5000000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
         self.var_pf_buy_rules = ctk.BooleanVar(value=False)
