@@ -76,7 +76,7 @@ class TestOvernightParityLive(unittest.TestCase):
         from src.v3_scan_config import default_pullback_scan_params
 
         scan_p = default_pullback_scan_params(cfg)
-        limit = max(20, min(500, int(scan_p.universe_limit)))
+        limit = int(scan_p.universe_limit)
         period = cfg.get("period") or {}
         end_eff = str(period.get("end_date") or "").strip()[:10]
         if not end_eff:

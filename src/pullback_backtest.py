@@ -9,7 +9,12 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from src.data_loader import ensure_datetime_index, kim_straight_trend_pass
+from src.data_loader import (
+    ensure_datetime_index,
+    leader_pullback_center_defense,
+    leader_pullback_prev_day_yang,
+)
+from src.filters import PULLBACK_MIN_OHLCV_BARS, kim_straight_trend_pass
 
 # GUI 스캔·백테스트 공통 고정 비용 (Harness)
 PULLBACK_BUY_COST = 0.00015
@@ -29,14 +34,16 @@ class PullbackTimelineResult:
 def pullback_signal_at_index(
     vol: pd.Series,
     low: pd.Series,
+    high: pd.Series,
     close: pd.Series,
+    opn: pd.Series,
     i: int,
     *,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
     use_momentum_filter: bool,
 ) -> bool:
-    """봉 인덱스 i 를 신호일(t)로 v3.30 3중 조건 판정."""
+    """봉 인덱스 i 를 신호일(t)로 v3.30·v3.80 눌림목 조건 판정."""
     if i < 21:
         return False
     vol_ma20_prior = float(vol.iloc[i - 21 : i - 1].mean())
@@ -60,9 +67,18 @@ def pullback_signal_at_index(
 
     burst = float(volume_burst_multiple)
     shrink = float(vol_shrink_limit)
+    prev_open = float(opn.iloc[i - 1])
+    prev_close = float(close.iloc[i - 1])
+    prev_high = float(high.iloc[i - 1])
+    prev_low = float(low.iloc[i - 1])
+
     if prev_vol <= vol_ma20_prior * burst:
         return False
+    if not leader_pullback_prev_day_yang(prev_open, prev_close):
+        return False
     if not (low_t < ma20 and close_t >= ma20):
+        return False
+    if not leader_pullback_center_defense(prev_high, prev_low, close_t):
         return False
     if today_vol > prev_vol * shrink:
         return False
@@ -111,10 +127,10 @@ def run_pullback_timeline_backtest(
         return PullbackTimelineResult(False, "차트 데이터가 없습니다.", "", 0, 0.0, initial_cash)
 
     work = ensure_datetime_index(df.copy()).sort_index()
-    if len(work) < 120:
+    if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return PullbackTimelineResult(
             False,
-            "봉 수가 부족합니다(김직선 MA120 검증에 최소 120봉 필요).",
+            f"봉 수가 부족합니다(장기 대세 MA60 검증에 최소 {PULLBACK_MIN_OHLCV_BARS}봉 필요).",
             "",
             0,
             float(initial_cash),
@@ -123,6 +139,7 @@ def run_pullback_timeline_backtest(
 
     vol = pd.to_numeric(work["Volume"], errors="coerce")
     low = pd.to_numeric(work["Low"], errors="coerce")
+    high = pd.to_numeric(work["High"], errors="coerce")
     close = pd.to_numeric(work["Close"], errors="coerce")
     opn = pd.to_numeric(work["Open"], errors="coerce")
 
@@ -133,7 +150,9 @@ def run_pullback_timeline_backtest(
         if not pullback_signal_at_index(
             vol,
             low,
+            high,
             close,
+            opn,
             i,
             volume_burst_multiple=volume_burst_multiple,
             vol_shrink_limit=vol_shrink_limit,
@@ -156,10 +175,11 @@ def run_pullback_timeline_backtest(
         f"■ {hdr}",
         f"■ 기간: {work.index[0].strftime('%Y-%m-%d')} ~ {work.index[-1].strftime('%Y-%m-%d')}",
         f"■ 세력 개입 배수: {volume_burst_multiple:g} | 눌림 거래량 비율: {vol_shrink_limit:g}",
+        "■ v3.80: t-1 양봉 · t 종가>=전일 중심선",
         (
-            "■ v3.50 김직선 추세: 종가>MA120 · MA5≥MA10"
+            "■ v3.85 추세: 종가>MA60 · MA5≥MA10"
             if use_momentum_filter
-            else "■ v3.50 김직선 추세: 종가>MA120 (MA5≥MA10 스킵)"
+            else "■ v3.85 추세: 종가>MA60 (MA5≥MA10 스킵)"
         ),
         f"■ 매수 수수료: {PULLBACK_BUY_COST * 100:.3f}% | 매도(세금 포함): {PULLBACK_SELL_COST * 100:.2f}%",
         f"■ 매도 시점: 0분(익일 시가)",
@@ -179,7 +199,7 @@ def run_pullback_timeline_backtest(
                 f"  {dt}  매수 {bp:,.0f} → 매도 {sp:,.0f}  ({lr:+.2f}%)"
             )
     else:
-        lines.append("• 해당 기간에 눌림목 3중 조건을 만족한 진입일이 없습니다.")
+        lines.append("• 해당 기간에 눌림목 조건을 만족한 진입일이 없습니다.")
 
     return PullbackTimelineResult(
         True,

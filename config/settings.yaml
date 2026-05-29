@@ -75,7 +75,7 @@ v3_0:
   universe_limit: 300
   volume_burst_multiple: 1.5
   vol_shrink_limit: 0.8
-  # v3.50 김직선 정배열 추세 필터(종가>MA120 · MA5≥MA10) — 스캔·백테스트 공통 적용
+  # v3.85 장기 대세(종가>MA60 · MA5≥MA10) — 스캔·백테스트 공통
   kim_trend_filter: true
-  # true: Pass5(MA5>=MA10) 적용 / false: Pass4(종가>MA120)까지만 적용
+  # true: Pass5(MA5>=MA10) / false: Pass4(종가>MA60)까지만
   use_momentum_filter: true

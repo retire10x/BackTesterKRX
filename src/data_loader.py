@@ -21,6 +21,17 @@ import yaml
 
 from pandas.tseries.offsets import BDay
 
+from src.filters import (
+    PULLBACK_DUAL_MARKET_LABEL,
+    PULLBACK_LONG_MA_DAYS,
+    PULLBACK_MIN_OHLCV_BARS,
+    PULLBACK_SCAN_HISTORY_BDAY,
+    kim_straight_trend_pass,
+    pullback_bulk_markets_for_scan,
+    pullback_scan_is_dual_market,
+    resolve_pullback_universe_head,
+)
+
 # v4.10: 동일 세션 내 중복 네트워크 호출 완화(스크리너 급 저지연 목표).
 _LISTING_LOCK = threading.Lock()
 _LISTING_TS: dict[str, float] = {}
@@ -451,10 +462,6 @@ _V31_PYKRX_EN_TO_KO: dict[str, str] = {
 }
 
 
-# v3.50 김직선 정배열 추세 필터 — MA120·MA5/MA10 동시 검증용 벌크 OHLCV 길이
-PULLBACK_SCAN_HISTORY_BDAY = 119  # t-119..t0 = 120영업일
-
-
 def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
     """pykrx/래퍼에 따라 영문·소문영문 컬럼이 오는 경우까지 한글 정규화."""
     x = df.copy()
@@ -501,38 +508,106 @@ def _prep_pykrx_bulk_ticker_day(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def kim_straight_trend_pass(
-    close: pd.Series | np.ndarray,
+def leader_pullback_prev_day_yang(
+    prev_open: float, prev_close: float
+) -> bool:
+    """v3.80 Pass1: t-1 양봉 (종가 > 시가)."""
+    return (
+        np.isfinite(prev_open)
+        and np.isfinite(prev_close)
+        and prev_close > prev_open
+    )
+
+
+def _ingest_pykrx_marcap_by_ticker(
+    raw_cap_rank: pd.DataFrame,
+    rank_cap_map: dict[str, float],
+    rank_cap_trade: dict[str, float | None],
+) -> None:
+    """get_market_cap_by_ticker 결과를 code→시총/거래대금 dict에 누적."""
+    if raw_cap_rank is None or getattr(raw_cap_rank, "empty", True):
+        return
+    rc = None
+    ac = None
+    for z in raw_cap_rank.columns:
+        zs = str(z)
+        if rc is None and ("시가총액" in zs or zs.lower() == "marcap"):
+            rc = z
+        if ac is None and ("거래대금" in zs or "amount" in zs.lower()):
+            ac = z
+    if rc is None:
+        return
+    for idx2, row2 in raw_cap_rank.iterrows():
+        code7 = str(idx2).strip().zfill(6)
+        try:
+            mcv = float(row2[rc])
+        except (TypeError, ValueError):
+            continue
+        if not (np.isfinite(mcv) and mcv > 0):
+            continue
+        rank_cap_map[code7] = mcv
+        tg = None
+        if ac is not None:
+            try:
+                tg = float(row2[ac])
+            except (TypeError, ValueError):
+                tg = None
+        rank_cap_trade[code7] = tg
+
+
+def _fetch_bulk_ohlcv_day_frames(
     *,
-    at_index: int | None = None,
-) -> tuple[bool, bool, bool]:
-    """
-    v3.50 김직선 정배열 추세 필터.
-    - 장기 정배열: 종가 > MA120
-    - 단기 모멘텀: MA5 >= MA10
-    반환: (통과, 장기통과, 단기통과)
-    """
-    if isinstance(close, pd.Series):
-        arr = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
-    else:
-        arr = np.asarray(close, dtype=float)
-    n = len(arr)
-    if n < 120:
-        return False, False, False
-    i = int(at_index) if at_index is not None else n - 1
-    if i < 119 or i >= n:
-        return False, False, False
+    pykrx_stock: object,
+    market: str,
+    bdays: pd.DatetimeIndex,
+    anchor_ymd: str,
+    cancel_event: threading.Event | None,
+) -> list[pd.DataFrame] | None:
+    from src.market_ohlcv_bulk_cache import fetch_bulk_day_frames_cached
 
-    close_t = float(arr[i])
-    ma120 = float(np.nanmean(arr[i - 119 : i + 1]))
-    ma5 = float(np.nanmean(arr[i - 4 : i + 1]))
-    ma10 = float(np.nanmean(arr[i - 9 : i + 1]))
-    if not all(np.isfinite(v) for v in (close_t, ma120, ma5, ma10)):
-        return False, False, False
+    mk = str(market).strip().upper()
 
-    long_ok = close_t > ma120
-    short_ok = ma5 >= ma10
-    return bool(long_ok and short_ok), bool(long_ok), bool(short_ok)
+    def _fetch_raw(ymd: str) -> pd.DataFrame:
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            return pykrx_stock.get_market_ohlcv_by_ticker(ymd, market=mk)
+
+    return fetch_bulk_day_frames_cached(
+        market=mk,
+        bdays=bdays,
+        fetch_day_raw=_fetch_raw,
+        prep_day=_prep_pykrx_bulk_ticker_day,
+        cancel_event=cancel_event,
+        anchor_ymd=anchor_ymd,
+        refresh_anchor=True,
+    )
+
+
+def _merge_multi_market_bulk_day_frames(
+    per_market_frames: list[list[pd.DataFrame]],
+) -> list[pd.DataFrame] | None:
+    """영업일별로 시장별 OHLCV 프레임을 세로 결합(티커 유니온)."""
+    if not per_market_frames:
+        return None
+    n_days = len(per_market_frames[0])
+    for mfs in per_market_frames[1:]:
+        if len(mfs) != n_days:
+            return None
+    merged_days: list[pd.DataFrame] = []
+    for j in range(n_days):
+        parts = [mfs[j] for mfs in per_market_frames if mfs[j] is not None]
+        if not parts:
+            return None
+        merged_days.append(pd.concat(parts, axis=0))
+    return merged_days
+
+
+def leader_pullback_center_defense(
+    prev_high: float, prev_low: float, close_t: float
+) -> bool:
+    """v3.80 Pass2: t 종가 >= t-1 봉 중심선 (고가+저가)/2."""
+    if not all(np.isfinite(v) for v in (prev_high, prev_low, close_t)):
+        return False
+    return close_t >= (float(prev_high) + float(prev_low)) / 2.0
 
 
 def qualifies_leader_pullback_from_ohlcv(
@@ -543,17 +618,18 @@ def qualifies_leader_pullback_from_ohlcv(
     use_momentum_filter: bool,
 ) -> tuple[bool, float]:
     """
-    단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 + v3.50 김직선 정배열 추세 필터.
+    단일 종목 일봉에서 v3.30 눌림목 + v3.80(전일 양봉·중심선 수호) + v3.50 김직선 추세.
     반환: (통과 여부, 당일 시가 대비 상승률 % — 리스트 정렬용).
     """
     if df is None or df.empty:
         return False, 0.0
     work = ensure_datetime_index(df.copy()).sort_index()
-    if len(work) < 120:
+    if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return False, 0.0
 
     vol = pd.to_numeric(work["Volume"], errors="coerce")
     low = pd.to_numeric(work["Low"], errors="coerce")
+    high = pd.to_numeric(work["High"], errors="coerce")
     close = pd.to_numeric(work["Close"], errors="coerce")
     opn = pd.to_numeric(work["Open"], errors="coerce")
 
@@ -564,6 +640,10 @@ def qualifies_leader_pullback_from_ohlcv(
     low_t = float(low.iloc[-1])
     close_t = float(close.iloc[-1])
     open_t = float(opn.iloc[-1])
+    prev_open = float(opn.iloc[-2])
+    prev_close = float(close.iloc[-2])
+    prev_high = float(high.iloc[-2])
+    prev_low = float(low.iloc[-2])
 
     if not (
         np.isfinite(vol_ma20_prior)
@@ -577,9 +657,17 @@ def qualifies_leader_pullback_from_ohlcv(
     burst = float(volume_burst_multiple)
     shrink = float(vol_shrink_limit)
     cond_burst = prev_vol > (vol_ma20_prior * burst)
+    cond_prev_yang = leader_pullback_prev_day_yang(prev_open, prev_close)
     cond_price = (low_t < ma20) and (close_t >= ma20)
+    cond_center = leader_pullback_center_defense(prev_high, prev_low, close_t)
     cond_vol = today_vol <= (prev_vol * shrink)
-    if not (cond_burst and cond_price and cond_vol):
+    if not (
+        cond_burst
+        and cond_prev_yang
+        and cond_price
+        and cond_center
+        and cond_vol
+    ):
         return False, 0.0
 
     kim_ok, long_ok, short_ok = kim_straight_trend_pass(close)
@@ -607,16 +695,14 @@ def scan_leader_pullback_candidates_bulk(
 
     - pykrx 일별 전종목 OHLCV 스냅샷 22영업일(t-21~t0) — 당일(t) 거래량이 MA20에 섞이지 않음
     - cond_prev_burst: t-1 거래량 > mean(t-2..t-21) × volume_burst_multiple
+    - v3.80 cond_prev_yang: t-1 종가 > t-1 시가 (전일 양봉)
     - cond_price: t 저가 < MA20(종가 20일) & t 종가 >= MA20
+    - v3.80 cond_center: t 종가 >= (t-1 고가+t-1 저가)/2 (전일 중심선 수호)
     - cond_volume: t 거래량 <= t-1 거래량 × vol_shrink_limit
-    - v3.50 cond_kim_long: t 종가 > MA120(120일)
+    - v3.85 cond_kim_long: t 종가 > MA60
     - v3.50 cond_kim_short: MA5 >= MA10
     """
     from src.utils.date_helper import resolve_overnight_scan_anchor
-
-    m = str(market or "KOSPI").strip().upper()
-    if m not in ("KOSPI", "KOSDAQ"):
-        m = "KOSPI"
 
     krx_id = str(os.getenv("KRX_ID") or "").strip()
     krx_pw = str(os.getenv("KRX_PW") or "").strip()
@@ -630,7 +716,9 @@ def scan_leader_pullback_candidates_bulk(
 
     burst_mult = max(0.1, float(volume_burst_multiple))
     shrink_lim = max(0.01, float(vol_shrink_limit))
-    lim = max(20, min(500, int(universe_limit)))
+    cap = resolve_pullback_universe_head(universe_limit)
+    scan_markets = pullback_bulk_markets_for_scan(market, universe_limit)
+    dual_market = pullback_scan_is_dual_market(universe_limit)
 
     if cancel_event is not None and cancel_event.is_set():
         return {"ok": False, "reason": "cancelled"}
@@ -638,26 +726,30 @@ def scan_leader_pullback_candidates_bulk(
     ainfo = resolve_overnight_scan_anchor(str(end_date).strip()[:10])
     d_today = pd.Timestamp(ainfo.anchor_date).normalize()
     bdays = pd.bdate_range(d_today - BDay(PULLBACK_SCAN_HISTORY_BDAY), d_today)
-    if len(bdays) < 120:
+    if len(bdays) < PULLBACK_MIN_OHLCV_BARS:
         return {"ok": False, "reason": "ohlcv_history_short"}
-
-    from src.market_ohlcv_bulk_cache import fetch_bulk_day_frames_cached
 
     anchor_ymd = d_today.strftime("%Y%m%d")
 
-    def _fetch_raw(ymd: str) -> pd.DataFrame:
-        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-            return pykrx_stock.get_market_ohlcv_by_ticker(ymd, market=m)
+    per_market_day_frames: list[list[pd.DataFrame]] = []
+    for mk in scan_markets:
+        m_frames = _fetch_bulk_ohlcv_day_frames(
+            pykrx_stock=pykrx_stock,
+            market=mk,
+            bdays=bdays,
+            anchor_ymd=anchor_ymd,
+            cancel_event=cancel_event,
+        )
+        if m_frames is None:
+            if cancel_event is not None and cancel_event.is_set():
+                return {"ok": False, "reason": "cancelled"}
+            return {"ok": False, "reason": "ohlcv_bulk_failed"}
+        per_market_day_frames.append(m_frames)
 
-    day_frames = fetch_bulk_day_frames_cached(
-        market=m,
-        bdays=bdays,
-        fetch_day_raw=_fetch_raw,
-        prep_day=_prep_pykrx_bulk_ticker_day,
-        cancel_event=cancel_event,
-        anchor_ymd=anchor_ymd,
-        refresh_anchor=True,
-    )
+    if len(per_market_day_frames) == 1:
+        day_frames = per_market_day_frames[0]
+    else:
+        day_frames = _merge_multi_market_bulk_day_frames(per_market_day_frames)
     if day_frames is None:
         if cancel_event is not None and cancel_event.is_set():
             return {"ok": False, "reason": "cancelled"}
@@ -674,6 +766,7 @@ def scan_leader_pullback_candidates_bulk(
     n_codes = len(codes)
     vol_m = np.full((n_codes, n_days), np.nan, dtype=float)
     low_m = np.full((n_codes, n_days), np.nan, dtype=float)
+    high_m = np.full((n_codes, n_days), np.nan, dtype=float)
     close_m = np.full((n_codes, n_days), np.nan, dtype=float)
     open_m = np.full((n_codes, n_days), np.nan, dtype=float)
 
@@ -681,6 +774,7 @@ def scan_leader_pullback_candidates_bulk(
         sub = fr.reindex(common_idx)
         vol_m[:, j] = pd.to_numeric(sub["Volume"], errors="coerce").to_numpy()
         low_m[:, j] = pd.to_numeric(sub["Low"], errors="coerce").to_numpy()
+        high_m[:, j] = pd.to_numeric(sub["High"], errors="coerce").to_numpy()
         close_m[:, j] = pd.to_numeric(sub["Close"], errors="coerce").to_numpy()
         open_m[:, j] = pd.to_numeric(sub["Open"], errors="coerce").to_numpy()
 
@@ -689,45 +783,30 @@ def scan_leader_pullback_candidates_bulk(
     merged["prev_vol"] = vol_m[:, n_days - 2]
     merged["today_vol"] = vol_m[:, n_days - 1]
     merged["MA20"] = np.nanmean(close_m[:, n_days - 20 : n_days], axis=1)
-    merged["MA120"] = np.nanmean(close_m[:, n_days - 120 : n_days], axis=1)
+    merged["MA60"] = np.nanmean(
+        close_m[:, n_days - PULLBACK_LONG_MA_DAYS : n_days], axis=1
+    )
     merged["MA5"] = np.nanmean(close_m[:, n_days - 5 : n_days], axis=1)
     merged["MA10"] = np.nanmean(close_m[:, n_days - 10 : n_days], axis=1)
     merged["Low_t0"] = low_m[:, n_days - 1]
     merged["Close_t0"] = close_m[:, n_days - 1]
     merged["Open_t0"] = open_m[:, n_days - 1]
+    # v3.80: t-1 봉 — Top-N 슬라이스 전에 붙여 merged 와 동일 인덱스 유지
+    merged["Prev_open"] = open_m[:, n_days - 2]
+    merged["Prev_close"] = close_m[:, n_days - 2]
+    merged["Prev_high"] = high_m[:, n_days - 2]
+    merged["Prev_low"] = low_m[:, n_days - 2]
 
     s_today = d_today.strftime("%Y%m%d")
     rank_cap_map: dict[str, float] = {}
     rank_cap_trade: dict[str, float | None] = {}
     try:
         with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-            raw_cap_rank = pykrx_stock.get_market_cap_by_ticker(s_today, market=m)
-        if raw_cap_rank is not None and not getattr(raw_cap_rank, "empty", True):
-            rc = None
-            ac = None
-            for z in raw_cap_rank.columns:
-                zs = str(z)
-                if rc is None and ("시가총액" in zs or zs.lower() == "marcap"):
-                    rc = z
-                if ac is None and ("거래대금" in zs or "amount" in zs.lower()):
-                    ac = z
-            if rc is not None:
-                for idx2, row2 in raw_cap_rank.iterrows():
-                    code7 = str(idx2).strip().zfill(6)
-                    try:
-                        mcv = float(row2[rc])
-                    except (TypeError, ValueError):
-                        continue
-                    if not (np.isfinite(mcv) and mcv > 0):
-                        continue
-                    rank_cap_map[code7] = mcv
-                    tg = None
-                    if ac is not None:
-                        try:
-                            tg = float(row2[ac])
-                        except (TypeError, ValueError):
-                            tg = None
-                    rank_cap_trade[code7] = tg
+            for mk in scan_markets:
+                raw_cap_rank = pykrx_stock.get_market_cap_by_ticker(s_today, market=mk)
+                _ingest_pykrx_marcap_by_ticker(
+                    raw_cap_rank, rank_cap_map, rank_cap_trade
+                )
     except Exception:
         rank_cap_map = {}
         rank_cap_trade = {}
@@ -738,7 +817,9 @@ def scan_leader_pullback_candidates_bulk(
     merged = merged.sort_values(
         by=["_mcap_sort_tmp", "tmp_code"],
         ascending=[False, True],
-    ).head(lim)
+    )
+    if cap is not None:
+        merged = merged.head(cap)
     merged = merged.drop(columns=["_mcap_sort_tmp", "tmp_code"], errors="ignore")
 
     o = merged.get("Open_t0")
@@ -758,12 +839,21 @@ def scan_leader_pullback_candidates_bulk(
     cond_burst = merged["prev_vol"] > (
         merged["vol_ma20_strictly_prior"] * burst_mult
     )
+    po = pd.to_numeric(merged["Prev_open"], errors="coerce")
+    pc = pd.to_numeric(merged["Prev_close"], errors="coerce")
+    ph = pd.to_numeric(merged["Prev_high"], errors="coerce")
+    pl = pd.to_numeric(merged["Prev_low"], errors="coerce")
+    cond_prev_yang = (pc > po) & pc.notna() & po.notna()
     cond_price = (merged["Low_t0"] < merged["MA20"]) & (
         merged["Close_t0"] >= merged["MA20"]
     )
+    prev_mid = (ph + pl) / 2.0
+    cond_center = (merged["Close_t0"] >= prev_mid) & prev_mid.notna()
     cond_volume = merged["today_vol"] <= (merged["prev_vol"] * shrink_lim)
-    pass_pullback = cond_burst & cond_price & cond_volume
-    cond_kim_long = merged["Close_t0"] > merged["MA120"]
+    pass_pullback = (
+        cond_burst & cond_prev_yang & cond_price & cond_center & cond_volume
+    )
+    cond_kim_long = merged["Close_t0"] > merged["MA60"]
     cond_kim_short = merged["MA5"] >= merged["MA10"]
     if use_momentum_filter:
         final_mask = pass_pullback & cond_kim_long & cond_kim_short
@@ -775,7 +865,11 @@ def scan_leader_pullback_candidates_bulk(
         "requested_end_date": ainfo.requested_calendar_date.isoformat(),
         "effective_anchor_date": d_today.strftime("%Y-%m-%d"),
         "anchor_policy_reason": ainfo.anchor_policy_reason,
-        "universe_limit_applied": int(lim),
+        "universe_limit_applied": int(cap) if cap is not None else 0,
+        "dual_market": bool(dual_market),
+        "markets_pipeline": (
+            PULLBACK_DUAL_MARKET_LABEL if dual_market else str(scan_markets[0])
+        ),
         "volume_burst_multiple": burst_mult,
         "vol_shrink_limit": shrink_lim,
         "use_momentum_filter": bool(use_momentum_filter),
@@ -788,9 +882,11 @@ def scan_leader_pullback_candidates_bulk(
             "rows": [],
             "stats": {
                 "total_loaded": int(len(merged)),
-                "pass_burst": int(cond_burst.sum()),
-                "pass_price": int((cond_burst & cond_price).sum()),
-                "pass_volume": int((cond_burst & cond_price & cond_volume).sum()),
+                "pass_burst": int((cond_burst & cond_prev_yang).sum()),
+                "pass_price": int(
+                    (cond_burst & cond_prev_yang & cond_price & cond_center).sum()
+                ),
+                "pass_volume": int(pass_pullback.sum()),
                 "pass_kim_long": int((pass_pullback & cond_kim_long).sum()),
                 "pass_kim_short": int((pass_pullback & cond_kim_long & cond_kim_short).sum()),
                 "pass_all": 0,
@@ -826,9 +922,11 @@ def scan_leader_pullback_candidates_bulk(
         "rows": out_rows,
         "stats": {
             "total_loaded": int(len(merged)),
-            "pass_burst": int(cond_burst.sum()),
-            "pass_price": int((cond_burst & cond_price).sum()),
-            "pass_volume": int((cond_burst & cond_price & cond_volume).sum()),
+            "pass_burst": int((cond_burst & cond_prev_yang).sum()),
+            "pass_price": int(
+                (cond_burst & cond_prev_yang & cond_price & cond_center).sum()
+            ),
+            "pass_volume": int(pass_pullback.sum()),
             "pass_kim_long": int((pass_pullback & cond_kim_long).sum()),
             "pass_kim_short": int((pass_pullback & cond_kim_long & cond_kim_short).sum()),
             "pass_all": int(len(final)),

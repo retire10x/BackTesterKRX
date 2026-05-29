@@ -34,7 +34,7 @@ def main() -> int:
     from src.v3_scan_config import default_pullback_scan_params
 
     scan_p = default_pullback_scan_params(cfg)
-    limit = max(20, min(500, int(scan_p.universe_limit)))
+    limit = int(scan_p.universe_limit)
 
     if str(args.end or "").strip():
         end_eff = str(args.end).strip()[:10]

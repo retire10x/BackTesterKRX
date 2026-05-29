@@ -45,7 +45,10 @@
 - [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
 - [x] **v3.70** 스캔 파라미터 SSOT: `v3_scan_config` 엄격 YAML(`KeyError`)·`resolve_effective_pullback_scan_params`(세션 오버레이)·엔진 기본 인자 없음·GUI `bootstrap_gui_pullback_scan_ssot` 초기화 순서
 - [x] **v3.75** 해상도별 폰트 가변 차단 (v3.76에서 철회·아래 참고)
-- [x] **v3.76** OS DPI System-Aware: CTk `set_*_scaling(None)` · Qt/DPI 강제 차단 제거 · Tk 폰트 양수 pt(11/10/9)
+- [x] **v3.76** OS DPI System-Aware: CTk `set_*_scaling` 미호출(기본 OS DPI) · Tk 폰트 양수 pt(11/10/9)
+- [x] **v3.80** 눌림목 실전 필터: t-1 양봉(종가>시가)·t 종가≥전일 중심선 — 벌크·단일·백테스트 AND
+- [x] **v3.85** 유니버스 Top 1000·ALL(0) · Pass4 종가>MA60 (`src/filters.py`)
+- [x] **v3.86** Top ALL 시 KOSPI+KOSDAQ OHLCV·시총 병합 (`pullback_bulk_markets_for_scan`)
 - [x] **v3.70** pykrx 일별 전종목 벌크 OHLCV 로컬 캐시(`data/cache/ohlcv_by_ticker/*.pkl`)·앵커일만 재조회·폴백 스캔도 캐시 조립
 - [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
 - [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
@@ -56,6 +59,22 @@
 - [x] **v3.66** 모멘텀 필터(MA5≥MA10) GUI 토글·YAML `use_momentum_filter`·스캔/백테스트/parity 동기화 · 유니버스 콤보 `Top 100` / `Top` / `Top 500` 라벨
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.86** 듀얼 시장 ALL 통합 풀)
+- **`src/filters.py`:** `pullback_bulk_markets_for_scan` — ALL(0) 시 KOSPI+KOSDAQ
+- **`src/data_loader.py`:** 벌크 일별 OHLCV·시총 pykrx 이중 로드 후 concat
+- **`src/gui.py`:** 디버그 `Markets pipeline`·Total loaded 통합 표기 · 창 제목 v3.86
+
+### 2026-05-29 (**v3.85** 유니버스 확장·MA60 완화)
+- **`src/filters.py`:** `pass_long_trend_close_above_ma`(MA60)·`resolve_pullback_universe_head`(ALL=0)
+- **`src/gui_helpers.py`:** 콤보 `100`/`300`/`500`/`1000`/`ALL`
+- **`src/data_loader.py`:** 벌크 MA60·60영업일 OHLCV·ALL 시 head 미적용
+- **`src/gui.py`:** 디버그 Pass4 `종가>MA60` · 창 제목 v3.85
+
+### 2026-05-29 (**v3.80** 눌림목 전일 양봉·중심선 수호)
+- **`src/data_loader.py`:** `leader_pullback_prev_day_yang`·`leader_pullback_center_defense` — Pass1·Pass2 AND · 벌크 `high_m`
+- **`src/pullback_backtest.py`:** 타임라인 신호 동일 조건
+- **`src/gui.py`:** 디버그 규칙·Pass 라벨 갱신 · 창 제목 v3.80
 
 ### 2026-05-29 (**v3.76** OS 배율 System-Aware·pt 폰트)
 - **`main.py`:** Qt 환경 변수·`gui_display` 호출 제거

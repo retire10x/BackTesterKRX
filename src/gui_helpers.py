@@ -241,9 +241,10 @@ GUI_LIST_FONT_SIZE = GUI_LIST_FONT_SIZE_PT
 GUI_HINT_FONT_SIZE = GUI_HINT_FONT_SIZE_PT
 GUI_DATE_ENTRY_WIDTH = 11
 LAST_SESSION_JSON = os.path.join("config", "last_session.json")
-VALID_UNIVERSE_LIMITS = frozenset({100, 300, 500})
-# 콤보 표시값(시총 상위 N종) — 필드 제목은 GUI에서 "Top"
-UNIVERSE_LIMIT_OPTIONS = tuple(str(n) for n in sorted(VALID_UNIVERSE_LIMITS))
+UNIVERSE_LIMIT_ALL = 0  # 전체(시장 전종목, 시총 순 정렬 후 필터만 적용)
+VALID_UNIVERSE_LIMITS = frozenset({UNIVERSE_LIMIT_ALL, 100, 300, 500, 1000})
+# 콤보 표시값 — 필드 제목은 GUI에서 "Top"
+UNIVERSE_LIMIT_OPTIONS = ("100", "300", "500", "1000", "ALL")
 # v3.66 이전 세션 JSON 호환
 _LEGACY_UNIVERSE_COMBO_LABELS = {
     "Top 100": 100,
@@ -310,6 +311,8 @@ def gui_action_btn_font() -> ctk.CTkFont:
 
 def normalize_universe_limit_choice(raw: object, *, default: int) -> int:
     s = str(raw).strip()
+    if s.upper() == "ALL":
+        return UNIVERSE_LIMIT_ALL
     if s in _LEGACY_UNIVERSE_COMBO_LABELS:
         return int(_LEGACY_UNIVERSE_COMBO_LABELS[s])
     try:
@@ -321,9 +324,18 @@ def normalize_universe_limit_choice(raw: object, *, default: int) -> int:
     return n
 
 
+def universe_limit_display_label(n: int) -> str:
+    """디버그·로그용 Top N / ALL."""
+    if int(n) <= 0:
+        return "ALL"
+    return str(int(n))
+
+
 def universe_limit_combo_value(n: int, *, default: int = 300) -> str:
-    """콤보에 표시·설정할 문자열(100/300/500)."""
+    """콤보에 표시·설정할 문자열."""
     v = int(n)
+    if v <= 0:
+        return "ALL"
     if v in VALID_UNIVERSE_LIMITS:
         return str(v)
     return str(default)

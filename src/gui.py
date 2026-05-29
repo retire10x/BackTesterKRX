@@ -73,6 +73,7 @@ from src.gui_helpers import (
     bootstrap_gui_pullback_scan_ssot,
     normalize_universe_limit_choice,
     universe_limit_combo_value,
+    universe_limit_display_label,
     UNIVERSE_LIMIT_OPTIONS,
 )
 from src.backtest_constants import (
@@ -343,7 +344,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.76 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v3.86 주도주 눌림목 스캐너 (Dual-Market Fix)")
 
         self._apply_initial_window_geometry()
 
@@ -501,7 +502,7 @@ class BacktestGUI(ctk.CTk):
         self.combo_universe = ctk.CTkComboBox(
             sf_univ,
             values=list(UNIVERSE_LIMIT_OPTIONS),
-            width=80,
+            width=92,
             height=26,
             font=gui_body_font(),
         )
@@ -2788,9 +2789,9 @@ class BacktestGUI(ctk.CTk):
                 df = df.loc[(df.index.normalize() >= ts0) & (df.index.normalize() <= ts1)]
                 if df.empty:
                     raise RuntimeError("기간 필터 후 데이터가 없습니다.")
-                if len(df) < 120:
+                if len(df) < 60:
                     raise RuntimeError(
-                        "봉 수가 부족합니다(김직선 MA120 검증에 최소 120봉 필요)."
+                        "봉 수가 부족합니다(장기 대세 MA60 검증에 최소 60봉 필요)."
                     )
                 if self._backtest_cancel_event.is_set():
                     self.after(0, self._finalize_pullback_backtest_cancelled)
@@ -2947,6 +2948,7 @@ class BacktestGUI(ctk.CTk):
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
         diag_policy = ""
         effective_anchor = ainfo_pre.anchor_date.strftime("%Y-%m-%d")
+        st: dict = {}
         if bool(bulk.get("ok")):
             rows = bulk.get("rows") or []
             st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
@@ -3074,21 +3076,22 @@ class BacktestGUI(ctk.CTk):
 
         debug_lines = [
             "=====================================================",
-            "⚙️ [DEBUG] v3.50 주도주 눌림목 스캐너",
+            "⚙️ [DEBUG] v3.86 주도주 눌림목 스캐너 (Dual-Market)",
             "=====================================================",
             f" - Requested End Date : {requested_scan_date}",
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
             f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
             f" - Anchor policy : {diag_policy or '-'}",
-            f" - Top : {parity_limit}",
+            f" - Top : {universe_limit_display_label(parity_limit)}",
+            f" - Markets pipeline : {st.get('markets_pipeline', scan_market)}",
             f" - 세력 개입 배수 : {diag_burst or volume_burst_multiple}",
             f" - 눌림 거래량 비율 : {diag_shrink or vol_shrink_limit}",
             "-----------------------------------------------------",
             " [Applied Rules — 타임라인 격리]",
-            "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult",
-            "  2) t low < MA20(close) & t close >= MA20",
+            "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult & t-1 양봉(종가>시가)",
+            "  2) t low < MA20 & t close >= MA20 & t close >= (t-1 고저)/2",
             "  3) t vol <= t-1 vol × shrink_limit",
-            "  4) v3.50 종가 > MA120 (장기 정배열)",
+            "  4) v3.85 종가 > MA60 (장기 대세)",
             (
                 "  5) v3.50 MA5 >= MA10 (단기 모멘텀)"
                 if use_momentum_filter
@@ -3096,11 +3099,19 @@ class BacktestGUI(ctk.CTk):
             ),
             "-----------------------------------------------------",
             " [Pipeline Filtering Pass Count]",
-            f"  ▶ Total Top Tickers Loaded : {total_loaded}개",
-            f"  ▶ Pass 1 (세력 개입) : {pass_burst}개",
-            f"  ▶ Pass 2 (+ 가격/MA20) : {pass_price}개",
+            (
+                f"  ▶ Total Top Tickers Loaded : {total_loaded}개"
+                + (
+                    " (KOSPI+KOSDAQ 통합)"
+                    if str((st or {}).get("markets_pipeline", "")).upper()
+                    == "KOSPI+KOSDAQ"
+                    else ""
+                )
+            ),
+            f"  ▶ Pass 1 (세력+전일양봉) : {pass_burst}개",
+            f"  ▶ Pass 2 (+ MA20·중심선) : {pass_price}개",
             f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
-            f"  ▶ Pass 4 (+ 종가>MA120) : {pass_kim_long}개",
+            f"  ▶ Pass 4 (+ 종가>MA60) : {pass_kim_long}개",
             (
                 f"  ▶ Pass 5 (+ MA5≥MA10) : {pass_kim_short}개"
                 if use_momentum_filter

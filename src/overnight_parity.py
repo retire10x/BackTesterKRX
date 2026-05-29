@@ -52,7 +52,7 @@ def run_overnight_parity_check(
 
     lines: list[str] = []
     end_eff = str(requested_end).strip()[:10]
-    lim = max(20, min(500, int(universe_limit)))
+    lim = int(universe_limit)
 
     info = resolve_overnight_scan_anchor(end_eff)
     lines.append(
