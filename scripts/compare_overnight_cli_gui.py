@@ -32,7 +32,7 @@ def main() -> int:
     if market not in ("KOSPI", "KOSDAQ"):
         market = "KOSPI"
     v3_cfg = cfg.get("v3_0") or {}
-    limit = max(20, min(300, int(v3_cfg.get("universe_limit", 100))))
+    limit = max(20, min(300, int(v3_cfg.get("universe_limit", 300))))
 
     if str(args.end or "").strip():
         end_eff = str(args.end).strip()[:10]

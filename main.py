@@ -540,7 +540,7 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
         market = "KOSPI"
 
     v3_cfg = cfg.get("v3_0") or {}
-    limit = int(v3_cfg.get("universe_limit", 100))
+    limit = int(v3_cfg.get("universe_limit", 300))
 
     anchor_info = resolve_overnight_scan_anchor(end_d)
     end_load = anchor_info.anchor_date.strftime("%Y-%m-%d")
@@ -580,8 +580,8 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
         end_d,
         market=market,
         universe_limit=limit,
-        volume_burst_multiple=float(v3_cfg.get("volume_burst_multiple", 3.0)),
-        vol_shrink_limit=float(v3_cfg.get("vol_shrink_limit", 0.5)),
+        volume_burst_multiple=float(v3_cfg.get("volume_burst_multiple", 1.5)),
+        vol_shrink_limit=float(v3_cfg.get("vol_shrink_limit", 0.7)),
     )
     print("\n" + "=" * 52 + "\nv3.30 주도주 눌림목 스캐너 (CLI/GUI parity)\n" + "=" * 52)
     if parity.get("ok"):

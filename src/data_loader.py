@@ -492,8 +492,8 @@ def kim_straight_trend_pass(
 def qualifies_leader_pullback_from_ohlcv(
     df: pd.DataFrame,
     *,
-    volume_burst_multiple: float = 3.0,
-    vol_shrink_limit: float = 0.5,
+    volume_burst_multiple: float = 1.5,
+    vol_shrink_limit: float = 0.7,
 ) -> tuple[bool, float]:
     """
     단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 + v3.50 김직선 정배열 추세 필터.
@@ -549,8 +549,8 @@ def scan_leader_pullback_candidates_bulk(
     market: str = "KOSPI",
     cancel_event: threading.Event | None = None,
     universe_limit: int | None = None,
-    volume_burst_multiple: float = 3.0,
-    vol_shrink_limit: float = 0.5,
+    volume_burst_multiple: float = 1.5,
+    vol_shrink_limit: float = 0.7,
 ) -> dict[str, object]:
     """
     v3.30 주도주 눌림목 벌크 스캐너.
@@ -585,10 +585,10 @@ def scan_leader_pullback_candidates_bulk(
     if lim is None:
         try:
             vpart = load_config().get("v3_0") or {}
-            lim = int(vpart.get("universe_limit", 100))
+            lim = int(vpart.get("universe_limit", 300))
         except Exception:
-            lim = 100
-    lim = max(20, min(300, int(lim)))
+            lim = 300
+    lim = max(20, min(500, int(lim)))
 
     if cancel_event is not None and cancel_event.is_set():
         return {"ok": False, "reason": "cancelled"}
@@ -835,8 +835,8 @@ def scan_v3_overnight_candidates_bulk(
     market: str = "KOSPI",
     cancel_event: threading.Event | None = None,
     universe_limit: int | None = None,
-    volume_burst_multiple: float = 3.0,
-    vol_shrink_limit: float = 0.5,
+    volume_burst_multiple: float = 1.5,
+    vol_shrink_limit: float = 0.7,
 ) -> dict[str, object]:
     """레거시 이름 — v3.30 `scan_leader_pullback_candidates_bulk` 로 위임."""
     return scan_leader_pullback_candidates_bulk(
@@ -854,7 +854,7 @@ def load_v3_0_overnight_scalper_data(
     start_date: str,
     end_date: str,
     market: str = "KOSPI",
-    universe_limit: int = 100,
+    universe_limit: int = 300,
     warm_bdays: int = 2,
 ) -> list[tuple[str, pd.DataFrame]]:
     """

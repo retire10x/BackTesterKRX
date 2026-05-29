@@ -52,7 +52,7 @@ def run_overnight_parity_check(
 
     lines: list[str] = []
     end_eff = str(requested_end).strip()[:10]
-    lim = max(20, min(300, int(universe_limit)))
+    lim = max(20, min(500, int(universe_limit)))
 
     info = resolve_overnight_scan_anchor(end_eff)
     lines.append(
@@ -67,8 +67,8 @@ def run_overnight_parity_check(
         v3_cfg = load_config().get("v3_0") or {}
     except Exception:
         pass
-    burst = float(v3_cfg.get("volume_burst_multiple", 3.0))
-    shrink = float(v3_cfg.get("vol_shrink_limit", 0.5))
+    burst = float(v3_cfg.get("volume_burst_multiple", 1.5))
+    shrink = float(v3_cfg.get("vol_shrink_limit", 0.7))
 
     bulk = scan_leader_pullback_candidates_bulk(
         end_eff,

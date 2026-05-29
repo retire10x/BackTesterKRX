@@ -13,6 +13,7 @@ import json
 import math
 import os
 import threading
+import time
 from collections import deque
 import tkinter as tk
 from datetime import date, timedelta
@@ -65,6 +66,10 @@ from src.gui_helpers import (
     GUI_LIST_FONT_SIZE,
     gui_hint_font,
     gui_list_font_tuple,
+    gui_action_btn_font,
+    dump_last_gui_session,
+    load_last_gui_session,
+    normalize_universe_limit_choice,
 )
 from src.backtest_constants import (
     CHART_MA_TOGGLE_PERIODS,
@@ -276,6 +281,19 @@ CHART_IMG_MIN_FH = 200
 BACKTEST_HISTORY_MAX = 30
 BACKTEST_HISTORY_FILE = os.path.join("output", "backtest_history.json")
 
+# v3.60: 가변 유니버스·컴팩트 버튼·동작 타이머
+UNIVERSE_LIMIT_OPTIONS = ("100", "300", "500")
+GUI_MAIN_BTN_HEIGHT = 24
+GUI_HIST_DEL_BTN_HEIGHT = 19
+GUI_CANCEL_BTN_FG = ("#E57373", "#B45353")
+GUI_CANCEL_BTN_HOVER = ("#EF5350", "#C62828")
+CHART_IDLE_GUIDE_TEXT = (
+    "리스트에서 종목을 더블클릭하면\n"
+    "차트가 이곳 정중앙에 표시됩니다.\n\n"
+    "차트에 종목을 연 뒤 [🚀 백테스트]로\n"
+    "눌림목 타임라인 검증을 실행하세요."
+)
+
 # 기본 메인 창 크기 및 최소 크기(노트북·외부 모니터 공통). 실제 배치는 화면에 맞게 클램프 후 중앙 정렬.
 MAIN_WINDOW_INITIAL_W = 1400
 MAIN_WINDOW_INITIAL_H = 850
@@ -321,7 +339,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.45 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v3.60 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -333,6 +351,10 @@ class BacktestGUI(ctk.CTk):
         self._backtest_busy = False
         self._backtest_cancel_event = threading.Event()
         self._cash_format_guard = False
+        self._op_timer_after_id: str | None = None
+        self._op_timer_start: float | None = None
+        self._op_timer_btn = None
+        self._op_timer_base = ""
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
@@ -371,8 +393,8 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
-        self.var_volume_burst_multiple = ctk.StringVar(value="3.0")
-        self.var_vol_shrink_limit = ctk.StringVar(value="0.5")
+        self.var_volume_burst_multiple = ctk.StringVar(value="1.5")
+        self.var_vol_shrink_limit = ctk.StringVar(value="0.7")
         self.var_keyword = ctk.StringVar(value="")
         self.var_cash = ctk.StringVar(value="5,000,000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
@@ -410,6 +432,20 @@ class BacktestGUI(ctk.CTk):
             width=72,
             font=gui_body_font(),
         ).pack(anchor="w")
+
+        sf_univ = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        sf_univ.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(sf_univ, text="유니버스", font=gui_body_font()).pack(
+            anchor="w", pady=(0, 2)
+        )
+        self.combo_universe = ctk.CTkComboBox(
+            sf_univ,
+            values=list(UNIVERSE_LIMIT_OPTIONS),
+            width=56,
+            font=gui_body_font(),
+        )
+        self.combo_universe.set("300")
+        self.combo_universe.pack(anchor="w")
 
         d0 = ctk.CTkFrame(row_scan_params, fg_color="transparent")
         d0.pack(side="left", padx=(0, 4))
@@ -493,18 +529,18 @@ class BacktestGUI(ctk.CTk):
         self.btn_run = ctk.CTkButton(
             row_scan_btns,
             text="🔵 스캔",
-            height=36,
-            font=gui_body_font(),
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
             command=self._on_search,
         )
         self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.btn_scan_cancel = ctk.CTkButton(
             row_scan_btns,
             text="🔴 스캔 중단",
-            height=36,
-            font=gui_body_font(),
-            fg_color=("#d32f2f", "#9a1f1f"),
-            hover_color=("#b71c1c", "#7f1a1a"),
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
+            fg_color=GUI_CANCEL_BTN_FG,
+            hover_color=GUI_CANCEL_BTN_HOVER,
             command=self._on_scan_cancel,
             state="disabled",
         )
@@ -524,7 +560,7 @@ class BacktestGUI(ctk.CTk):
             hist_toolbar,
             text="🗑️ 이력 삭제",
             width=88,
-            height=28,
+            height=GUI_HIST_DEL_BTN_HEIGHT,
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 1),
             command=self._on_history_delete,
         )
@@ -564,18 +600,18 @@ class BacktestGUI(ctk.CTk):
         self.btn_pullback_backtest = ctk.CTkButton(
             row_bt_btns,
             text="🚀 백테스트",
-            height=34,
-            font=gui_body_font(),
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
             command=self._on_pullback_backtest,
         )
         self.btn_pullback_backtest.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self.btn_backtest_cancel = ctk.CTkButton(
             row_bt_btns,
             text="⏹️ 테스트 중단",
-            height=34,
-            font=gui_body_font(),
-            fg_color=("#d32f2f", "#9a1f1f"),
-            hover_color=("#b71c1c", "#7f1a1a"),
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
+            fg_color=GUI_CANCEL_BTN_FG,
+            hover_color=GUI_CANCEL_BTN_HOVER,
             command=self._on_backtest_cancel,
             state="disabled",
         )
@@ -907,12 +943,9 @@ class BacktestGUI(ctk.CTk):
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
-        self._chart_flat_show_message("좌측 리스트에서 종목을 더블클릭하면 차트가 표시됩니다.")
+        load_last_gui_session(self)
+        self._chart_flat_show_message(CHART_IDLE_GUIDE_TEXT)
         self.var_sell_fee_pct.set("0.2")
-        self.bind("<KeyPress-1>", lambda _e: self._on_chart_pan_bdays(-7))
-        self.bind("<KeyPress-2>", lambda _e: self._on_chart_pan_bdays(-1))
-        self.bind("<KeyPress-7>", lambda _e: self._on_chart_pan_bdays(1))
-        self.bind("<KeyPress-8>", lambda _e: self._on_chart_pan_bdays(7))
         self.protocol("WM_DELETE_WINDOW", self._on_user_close)
 
     def _refresh_trading_rules_display(self, *_args: object) -> None:
@@ -2269,6 +2302,11 @@ class BacktestGUI(ctk.CTk):
             )
 
     def _on_user_close(self) -> None:
+        self._stop_operation_timer()
+        try:
+            dump_last_gui_session(self)
+        except OSError:
+            pass
         try:
             self._save_backtest_history_to_disk()
         except OSError:
@@ -2277,6 +2315,54 @@ class BacktestGUI(ctk.CTk):
             self.destroy()
         except tk.TclError:
             pass
+
+    def _selected_universe_limit(self) -> int:
+        """v3.60: 상단 유니버스 콤보 → 스캔 슬라이싱 상한."""
+        try:
+            raw = self.combo_universe.get()
+        except (tk.TclError, AttributeError):
+            raw = "300"
+        return normalize_universe_limit_choice(raw)
+
+    def _format_operation_elapsed(self, seconds: float) -> str:
+        mins = int(seconds // 60)
+        secs = seconds - mins * 60
+        return f"({mins:02d}:{secs:04.1f})"
+
+    def _start_operation_timer(self, btn, base_text: str) -> None:
+        self._stop_operation_timer(reset_button=False)
+        self._op_timer_btn = btn
+        self._op_timer_base = str(base_text)
+        self._op_timer_start = time.perf_counter()
+        self._tick_operation_timer()
+
+    def _tick_operation_timer(self) -> None:
+        if self._op_timer_start is None or self._op_timer_btn is None:
+            return
+        elapsed = time.perf_counter() - self._op_timer_start
+        label = f"{self._op_timer_base} 중... {self._format_operation_elapsed(elapsed)}"
+        try:
+            self._op_timer_btn.configure(text=label)
+        except tk.TclError:
+            return
+        self._op_timer_after_id = self.after(50, self._tick_operation_timer)
+
+    def _stop_operation_timer(self, *, reset_button: bool = True) -> None:
+        aid = getattr(self, "_op_timer_after_id", None)
+        if aid is not None:
+            try:
+                self.after_cancel(aid)
+            except (tk.TclError, ValueError):
+                pass
+        self._op_timer_after_id = None
+        self._op_timer_start = None
+        if reset_button and self._op_timer_btn is not None:
+            try:
+                self._op_timer_btn.configure(text=self._op_timer_base)
+            except tk.TclError:
+                pass
+        self._op_timer_btn = None
+        self._op_timer_base = ""
 
     def _push_history(
         self,
@@ -2512,6 +2598,7 @@ class BacktestGUI(ctk.CTk):
             pass
 
     def _begin_backtest_loading_state(self) -> None:
+        self._start_operation_timer(self.btn_pullback_backtest, "🚀 백테스트")
         try:
             self.btn_pullback_backtest.configure(state="disabled")
         except (tk.TclError, AttributeError):
@@ -2522,6 +2609,7 @@ class BacktestGUI(ctk.CTk):
             pass
 
     def _end_backtest_loading_state(self) -> None:
+        self._stop_operation_timer()
         try:
             self.btn_pullback_backtest.configure(state="normal")
         except (tk.TclError, AttributeError):
@@ -2533,6 +2621,8 @@ class BacktestGUI(ctk.CTk):
 
     def _on_backtest_cancel(self) -> None:
         self._backtest_cancel_event.set()
+        self._stop_operation_timer()
+        self._end_backtest_loading_state()
         self.set_status_message("백테스트 중단 요청…")
 
     def _on_pullback_backtest(self) -> None:
@@ -2644,6 +2734,7 @@ class BacktestGUI(ctk.CTk):
 
     def _begin_search_loading_state(self) -> None:
         """검색 워커 시작 시 버튼 비활성화·마우스 대기 커서(창 단위)."""
+        self._start_operation_timer(self.btn_run, "🔵 스캔")
         try:
             self.btn_run.configure(state="disabled")
         except (tk.TclError, AttributeError):
@@ -2663,8 +2754,9 @@ class BacktestGUI(ctk.CTk):
 
     def _end_search_loading_state(self) -> None:
         """검색 종료 후 버튼·커서 원복."""
+        self._stop_operation_timer()
         try:
-            self.btn_run.configure(state="normal", text="🔵 스캔")
+            self.btn_run.configure(state="normal")
         except (tk.TclError, AttributeError):
             pass
         try:
@@ -2735,12 +2827,7 @@ class BacktestGUI(ctk.CTk):
         prev_2 = ""
         requested_scan_date = str(end_date).strip()[:10]
         ainfo_pre = resolve_overnight_scan_anchor(requested_scan_date)
-        parity_limit = 100
-        try:
-            parity_limit = int((load_config().get("v3_0") or {}).get("universe_limit", 100))
-        except Exception:
-            parity_limit = 100
-        parity_limit = max(20, min(300, parity_limit))
+        parity_limit = self._selected_universe_limit()
         bulk_end_date = requested_scan_date
         bulk = scan_leader_pullback_candidates_bulk(
             bulk_end_date,
@@ -2780,13 +2867,7 @@ class BacktestGUI(ctk.CTk):
                 qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
         else:
             reason = str(bulk.get("reason", ""))
-            fallback_limit = 100
-            try:
-                v3_cfg = (load_config().get("v3_0") or {})
-                fallback_limit = int(v3_cfg.get("universe_limit", 100))
-            except Exception:
-                fallback_limit = 100
-            fallback_limit = max(20, min(300, fallback_limit))
+            fallback_limit = self._selected_universe_limit()
             if reason.startswith("timeout_"):
                 self.after(
                     0,

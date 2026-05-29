@@ -5,6 +5,8 @@ GUI 전용 헬퍼: YAML 반영·설정 dict 빌드·툴팁 등 (엔진 `metrics`
 from __future__ import annotations
 
 import copy
+import json
+import os
 import tkinter as tk
 from collections.abc import Callable
 from datetime import date, datetime
@@ -234,8 +236,11 @@ GUI_FONT_SIZE = 13
 GUI_LIST_FONT_SIZE = 10
 GUI_HINT_FONT_SIZE = 9
 GUI_DATE_ENTRY_WIDTH = 11
+LAST_SESSION_JSON = os.path.join("config", "last_session.json")
+VALID_UNIVERSE_LIMITS = frozenset({100, 300, 500})
 
 _gui_body_font_cached: ctk.CTkFont | None = None
+_gui_action_btn_font_cached: ctk.CTkFont | None = None
 _gui_hint_font_cached: ctk.CTkFont | None = None
 
 
@@ -262,6 +267,92 @@ def gui_body_font() -> ctk.CTkFont:
             family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE
         )
     return _gui_body_font_cached
+
+
+def gui_action_btn_font() -> ctk.CTkFont:
+    """스캔·백테스트 등 타이머 표기가 들어가는 액션 버튼용(약간 작게)."""
+    global _gui_action_btn_font_cached
+    if _gui_action_btn_font_cached is None:
+        _gui_action_btn_font_cached = ctk.CTkFont(
+            family=GUI_FONT_FAMILY, size=GUI_LIST_FONT_SIZE
+        )
+    return _gui_action_btn_font_cached
+
+
+def normalize_universe_limit_choice(raw: object, *, default: int = 300) -> int:
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        n = default
+    if n not in VALID_UNIVERSE_LIMITS:
+        n = default
+    return n
+
+
+def dump_last_gui_session(ui: "BacktestGUI") -> None:
+    """v3.60: 종료 시 스캔 파라미터 6종을 config/last_session.json 에 저장."""
+    try:
+        start_s = ui._date_start.get_date().strftime("%Y-%m-%d")
+        end_s = ui._date_end.get_date().strftime("%Y-%m-%d")
+    except (ValueError, tk.TclError, AttributeError):
+        start_s, end_s = "", ""
+    payload = {
+        "version": 1,
+        "market": str(ui.var_market.get()).strip().upper() or "KOSPI",
+        "universe_limit": normalize_universe_limit_choice(
+            ui.combo_universe.get() if hasattr(ui, "combo_universe") else 300
+        ),
+        "start_date": start_s,
+        "end_date": end_s,
+        "volume_burst_multiple": str(ui.var_volume_burst_multiple.get()).strip(),
+        "vol_shrink_limit": str(ui.var_vol_shrink_limit.get()).strip(),
+    }
+    os.makedirs(os.path.dirname(LAST_SESSION_JSON) or ".", exist_ok=True)
+    with open(LAST_SESSION_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def load_last_gui_session(ui: "BacktestGUI") -> bool:
+    """마지막 세션이 있으면 UI에 복원. 성공 시 True."""
+    if not os.path.isfile(LAST_SESSION_JSON):
+        return False
+    try:
+        with open(LAST_SESSION_JSON, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    mk = str(data.get("market") or "").strip().upper()
+    if mk in ("KOSPI", "KOSDAQ", "ETF"):
+        ui.var_market.set(mk)
+
+    ul = normalize_universe_limit_choice(data.get("universe_limit"))
+    try:
+        ui.combo_universe.set(str(ul))
+    except (tk.TclError, AttributeError):
+        pass
+
+    for key, setter in (
+        ("start_date", ui._date_start),
+        ("end_date", ui._date_end),
+    ):
+        raw = str(data.get(key) or "").strip()[:10]
+        if not raw:
+            continue
+        try:
+            setter.set_date(datetime.strptime(raw, "%Y-%m-%d").date())
+        except (ValueError, tk.TclError, AttributeError):
+            pass
+
+    burst = str(data.get("volume_burst_multiple") or "").strip()
+    if burst:
+        ui.var_volume_burst_multiple.set(burst)
+    shrink = str(data.get("vol_shrink_limit") or "").strip()
+    if shrink:
+        ui.var_vol_shrink_limit.set(shrink)
+    return True
 
 TooltipTextFn = str | Callable[[], str]
 

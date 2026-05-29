@@ -74,7 +74,7 @@ class TestOvernightParityLive(unittest.TestCase):
         if market not in ("KOSPI", "KOSDAQ"):
             market = "KOSPI"
         v3_cfg = cfg.get("v3_0") or {}
-        limit = max(20, min(300, int(v3_cfg.get("universe_limit", 100))))
+        limit = max(20, min(300, int(v3_cfg.get("universe_limit", 300))))
         period = cfg.get("period") or {}
         end_eff = str(period.get("end_date") or "").strip()[:10]
         if not end_eff:

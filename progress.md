@@ -47,8 +47,14 @@
 - [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
 - [x] **v3.45** UI 폴리싱: 차트 패널 구분선 제거·캔버스 중앙 정렬·맑은 고딕 통일·리스트 10pt·날짜 폭 확대·원금/매도 1행·이력 높이 확장
 - [x] **v3.50** 김직선 정배열 추세 필터: 종가>MA120 · MA5≥MA10 — 역배열·우하향 종목 스캔·백테스트 전면 제외
+- [x] **v3.60** 유니버스 콤보(100/300/500)·`last_session.json` 세션 복원·스캔/백테스트 밀리초 타이머·버튼 컴팩트·연한 레드 중단색
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.60** UI 성능·세션 보존)
+- **`gui.py`:** 유니버스 콤보 · 종료 시 `config/last_session.json` · 스캔/백테스트 버튼 경과 타이머 · 버튼 높이 1/3 축소 · 차트 가이드 중앙 정렬
+- **`gui_helpers.py`:** `dump_last_gui_session` / `load_last_gui_session`
+- **`data_loader.py`:** `universe_limit` 상한 500
 
 ### 2026-05-29 (**v3.50** 김직선 정배열 추세 필터)
 - **`data_loader.py`:** `kim_straight_trend_pass` · 벌크 OHLCV 120영업일 확장 · Pass4(종가>MA120)·Pass5(MA5≥MA10)
