@@ -364,6 +364,7 @@ class BacktestGUI(ctk.CTk):
         self._chart_ohlcv_cache_code = ""
         self._img_flat_ref: ImageTk.PhotoImage | None = None
         self._last_chart_path: str | None = None
+        self._last_chart_bytes: bytes | None = None
         # v4.11: 캔버스 단일 image item — itemconfig 로 스왑해 선삭제 백색 플래시 방지
         self._chart_canvas_image_item: int | None = None
         self._chart_resize_after_id: str | None = None
@@ -904,7 +905,7 @@ class BacktestGUI(ctk.CTk):
         )
         self._chart_flat_canvas.pack(fill="both", expand=True)
         self._bind_chart_zoom_events(self._chart_flat_canvas)
-        self._chart_flat_canvas.bind("<Configure>", self._recenter_canvas_text)
+        self._chart_flat_canvas.bind("<Configure>", self._on_chart_flat_canvas_configure)
 
         self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
@@ -1023,10 +1024,12 @@ class BacktestGUI(ctk.CTk):
         self._chart_pan_active = False
         self._img_flat_ref = None
         self._chart_canvas_image_item = None
+        self._last_chart_path = None
+        self._last_chart_bytes = None
         c = getattr(self, "_chart_flat_canvas", None)
         if c is None:
             return
-            
+
         try:
             c.delete("all")
             c.configure(bg=self._chart_canvas_bg_plain())
@@ -1081,6 +1084,20 @@ class BacktestGUI(ctk.CTk):
         except tk.TclError:
             pass
 
+    def _on_chart_flat_canvas_configure(self, event: tk.Event) -> None:
+        """캔버스 리사이즈: 안내 텍스트 재중앙 + 차트 캐시 리페인트 예약."""
+        self._recenter_canvas_text(event)
+        if not self._last_chart_path and not self._last_chart_bytes:
+            return
+        if int(getattr(event, "width", 0) or 0) < 64 or int(getattr(event, "height", 0) or 0) < 48:
+            return
+        if self._chart_resize_after_id is not None:
+            try:
+                self.after_cancel(self._chart_resize_after_id)
+            except (tk.TclError, ValueError):
+                pass
+        self._chart_resize_after_id = self.after(75, self._deferred_repaint_chart)
+
     def _apply_initial_window_geometry(self) -> None:
         """
         시작 시 원하는 초기 크기로 열고 모니터 중앙에 배치한다.
@@ -1121,7 +1138,7 @@ class BacktestGUI(ctk.CTk):
 
         if w < 64 or h < 48:
             return
-        if not self._last_chart_path:
+        if not self._last_chart_path and not self._last_chart_bytes:
             return
         if self._chart_resize_after_id is not None:
             self.after_cancel(self._chart_resize_after_id)
@@ -1213,8 +1230,17 @@ class BacktestGUI(ctk.CTk):
 
     def _deferred_repaint_chart(self) -> None:
         self._chart_resize_after_id = None
-        if self._last_chart_path:
-            self._update_chart_image(self._last_chart_path)
+        if not self._last_chart_path and not self._last_chart_bytes:
+            return
+        st = self._chart_canvas_state
+        sim = st.get("sim") if isinstance(st, dict) else None
+        if sim is not None and len(sim) > 0 and not self._busy:
+            try:
+                self._render_chart_viewport_sync()
+            except Exception:
+                self._redraw_chart_from_cache()
+        else:
+            self._redraw_chart_from_cache()
 
     def _chart_overlay_host_inner_pixel_size(self) -> tuple[int, int]:
         """
@@ -1373,7 +1399,9 @@ class BacktestGUI(ctk.CTk):
         self._chart_pan_drag_dx = 0
 
     def _chart_mount_photo_on_canvas(self, cvs_f, photo: ImageTk.PhotoImage) -> None:
-        """캔버스 전체를 채우도록 PhotoImage를 중앙(anchor=CENTER) 배치."""
+        """캔버스 실측 중앙에 PhotoImage(CENTER) 배치 — chart_main 태그·text_msg 레이어 유지."""
+        if cvs_f is None:
+            return
         try:
             cvs_f.configure(bg=self._chart_canvas_bg_plain())
             cvs_f.update_idletasks()
@@ -1382,28 +1410,40 @@ class BacktestGUI(ctk.CTk):
         except tk.TclError:
             cx, cy = 0, 0
 
-        swapped = False
+        self._img_flat_ref = photo
         item_existing = getattr(self, "_chart_canvas_image_item", None)
-        if item_existing is not None:
+        has_chart = False
+        try:
+            has_chart = bool(cvs_f.find_withtag("chart_main"))
+        except tk.TclError:
+            has_chart = False
+
+        if item_existing is not None and has_chart:
             try:
                 cvs_f.itemconfigure(item_existing, image=photo)
-                swapped = True
-            except tk.TclError:
-                self._chart_canvas_image_item = None
-
-        if not swapped:
-            try:
-                cvs_f.delete("all")
-            except tk.TclError:
-                pass
-            self._chart_canvas_image_item = cvs_f.create_image(
-                cx, cy, anchor=tk.CENTER, image=photo, tags=("chart_main",)
-            )
-        else:
-            try:
                 cvs_f.coords(item_existing, cx, cy)
             except tk.TclError:
-                pass
+                self._chart_canvas_image_item = None
+                has_chart = False
+
+        if not has_chart:
+            try:
+                self._chart_canvas_image_item = cvs_f.create_image(
+                    cx,
+                    cy,
+                    anchor=tk.CENTER,
+                    image=photo,
+                    tags=("chart_main",),
+                )
+            except tk.TclError:
+                return
+
+        try:
+            cvs_f.tag_lower("chart_main")
+            if cvs_f.find_withtag("text_msg"):
+                cvs_f.tag_lower("text_msg")
+        except tk.TclError:
+            pass
         self._chart_pan_image_origin = (float(cx), float(cy))
         self._chart_pan_drag_dx = 0
 
@@ -1598,79 +1638,78 @@ class BacktestGUI(ctk.CTk):
         )
         self._update_chart_image_from_png_bytes(png_bytes)
 
+    def _redraw_chart_from_cache(self, attempt: int = 0) -> None:
+        """캐시된 디스크 경로·메모리 PNG를 캔버스 실측 크기로 리사이즈 후 중앙 마운트."""
+        try:
+            self.update_idletasks()
+            self.chart_frame.update_idletasks()
+            self.chart_overlay_host.update_idletasks()
+        except tk.TclError:
+            pass
+
+        fw, fh = self._chart_canvas_pixel_size()
+        if fw <= 0 or fh <= 0:
+            if attempt < 12:
+                self.after(
+                    42,
+                    lambda a=attempt + 1: self._redraw_chart_from_cache(a),
+                )
+            return
+
+        png_bytes: bytes | None = None
+        if self._last_chart_bytes:
+            png_bytes = self._last_chart_bytes
+        elif self._last_chart_path and os.path.isfile(self._last_chart_path):
+            try:
+                with open(self._last_chart_path, "rb") as f:
+                    png_bytes = f.read()
+            except OSError:
+                png_bytes = None
+
+        if not png_bytes:
+            return
+
+        try:
+            with Image.open(io.BytesIO(png_bytes)) as pil_img:
+                rgb = pil_img.convert("RGB")
+                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(resized)
+            cvs_f = self._chart_flat_canvas
+            self._chart_mount_photo_on_canvas(cvs_f, photo)
+        except Exception as e:
+            self._last_chart_path = None
+            self._last_chart_bytes = None
+            self._chart_canvas_image_item = None
+            self._img_flat_ref = None
+            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
+
     def _update_chart_image(self, image_path: str | None) -> None:
-        """엔진 PNG 표시 — tk.Canvas. v4.11: 같은 image item 에 itemconfig 스왑(선 delete 금지)."""
+        """레거시 디스크 PNG — 경로 캐시 후 공통 리드로우."""
         if not image_path or not os.path.isfile(image_path):
             self._last_chart_path = None
+            self._last_chart_bytes = None
             self._chart_canvas_image_item = None
             self._img_flat_ref = None
             self._chart_flat_show_message("그래프 파일을 찾을 수 없습니다.")
             return
 
-        try:
-            try:
-                self.update_idletasks()
-                self.chart_frame.update_idletasks()
-                self.chart_overlay_host.update_idletasks()
-            except tk.TclError:
-                pass
-
-            fw, fh = self._chart_canvas_pixel_size()
-            if fw <= 0 or fh <= 0:
-                return
-
-            with Image.open(image_path) as pil_img:
-                rgb = pil_img.convert("RGB")
-                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(resized)
-                cvs_f = self._chart_flat_canvas
-
-                self._chart_mount_photo_on_canvas(cvs_f, photo)
-
-                self._img_flat_ref = photo
-                self._last_chart_path = image_path
-        except Exception as e:
-            self._last_chart_path = None
-            self._chart_canvas_image_item = None
-            self._img_flat_ref = None
-            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
+        self._last_chart_path = image_path
+        self._last_chart_bytes = None
+        self._redraw_chart_from_cache()
 
     def _update_chart_image_from_png_bytes(self, png_bytes: bytes | None) -> None:
-        """v3.1: output/ PNG 없이 메모리 버퍼만으로 차트 캔버스 갱신."""
+        """v3.1: 메모리 PNG 바이트 캐시 후 공통 리드로우."""
         if not png_bytes:
             self._last_chart_path = None
+            self._last_chart_bytes = None
             self._chart_canvas_image_item = None
             self._img_flat_ref = None
             self._chart_flat_show_message("차트 데이터가 없습니다.")
             return
 
-        try:
-            try:
-                self.update_idletasks()
-                self.chart_frame.update_idletasks()
-                self.chart_overlay_host.update_idletasks()
-            except tk.TclError:
-                pass
-
-            fw, fh = self._chart_canvas_pixel_size()
-            if fw <= 0 or fh <= 0:
-                return
-
-            with Image.open(io.BytesIO(png_bytes)) as pil_img:
-                rgb = pil_img.convert("RGB")
-                resized = rgb.resize((fw, fh), Image.Resampling.LANCZOS)
-                photo = ImageTk.PhotoImage(resized)
-                cvs_f = self._chart_flat_canvas
-
-                self._chart_mount_photo_on_canvas(cvs_f, photo)
-
-                self._img_flat_ref = photo
-                self._last_chart_path = None
-        except Exception as e:
-            self._last_chart_path = None
-            self._chart_canvas_image_item = None
-            self._img_flat_ref = None
-            self._chart_flat_show_message(f"이미지 로드 실패: {e}")
+        self._last_chart_bytes = png_bytes
+        self._last_chart_path = None
+        self._redraw_chart_from_cache()
 
     def _set_summary(self, text: str):
         _ = text
@@ -3188,6 +3227,7 @@ class BacktestGUI(ctk.CTk):
             pass
         if not res.ok:
             self._last_chart_path = None
+            self._last_chart_bytes = None
             self._img_flat_ref = None
             self._chart_canvas_image_item = None
             self._chart_flat_show_message(res.error or "오류")

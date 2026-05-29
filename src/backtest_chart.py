@@ -103,13 +103,12 @@ def _prepare_figure_for_png_export(fig: Figure, *, layout_preset: str) -> None:
             pass
         try:
             if layout_preset == "gui_target":
-                dual_ret = bool(getattr(fig, "_btkrx_return_dual_y", False))
                 fig.subplots_adjust(
-                    left=0.07,
-                    right=0.82 if dual_ret else 0.90,
-                    top=0.91,
-                    bottom=0.15,
-                    hspace=0.38,
+                    left=0.04,
+                    right=0.96,
+                    top=0.93,
+                    bottom=0.08,
+                    hspace=0.20,
                 )
             else:
                 fig.subplots_adjust(
@@ -130,11 +129,11 @@ def _prepare_figure_for_png_export(fig: Figure, *, layout_preset: str) -> None:
                 bottom = 0.08 if price_xdate else 0.06
                 if layout_preset == "gui_target":
                     fig.subplots_adjust(
-                        left=0.07,
-                        right=0.90,
-                        top=0.91,
+                        left=0.04,
+                        right=0.96,
+                        top=0.93,
                         bottom=bottom,
-                        hspace=hspace,
+                        hspace=min(hspace, 0.22),
                     )
                 else:
                     fig.subplots_adjust(
@@ -148,6 +147,13 @@ def _prepare_figure_for_png_export(fig: Figure, *, layout_preset: str) -> None:
                 pass
 
 
+def _savefig_kwargs_for_layout(layout_preset: str) -> dict[str, object]:
+    """GUI용은 tight crop으로 figure 외곽 흰 여백 제거, CLI report 는 전체 bbox 유지."""
+    if layout_preset == "gui_target":
+        return {"bbox_inches": "tight", "pad_inches": 0.05}
+    return {}
+
+
 def save_figure_as_png(
     fig: Figure,
     out_path: str,
@@ -158,14 +164,13 @@ def save_figure_as_png(
     """
     layout_preset:
       - ``report``: 기존 고해상도 보고서용 여백(기본 DPI 300 등).
-      - ``gui_target``: GUI 패널 폭에 대응한 좁폭 레이아웃(좌우·하단 라벨 클립 완화).
-    bbox_inches='tight' 는 mplfinance 패널에서 잘림을 유발할 수 있어 figure bbox 기준 저장을 유지.
+      - ``gui_target``: 패널 맞춤 축 비율 + savefig ``bbox_inches='tight'``(pad 0.05).
     """
     dn = os.path.dirname(out_path)
     if dn:
         os.makedirs(dn, exist_ok=True)
     _prepare_figure_for_png_export(fig, layout_preset=layout_preset)
-    fig.savefig(out_path, dpi=dpi)
+    fig.savefig(out_path, dpi=dpi, **_savefig_kwargs_for_layout(layout_preset))
 
 
 def figure_to_png_bytes(
@@ -177,7 +182,12 @@ def figure_to_png_bytes(
     """Figure → PNG 바이너리. v3.1 GUI: output/ 디스크 쓰기 없이 표시용."""
     _prepare_figure_for_png_export(fig, layout_preset=layout_preset)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=dpi)
+    fig.savefig(
+        buf,
+        format="png",
+        dpi=dpi,
+        **_savefig_kwargs_for_layout(layout_preset),
+    )
     buf.seek(0)
     return buf.getvalue()
 
