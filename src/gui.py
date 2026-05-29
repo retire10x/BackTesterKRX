@@ -291,8 +291,6 @@ GUI_HIST_DEL_BTN_HEIGHT = 19
 GUI_CANCEL_BTN_FG = ("#E57373", "#B45353")
 GUI_CANCEL_BTN_HOVER = ("#EF5350", "#C62828")
 CHART_IDLE_GUIDE_TEXT = (
-    "리스트에서 종목을 더블클릭하면\n"
-    "차트가 이곳 정중앙에 표시됩니다.\n\n"
     "차트에 종목을 연 뒤 [🚀 백테스트]로\n"
     "눌림목 타임라인 검증을 실행하세요."
 )
@@ -697,7 +695,8 @@ class BacktestGUI(ctk.CTk):
         self.txt_backtest_report.pack(fill="both", expand=True, padx=2, pady=(2, 2))
         self.txt_backtest_report.insert(
             "1.0",
-            "차트에 종목을 연 뒤 [🚀 백테스트]로 눌림목 타임라인 검증을 실행하세요.",
+            "아직 실행된 백테스트 내역이 없습니다.\n\n"
+            "차트에 종목을 고른 뒤 [🔴 백테스트]로 눌림목·타임라인 검증을 실행하세요.",
         )
         self.txt_backtest_report.configure(state="disabled")
 
@@ -905,6 +904,7 @@ class BacktestGUI(ctk.CTk):
         )
         self._chart_flat_canvas.pack(fill="both", expand=True)
         self._bind_chart_zoom_events(self._chart_flat_canvas)
+        self._chart_flat_canvas.bind("<Configure>", self._recenter_canvas_text)
 
         self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
@@ -1019,33 +1019,65 @@ class BacktestGUI(ctk.CTk):
             pass
 
     def _chart_flat_show_message(self, message: str) -> None:
-        """PNG 없을 때·오류 메시지 — CTkImage 없이 순수 tk.Canvas 텍스트."""
+        """PNG 없을 때·오류 메시지 — 이미지 뒤에 배치하기 위해 순수 tk.Canvas 텍스트 사용."""
         self._chart_pan_active = False
         self._img_flat_ref = None
         self._chart_canvas_image_item = None
         c = getattr(self, "_chart_flat_canvas", None)
         if c is None:
             return
+            
         try:
             c.delete("all")
             c.configure(bg=self._chart_canvas_bg_plain())
-            self.chart_overlay_host.update_idletasks()
-            c.update_idletasks()
-            w = max(160, int(c.winfo_width()))
-            h = max(100, int(c.winfo_height()))
+            
+            # 기존에 남아있을 수 있는 위젯 제거
+            for child in c.winfo_children():
+                child.destroy()
         except tk.TclError:
             return
+            
         fill = "#d0d0d0" if ctk.get_appearance_mode() == "Dark" else "#333333"
+        
         try:
+            # 1. 캔버스의 현재 크기 구하기 (정중앙 좌표 계산용)
+            # 만약 캔버스가 아직 그려지기 전(width=1)이면 대략적인 기본값을 주거나 
+            # 캔버스 너비의 절반인 c.winfo_width() / 2 를 사용합니다.
+            width = max(c.winfo_width(), 200)
+            height = max(c.winfo_height(), 200)
+            cx = width / 2
+            cy = height / 2
+            
+            # 2. CTkLabel 대신 순수 Canvas 텍스트 객체 생성
+            # 'text_msg'라는 태그를 부여하여 추후 관리가 쉽도록 합니다.
             c.create_text(
-                w // 2,
-                h // 2,
+                cx,
+                cy,
                 text=str(message),
-                justify=tk.CENTER,
                 font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
                 fill=fill,
-                width=max(120, w - 48),
+                justify="center",
+                anchor="center",
+                tags="text_msg",
             )
+            
+            # 3. 중요: 텍스트 레이어를 맨 아래(뒤)로 내리기
+            # 이렇게 하면 나중에 캔버스에 이미지를 그릴 때 텍스트를 덮어씌울 수 있습니다.
+            c.tag_lower("text_msg")
+        
+        except tk.TclError:
+            pass
+
+    def _recenter_canvas_text(self, event: tk.Event) -> None:
+        """창·패널 리사이즈 시 idle 안내 텍스트를 정중앙에 두고 이미지 뒤 레이어로 유지."""
+        c = event.widget
+        try:
+            if not c.find_withtag("text_msg"):
+                return
+            cx = max(event.width, 1) / 2
+            cy = max(event.height, 1) / 2
+            c.coords("text_msg", cx, cy)
+            c.tag_lower("text_msg")
         except tk.TclError:
             pass
 
