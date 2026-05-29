@@ -85,6 +85,7 @@ from src.metrics import (
     run_backtest_detailed,
 )
 from src.pullback_backtest import run_pullback_timeline_backtest
+from src.v3_scan_config import default_pullback_scan_params
 from src.utils.date_helper import resolve_overnight_scan_anchor
 from src.stock_screener import (
     EntryEventTrackPick,
@@ -395,8 +396,13 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
-        self.var_volume_burst_multiple = ctk.StringVar(value="1.5")
-        self.var_vol_shrink_limit = ctk.StringVar(value="0.7")
+        _scan_defaults = default_pullback_scan_params()
+        self.var_volume_burst_multiple = ctk.StringVar(
+            value=f"{_scan_defaults.volume_burst_multiple:g}"
+        )
+        self.var_vol_shrink_limit = ctk.StringVar(
+            value=f"{_scan_defaults.vol_shrink_limit:g}"
+        )
         self.var_keyword = ctk.StringVar(value="")
         self.var_cash = ctk.StringVar(value="5,000,000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)

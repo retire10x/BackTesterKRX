@@ -28,6 +28,7 @@ from src.stock_screener import default_screener_config, screen_universe, summary
 
 # v3.0 (Overnight Scalper)
 from src.utils.date_helper import resolve_overnight_scan_anchor
+from src.v3_scan_config import pullback_scan_params_from_mapping
 from src.v3_execution_engine import execute_v3_overnight_backtest
 from src.v3_metrics import run_v3_analytics
 from src.v3_signal_generator import generate_v3_overnight_signals
@@ -575,13 +576,13 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
 
     run_v3_analytics(traded_frames)
 
-    v3_cfg = cfg.get("v3_0") or {}
+    scan_p = pullback_scan_params_from_mapping(v3_cfg)
     parity = scan_leader_pullback_candidates_bulk(
         end_d,
         market=market,
         universe_limit=limit,
-        volume_burst_multiple=float(v3_cfg.get("volume_burst_multiple", 1.5)),
-        vol_shrink_limit=float(v3_cfg.get("vol_shrink_limit", 0.7)),
+        volume_burst_multiple=scan_p.volume_burst_multiple,
+        vol_shrink_limit=scan_p.vol_shrink_limit,
     )
     print("\n" + "=" * 52 + "\nv3.30 주도주 눌림목 스캐너 (CLI/GUI parity)\n" + "=" * 52)
     if parity.get("ok"):

@@ -60,23 +60,16 @@ def run_overnight_parity_check(
         f"policy={info.anchor_policy_reason}"
     )
 
-    v3_cfg = {}
-    try:
-        from src.data_loader import load_config
+    from src.v3_scan_config import default_pullback_scan_params
 
-        v3_cfg = load_config().get("v3_0") or {}
-    except Exception:
-        pass
-    burst = float(v3_cfg.get("volume_burst_multiple", 1.5))
-    shrink = float(v3_cfg.get("vol_shrink_limit", 0.7))
-
+    scan_p = default_pullback_scan_params()
     bulk = scan_leader_pullback_candidates_bulk(
         end_eff,
         market=market,
         universe_limit=lim,
+        volume_burst_multiple=scan_p.volume_burst_multiple,
+        vol_shrink_limit=scan_p.vol_shrink_limit,
         cancel_event=None,
-        volume_burst_multiple=burst,
-        vol_shrink_limit=shrink,
     )
     if not bulk.get("ok"):
         lines.append(f"[bulk] FAILED: {bulk.get('reason')}")

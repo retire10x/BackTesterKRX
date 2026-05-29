@@ -455,6 +455,52 @@ _V31_PYKRX_EN_TO_KO: dict[str, str] = {
 PULLBACK_SCAN_HISTORY_BDAY = 119  # t-119..t0 = 120영업일
 
 
+def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
+    """pykrx/래퍼에 따라 영문·소문영문 컬럼이 오는 경우까지 한글 정규화."""
+    x = df.copy()
+    low = {str(c).strip().lower(): c for c in x.columns}
+    for en, ko in _V31_PYKRX_EN_TO_KO.items():
+        if ko in x.columns:
+            continue
+        if en in low:
+            x = x.rename(columns={low[en]: ko})
+    titled = (
+        ("Open", "시가"),
+        ("High", "고가"),
+        ("Low", "저가"),
+        ("Close", "종가"),
+        ("Volume", "거래량"),
+        ("Amount", "거래대금"),
+    )
+    for c in list(x.columns):
+        cs = str(c).strip()
+        for tn, ko in titled:
+            if cs != tn:
+                continue
+            if ko not in x.columns:
+                x = x.rename(columns={c: ko})
+            break
+    return x
+
+
+def _prep_pykrx_bulk_ticker_day(df: pd.DataFrame) -> pd.DataFrame:
+    """일별 전종목 스냅샷 → ticker index, Open/High/Low/Close/Volume."""
+    x = _normalize_pykrx_columns_to_ko(df)
+    x.index = x.index.map(lambda v: str(v).zfill(6))
+    out = pd.DataFrame(index=x.index)
+    for ko, en in (
+        ("시가", "Open"),
+        ("고가", "High"),
+        ("저가", "Low"),
+        ("종가", "Close"),
+        ("거래량", "Volume"),
+        ("거래대금", "Amount"),
+    ):
+        if ko in x.columns:
+            out[en] = pd.to_numeric(x[ko], errors="coerce")
+    return out
+
+
 def kim_straight_trend_pass(
     close: pd.Series | np.ndarray,
     *,
@@ -492,8 +538,8 @@ def kim_straight_trend_pass(
 def qualifies_leader_pullback_from_ohlcv(
     df: pd.DataFrame,
     *,
-    volume_burst_multiple: float = 1.5,
-    vol_shrink_limit: float = 0.7,
+    volume_burst_multiple: float,
+    vol_shrink_limit: float,
 ) -> tuple[bool, float]:
     """
     단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 + v3.50 김직선 정배열 추세 필터.
@@ -546,11 +592,11 @@ def qualifies_leader_pullback_from_ohlcv(
 def scan_leader_pullback_candidates_bulk(
     end_date: str,
     *,
-    market: str = "KOSPI",
+    market: str,
+    universe_limit: int,
+    volume_burst_multiple: float,
+    vol_shrink_limit: float,
     cancel_event: threading.Event | None = None,
-    universe_limit: int | None = None,
-    volume_burst_multiple: float = 1.5,
-    vol_shrink_limit: float = 0.7,
 ) -> dict[str, object]:
     """
     v3.30 주도주 눌림목 벌크 스캐너.
@@ -580,15 +626,7 @@ def scan_leader_pullback_candidates_bulk(
 
     burst_mult = max(0.1, float(volume_burst_multiple))
     shrink_lim = max(0.01, float(vol_shrink_limit))
-
-    lim = universe_limit
-    if lim is None:
-        try:
-            vpart = load_config().get("v3_0") or {}
-            lim = int(vpart.get("universe_limit", 300))
-        except Exception:
-            lim = 300
-    lim = max(20, min(500, int(lim)))
+    lim = max(20, min(500, int(universe_limit)))
 
     if cancel_event is not None and cancel_event.is_set():
         return {"ok": False, "reason": "cancelled"}
@@ -599,64 +637,27 @@ def scan_leader_pullback_candidates_bulk(
     if len(bdays) < 120:
         return {"ok": False, "reason": "ohlcv_history_short"}
 
-    def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
-        """pykrx/래퍼에 따라 영문·소문영문 컬럼이 오는 경우까지 한글 정규화."""
-        x = df.copy()
-        low = {str(c).strip().lower(): c for c in x.columns}
-        for en, ko in _V31_PYKRX_EN_TO_KO.items():
-            if ko in x.columns:
-                continue
-            if en in low:
-                x = x.rename(columns={low[en]: ko})
-        titled = (
-            ("Open", "시가"),
-            ("High", "고가"),
-            ("Low", "저가"),
-            ("Close", "종가"),
-            ("Volume", "거래량"),
-            ("Amount", "거래대금"),
-        )
-        for c in list(x.columns):
-            cs = str(c).strip()
-            for tn, ko in titled:
-                if cs != tn:
-                    continue
-                if ko not in x.columns:
-                    x = x.rename(columns={c: ko})
-                break
-        return x
+    from src.market_ohlcv_bulk_cache import fetch_bulk_day_frames_cached
 
-    def _prep_day(df: pd.DataFrame) -> pd.DataFrame:
-        x = _normalize_pykrx_columns_to_ko(df)
-        x.index = x.index.map(lambda v: str(v).zfill(6))
-        out = pd.DataFrame(index=x.index)
-        for ko, en in (
-            ("시가", "Open"),
-            ("고가", "High"),
-            ("저가", "Low"),
-            ("종가", "Close"),
-            ("거래량", "Volume"),
-            ("거래대금", "Amount"),
-        ):
-            if ko in x.columns:
-                out[en] = pd.to_numeric(x[ko], errors="coerce")
-        return out
+    anchor_ymd = d_today.strftime("%Y%m%d")
 
-    day_frames: list[pd.DataFrame] = []
-    for d_ts in bdays:
+    def _fetch_raw(ymd: str) -> pd.DataFrame:
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            return pykrx_stock.get_market_ohlcv_by_ticker(ymd, market=m)
+
+    day_frames = fetch_bulk_day_frames_cached(
+        market=m,
+        bdays=bdays,
+        fetch_day_raw=_fetch_raw,
+        prep_day=_prep_pykrx_bulk_ticker_day,
+        cancel_event=cancel_event,
+        anchor_ymd=anchor_ymd,
+        refresh_anchor=True,
+    )
+    if day_frames is None:
         if cancel_event is not None and cancel_event.is_set():
             return {"ok": False, "reason": "cancelled"}
-        s_d = d_ts.strftime("%Y%m%d")
-        try:
-            with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-                raw = pykrx_stock.get_market_ohlcv_by_ticker(s_d, market=m)
-        except (TimeoutError, socket.timeout, OSError):
-            return {"ok": False, "reason": "timeout_bulk_ohlcv"}
-        except Exception:
-            return {"ok": False, "reason": "ohlcv_bulk_failed"}
-        if raw is None or getattr(raw, "empty", True):
-            return {"ok": False, "reason": "ohlcv_bulk_empty"}
-        day_frames.append(_prep_day(raw))
+        return {"ok": False, "reason": "ohlcv_bulk_failed"}
 
     common_idx = day_frames[0].index
     for fr in day_frames[1:]:
@@ -832,20 +833,20 @@ def scan_leader_pullback_candidates_bulk(
 def scan_v3_overnight_candidates_bulk(
     end_date: str,
     *,
-    market: str = "KOSPI",
+    market: str,
+    universe_limit: int,
+    volume_burst_multiple: float,
+    vol_shrink_limit: float,
     cancel_event: threading.Event | None = None,
-    universe_limit: int | None = None,
-    volume_burst_multiple: float = 1.5,
-    vol_shrink_limit: float = 0.7,
 ) -> dict[str, object]:
     """레거시 이름 — v3.30 `scan_leader_pullback_candidates_bulk` 로 위임."""
     return scan_leader_pullback_candidates_bulk(
         end_date,
         market=market,
-        cancel_event=cancel_event,
         universe_limit=universe_limit,
         volume_burst_multiple=volume_burst_multiple,
         vol_shrink_limit=vol_shrink_limit,
+        cancel_event=cancel_event,
     )
 
 
@@ -951,6 +952,66 @@ def load_v3_0_overnight_scalper_data(
                 tickers = tickers[:lim]
 
     out: list[tuple[str, pd.DataFrame]] = []
+    bulk_cache_ok = False
+    if source == "pykrx" and tickers and krx_ready:
+        try:
+            from pykrx import stock as pykrx_stock  # type: ignore
+            from src.market_ohlcv_bulk_cache import fetch_bulk_day_frames_cached
+
+            warm_ts = pd.Timestamp(warm_start).normalize()
+            ed_ts = pd.Timestamp(ed).normalize()
+            bdays_fb = pd.bdate_range(warm_ts, ed_ts)
+            anchor_ymd = ed_ts.strftime("%Y%m%d")
+
+            def _fetch_raw_fb(ymd: str) -> pd.DataFrame:
+                with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+                    return pykrx_stock.get_market_ohlcv_by_ticker(ymd, market=m)
+
+            day_frames_fb = fetch_bulk_day_frames_cached(
+                market=m,
+                bdays=bdays_fb,
+                fetch_day_raw=_fetch_raw_fb,
+                prep_day=_prep_pykrx_bulk_ticker_day,
+                anchor_ymd=anchor_ymd,
+                refresh_anchor=True,
+            )
+            if day_frames_fb:
+                sd_ts = pd.Timestamp(sd)
+                ed_ts_clip = ed_ts
+                for ticker in tickers:
+                    code6 = str(ticker).strip().zfill(6)
+                    rows: list[dict] = []
+                    for d_ts, fr in zip(bdays_fb, day_frames_fb):
+                        if code6 not in fr.index:
+                            continue
+                        r = fr.loc[code6]
+                        rows.append(
+                            {
+                                "Date": pd.Timestamp(d_ts).normalize(),
+                                "Open": float(r.get("Open", float("nan"))),
+                                "High": float(r.get("High", float("nan"))),
+                                "Low": float(r.get("Low", float("nan"))),
+                                "Close": float(r.get("Close", float("nan"))),
+                                "Volume": float(r.get("Volume", float("nan"))),
+                            }
+                        )
+                    if len(rows) < 3:
+                        continue
+                    df = pd.DataFrame(rows).set_index("Date").sort_index()
+                    df = df.loc[
+                        (df.index >= sd_ts) & (df.index <= ed_ts_clip)
+                    ].copy()
+                    if len(df) < 3:
+                        continue
+                    df.attrs["v3_source"] = "pykrx_bulk_cache"
+                    out.append((code6, df))
+                bulk_cache_ok = bool(out)
+        except Exception:
+            bulk_cache_ok = False
+
+    if bulk_cache_ok:
+        return out
+
     for ticker in tickers:
         if source == "pykrx":
             try:

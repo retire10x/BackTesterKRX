@@ -346,12 +346,11 @@ def load_last_gui_session(ui: "BacktestGUI") -> bool:
         except (ValueError, tk.TclError, AttributeError):
             pass
 
-    burst = str(data.get("volume_burst_multiple") or "").strip()
-    if burst:
-        ui.var_volume_burst_multiple.set(burst)
-    shrink = str(data.get("vol_shrink_limit") or "").strip()
-    if shrink:
-        ui.var_vol_shrink_limit.set(shrink)
+    from src.v3_scan_config import pullback_scan_params_from_mapping
+
+    merged = pullback_scan_params_from_mapping(data)
+    ui.var_volume_burst_multiple.set(f"{merged.volume_burst_multiple:g}")
+    ui.var_vol_shrink_limit.set(f"{merged.vol_shrink_limit:g}")
     return True
 
 TooltipTextFn = str | Callable[[], str]

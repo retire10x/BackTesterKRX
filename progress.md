@@ -43,6 +43,8 @@
 - [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
 - [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
 - [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
+- [x] **v3.70** 스캔 파라미터 SSOT(`src/v3_scan_config.py`·`settings.yaml` v3_0만 fallback)·엔진 함수 기본값 제거·GUI→엔진 DI·`last_session.json` 종료 저장/시작 복원
+- [x] **v3.70** pykrx 일별 전종목 벌크 OHLCV 로컬 캐시(`data/cache/ohlcv_by_ticker/*.pkl`)·앵커일만 재조회·폴백 스캔도 캐시 조립
 - [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
 - [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
 - [x] **v3.45** UI 폴리싱: 차트 패널 구분선 제거·캔버스 중앙 정렬·맑은 고딕 통일·리스트 10pt·날짜 폭 확대·원금/매도 1행·이력 높이 확장

@@ -74,6 +74,6 @@ portfolio:
 v3_0:
   universe_limit: 300
   volume_burst_multiple: 1.5
-  vol_shrink_limit: 0.7
+  vol_shrink_limit: 0.8
   # v3.50 김직선 정배열 추세 필터(종가>MA120 · MA5≥MA10) — 스캔·백테스트 공통 적용
   kim_trend_filter: true

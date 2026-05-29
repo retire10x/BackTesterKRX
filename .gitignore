@@ -26,5 +26,14 @@ build/
 
 # 백테스트 생성 그래프·산출물
 output/
+
+# pykrx 벌크 OHLCV 로컬 캐시(재생성 가능, .gitkeep 만 추적)
+data/cache/**
+!data/cache/**/
+!data/cache/**/.gitkeep
+
+# GUI 마지막 세션(로컬)
+config/last_session.json
+
 backtest_signal_debug.txt
 
