@@ -260,11 +260,13 @@ def _screener_gui_item_to_code_name_score(item: object) -> tuple[str, str, float
 # ==========================================
 # [최상단 전역 변수 설정 구역] - 완벽히 정돈됨
 # ==========================================
-# 좌측 최소 가로폭. 우측·차트는 창 크기에 맞춰 가변; 차트 타깃은 `CHART_IMG_*` 및 `chart_overlay_host` 실측.
-FIXED_LEFT_W = 278
+# v3.65: 좌측 패널 슬림 고정폭(기존 278px 대비 ~28% 축소)
+FIXED_LEFT_W = 240
+LEFT_PANEL_PAD_X = 2
+LEFT_PANEL_PAD_Y = 2
 
-# 날짜(DateEntry) 열 목표 픽셀 폭 — 가상 원금 열과 균형
-DATE_GRID_MIN_W = 112
+# 날짜(DateEntry) 열 목표 픽셀 폭
+DATE_GRID_MIN_W = 88
 
 # 차트 패널: 영업일 기준(±7, ±1) 기간 평행 이동 시 라벨·자동 재실행과 연계
 # 차트 이미지 위 좌·우 클릭 영역 (px, place)
@@ -339,7 +341,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.60 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v3.65 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -411,45 +413,32 @@ class BacktestGUI(ctk.CTk):
         self.grid_rowconfigure(1, weight=0)
 
         left = ctk.CTkFrame(
-            self, corner_radius=10, width=FIXED_LEFT_W
+            self, corner_radius=4, width=FIXED_LEFT_W, border_width=1
         )
         left.grid(
-            row=0, column=0, sticky="nw", padx=(8, 4), pady=(8, 8)
-        )  # 좌측: 고정 최소폭만 유지하고 세로는 내용 기준 (저해상도 대응)
-        left.grid_propagate(True)
-
-        row_scan_params = ctk.CTkFrame(left, fg_color="transparent")
-        row_scan_params.pack(fill="x", padx=14, pady=(12, 4))
-
-        sf_market = ctk.CTkFrame(row_scan_params, fg_color="transparent")
-        sf_market.pack(side="left", padx=(0, 6))
-        ctk.CTkLabel(sf_market, text="시장", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
-        self.var_market = ctk.StringVar(value="KOSPI")
-        ctk.CTkOptionMenu(
-            sf_market,
-            values=["KOSPI", "KOSDAQ", "ETF"],
-            variable=self.var_market,
-            width=72,
-            font=gui_body_font(),
-        ).pack(anchor="w")
-
-        sf_univ = ctk.CTkFrame(row_scan_params, fg_color="transparent")
-        sf_univ.pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(sf_univ, text="유니버스", font=gui_body_font()).pack(
-            anchor="w", pady=(0, 2)
+            row=0, column=0, sticky="nsw", padx=(4, 2), pady=(6, 6)
         )
-        self.combo_universe = ctk.CTkComboBox(
-            sf_univ,
-            values=list(UNIVERSE_LIMIT_OPTIONS),
-            width=56,
-            font=gui_body_font(),
-        )
-        self.combo_universe.set("300")
-        self.combo_universe.pack(anchor="w")
+        left.grid_propagate(False)
 
-        d0 = ctk.CTkFrame(row_scan_params, fg_color="transparent")
-        d0.pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(d0, text="시작일", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        scan_params_block = ctk.CTkFrame(left, fg_color="transparent")
+        scan_params_block.pack(
+            fill="x", padx=LEFT_PANEL_PAD_X, pady=(LEFT_PANEL_PAD_Y, 2)
+        )
+
+        row_params_dates = ctk.CTkFrame(scan_params_block, fg_color="transparent")
+        row_params_dates.pack(fill="x", pady=(0, 2))
+
+        # 시작일
+        d0 = ctk.CTkFrame(row_params_dates, fg_color="transparent")
+        d0.pack(side="left", padx=(0, 12)) # 종료 패널과의 간격을 위해 우측 padx를 12로 확보
+        # side="left" 구조에서 expand=True를 주면 프레임의 전체 높이를 꽉 채운 후, 
+        # anchor="center"를 통해 정확히 세로 중앙에 글자를 배치합니다.
+        ctk.CTkLabel(d0, text="시작", font=gui_body_font()).pack(
+            side="left", 
+            padx=(0, 6), 
+            expand=True, 
+            anchor="center"
+        )
         self._date_start = DateEntry(
             d0,
             width=GUI_DATE_ENTRY_WIDTH,
@@ -459,11 +448,19 @@ class BacktestGUI(ctk.CTk):
         )
         _ds, _de = default_backtest_period_range()
         self._date_start.set_date(_ds)
-        self._date_start.pack(anchor="w")
+        # DateEntry도 프레임 내에서 세로 중앙 정렬되도록 expand와 anchor를 맞춰줍니다.
+        self._date_start.pack(side="left", expand=True, anchor="center")
 
-        d1 = ctk.CTkFrame(row_scan_params, fg_color="transparent")
-        d1.pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(d1, text="종료일", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        # 종료일
+        d1 = ctk.CTkFrame(row_params_dates, fg_color="transparent")
+        d1.pack(side="left")
+        # 종료 라벨도 세로 중앙 정렬 강제
+        ctk.CTkLabel(d1, text="종료", font=gui_body_font()).pack(
+            side="left", 
+            padx=(0, 6), 
+            expand=True, 
+            anchor="center"
+        )
         self._date_end = DateEntry(
             d1,
             width=GUI_DATE_ENTRY_WIDTH,
@@ -472,32 +469,64 @@ class BacktestGUI(ctk.CTk):
             **date_entry_theme_kw(),
         )
         self._date_end.set_date(_de)
-        self._date_end.pack(anchor="w")
+        # DateEntry 세로 중앙 정렬 강제
+        self._date_end.pack(side="left", expand=True, anchor="center")
 
-        f_burst = ctk.CTkFrame(row_scan_params, fg_color="transparent")
-        f_burst.pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(f_burst, text="세력 배수", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
-        ctk.CTkEntry(
-            f_burst,
-            textvariable=self.var_volume_burst_multiple,
-            width=52,
-            height=28,
+        row_params_row2 = ctk.CTkFrame(scan_params_block, fg_color="transparent")
+        row_params_row2.pack(fill="x")
+
+        sf_market = ctk.CTkFrame(row_params_row2, fg_color="transparent")
+        sf_market.pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(sf_market, text="시장", font=gui_body_font()).pack(anchor="w", pady=(0, 1))
+        self.var_market = ctk.StringVar(value="KOSPI")
+        ctk.CTkOptionMenu(
+            sf_market,
+            values=["KOSPI", "KOSDAQ", "ETF"],
+            variable=self.var_market,
+            width=90,
+            height=26,
             font=gui_body_font(),
         ).pack(anchor="w")
 
-        f_shrink = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        sf_univ = ctk.CTkFrame(row_params_row2, fg_color="transparent")
+        sf_univ.pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(sf_univ, text="유니버스", font=gui_body_font()).pack(
+            anchor="w", pady=(0, 1)
+        )
+        self.combo_universe = ctk.CTkComboBox(
+            sf_univ,
+            values=list(UNIVERSE_LIMIT_OPTIONS),
+            width=80,
+            height=26,
+            font=gui_body_font(),
+        )
+        self.combo_universe.set("300")
+        self.combo_universe.pack(anchor="w")
+
+        f_burst = ctk.CTkFrame(row_params_row2, fg_color="transparent")
+        f_burst.pack(side="left", padx=(0, 3))
+        ctk.CTkLabel(f_burst, text="세력", font=gui_body_font()).pack(anchor="w", pady=(0, 1))
+        ctk.CTkEntry(
+            f_burst,
+            textvariable=self.var_volume_burst_multiple,
+            width=40,
+            height=26,
+            font=gui_body_font(),
+        ).pack(anchor="w")
+
+        f_shrink = ctk.CTkFrame(row_params_row2, fg_color="transparent")
         f_shrink.pack(side="left")
-        ctk.CTkLabel(f_shrink, text="눌림 비율", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        ctk.CTkLabel(f_shrink, text="눌림", font=gui_body_font()).pack(anchor="w", pady=(0, 1))
         ctk.CTkEntry(
             f_shrink,
             textvariable=self.var_vol_shrink_limit,
-            width=52,
-            height=28,
+            width=40,
+            height=26,
             font=gui_body_font(),
         ).pack(anchor="w")
 
         row_mode = ctk.CTkFrame(left, fg_color="transparent")
-        row_mode.pack(fill="x", padx=14, pady=(4, 4))
+        row_mode.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(2, 2))
         ctk.CTkLabel(
             row_mode,
             text="🔥 주도주 눌림목 리스트",
@@ -505,7 +534,7 @@ class BacktestGUI(ctk.CTk):
         ).pack(anchor="w", pady=(0, 2))
 
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
-        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 4))
+        list_frame.pack(fill="both", expand=True, padx=LEFT_PANEL_PAD_X, pady=(0, 2))
         self.list_codes = tk.Listbox(
             list_frame,
             height=7,
@@ -523,7 +552,7 @@ class BacktestGUI(ctk.CTk):
         self.list_codes.bind("<Double-Button-1>", self._on_search_list_dbl_click)
 
         row_scan_btns = ctk.CTkFrame(left, fg_color="transparent")
-        row_scan_btns.pack(fill="x", padx=14, pady=(0, 6))
+        row_scan_btns.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(0, 4))
         row_scan_btns.grid_columnconfigure(0, weight=1)
         row_scan_btns.grid_columnconfigure(1, weight=1)
         self.btn_run = ctk.CTkButton(
@@ -533,7 +562,7 @@ class BacktestGUI(ctk.CTk):
             font=gui_action_btn_font(),
             command=self._on_search,
         )
-        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self.btn_scan_cancel = ctk.CTkButton(
             row_scan_btns,
             text="🔴 스캔 중단",
@@ -544,10 +573,10 @@ class BacktestGUI(ctk.CTk):
             command=self._on_scan_cancel,
             state="disabled",
         )
-        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
-        hist_block.pack(fill="x", padx=14, pady=(0, 6))
+        hist_block.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(0, 4))
 
         hist_toolbar = ctk.CTkFrame(hist_block, fg_color="transparent")
         hist_toolbar.pack(fill="x", pady=(0, 4))
@@ -584,17 +613,17 @@ class BacktestGUI(ctk.CTk):
         hsb.pack(side="right", fill="y")
         self.list_history.bind("<Double-Button-1>", self._on_history_list_dbl_click)
 
-        backtest_panel = ctk.CTkFrame(left, corner_radius=8, border_width=1)
-        backtest_panel.pack(fill="x", padx=12, pady=(4, 10))
+        backtest_panel = ctk.CTkFrame(left, corner_radius=2, border_width=1)
+        backtest_panel.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(2, 4))
 
         ctk.CTkLabel(
             backtest_panel,
             text="⚙️ 단일 종목 백테스트",
             font=gui_body_font(),
-        ).pack(anchor="w", padx=10, pady=(8, 4))
+        ).pack(anchor="w", padx=2, pady=(4, 2))
 
         row_bt_btns = ctk.CTkFrame(backtest_panel, fg_color="transparent")
-        row_bt_btns.pack(fill="x", padx=10, pady=(0, 6))
+        row_bt_btns.pack(fill="x", padx=2, pady=(0, 3))
         row_bt_btns.grid_columnconfigure(0, weight=1)
         row_bt_btns.grid_columnconfigure(1, weight=1)
         self.btn_pullback_backtest = ctk.CTkButton(
@@ -604,7 +633,7 @@ class BacktestGUI(ctk.CTk):
             font=gui_action_btn_font(),
             command=self._on_pullback_backtest,
         )
-        self.btn_pullback_backtest.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_pullback_backtest.grid(row=0, column=0, sticky="ew", padx=(0, 3))
         self.btn_backtest_cancel = ctk.CTkButton(
             row_bt_btns,
             text="⏹️ 테스트 중단",
@@ -615,34 +644,29 @@ class BacktestGUI(ctk.CTk):
             command=self._on_backtest_cancel,
             state="disabled",
         )
-        self.btn_backtest_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.btn_backtest_cancel.grid(row=0, column=1, sticky="ew", padx=(3, 0))
 
         row_bt_fields = ctk.CTkFrame(backtest_panel, fg_color="transparent")
-        row_bt_fields.pack(fill="x", padx=10, pady=(0, 4))
-        row_bt_fields.grid_columnconfigure(0, weight=1)
-        row_bt_fields.grid_columnconfigure(1, weight=1)
+        row_bt_fields.pack(fill="x", padx=2, pady=(0, 2))
 
-        fcash = ctk.CTkFrame(row_bt_fields, fg_color="transparent")
-        fcash.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ctk.CTkLabel(fcash, text="가상 원금", font=gui_body_font()).pack(
-            anchor="w", pady=(0, 2)
+        ctk.CTkLabel(row_bt_fields, text="가상원금", font=gui_body_font()).pack(
+            side="left", padx=(0, 2)
         )
         self.entry_cash_bt = ctk.CTkEntry(
-            fcash,
+            row_bt_fields,
             textvariable=self.var_cash,
-            height=28,
+            width=82,
+            height=26,
             font=gui_body_font(),
         )
-        self.entry_cash_bt.pack(fill="x")
+        self.entry_cash_bt.pack(side="left", padx=(0, 6))
         self.var_cash.trace_add("write", self._on_cash_format_trace)
 
-        fsell = ctk.CTkFrame(row_bt_fields, fg_color="transparent")
-        fsell.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(fsell, text="매도 시점", font=gui_body_font()).pack(
-            anchor="w", pady=(0, 2)
+        ctk.CTkLabel(row_bt_fields, text="매도시점", font=gui_body_font()).pack(
+            side="left", padx=(0, 2)
         )
         self.combo_sell_timing = ctk.CTkComboBox(
-            fsell,
+            row_bt_fields,
             values=[
                 "0분(시가)",
                 "5분 후",
@@ -650,41 +674,36 @@ class BacktestGUI(ctk.CTk):
                 "30분 후",
                 "1시간 후",
             ],
+            width=88,
+            height=26,
             font=gui_body_font(),
         )
         self.combo_sell_timing.set("0분(시가)")
-        self.combo_sell_timing.pack(fill="x")
-
-        row_bt_hints = ctk.CTkFrame(backtest_panel, fg_color="transparent")
-        row_bt_hints.pack(fill="x", padx=10, pady=(0, 4))
-        _hint_color = ("gray55", "gray60")
-        ctk.CTkLabel(
-            row_bt_hints,
-            text="※ 매수·매도 수수료는 0.015% / 0.20% 고정 적용",
-            font=gui_hint_font(),
-            text_color=_hint_color,
-            anchor="w",
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            row_bt_hints,
-            text="※ 매도 시점 변경 기능은 향후 1분봉 데이터 파이프라인 도입 후 활성화됩니다.",
-            font=gui_hint_font(),
-            text_color=_hint_color,
-            anchor="w",
-        ).pack(anchor="w")
+        self.combo_sell_timing.pack(side="left")
 
         self.txt_backtest_report = ctk.CTkTextbox(
             backtest_panel,
-            height=120,
+            height=110,
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_LIST_FONT_SIZE),
             wrap="word",
+            border_width=1,
         )
-        self.txt_backtest_report.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.txt_backtest_report.pack(fill="both", expand=True, padx=2, pady=(2, 2))
         self.txt_backtest_report.insert(
             "1.0",
             "차트에 종목을 연 뒤 [🚀 백테스트]로 눌림목 타임라인 검증을 실행하세요.",
         )
         self.txt_backtest_report.configure(state="disabled")
+
+        _hint_color = ("gray55", "gray60")
+        ctk.CTkLabel(
+            backtest_panel,
+            text="※ 수수료 고정(0.015%/0.20%) | 매도 시점은 추후 1분봉 도입 후 활성화",
+            font=gui_hint_font(),
+            text_color=_hint_color,
+            anchor="w",
+            wraplength=FIXED_LEFT_W - 8,
+        ).pack(anchor="w", padx=2, pady=(0, 4))
 
         self.var_filter_trend = ctk.BooleanVar(value=False)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
