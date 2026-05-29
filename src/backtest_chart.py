@@ -47,7 +47,7 @@ def _korean_font_rc() -> dict:
     from matplotlib import font_manager
 
     installed = {f.name for f in font_manager.fontManager.ttflist}
-    for name in ("Malgun Gothic", "AppleGothic", "NanumGothic", "Nanum Gothic"):
+    for name in ("Malgun Gothic", "Pretendard", "AppleGothic", "NanumGothic", "Nanum Gothic"):
         if name in installed:
             return {
                 "font.sans-serif": [name],
@@ -532,6 +532,17 @@ def _apply_chart_xaxis_price_panel_dates(
         )
 
 
+def _hide_price_volume_panel_border(ax_price, ax_vol) -> None:
+    """가격·거래량 패널 사이 물리 테두리(spine) 제거."""
+    if ax_price is None or ax_vol is None:
+        return
+    try:
+        ax_price.spines["bottom"].set_visible(False)
+        ax_vol.spines["top"].set_visible(False)
+    except (KeyError, AttributeError):
+        pass
+
+
 def _draw_price_volume_panel_divider(fig: Figure, ax_price, ax_vol) -> None:
     """가격·거래량 패널 경계에 figure 좌표 수평 구분선."""
     if ax_price is None or ax_vol is None:
@@ -749,7 +760,7 @@ def make_backtest_figure(
         ylabel="",
         ylabel_lower="",
     )
-    panel_gap = 0.042 if show_volume else 0.028
+    panel_gap = 0.028 if show_volume else 0.028
     _expand_mpf_vertical_panel_gaps(fig, gap_each=panel_gap)
 
     primary_axes = _mplfinance_primary_axes(axlist)
@@ -765,7 +776,7 @@ def make_backtest_figure(
     _share_x_axes(fig, ax_price)
     _apply_chart_xaxis_price_panel_dates(fig, idx, ax_price, ax_vol if show_volume else None)
     if show_volume:
-        _draw_price_volume_panel_divider(fig, ax_price, ax_vol)
+        _hide_price_volume_panel_border(ax_price, ax_vol)
     n_skip_tm = _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
     setattr(fig, FIG_ATTR_PRICE_PANEL_XDATE, True)

@@ -41,6 +41,7 @@ from src.data_loader import (
     load_ohlcv_for_chart,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
+    PULLBACK_SCAN_HISTORY_BDAY,
     qualifies_leader_pullback_from_ohlcv,
     scan_leader_pullback_candidates_bulk,
 )
@@ -60,6 +61,10 @@ from src.gui_helpers import (
     try_build_config,
     GUI_FONT_FAMILY,
     GUI_FONT_SIZE,
+    GUI_DATE_ENTRY_WIDTH,
+    GUI_LIST_FONT_SIZE,
+    gui_hint_font,
+    gui_list_font_tuple,
 )
 from src.backtest_constants import (
     CHART_MA_TOGGLE_PERIODS,
@@ -74,6 +79,7 @@ from src.metrics import (
     prepare_chart_trend_ma,
     run_backtest_detailed,
 )
+from src.pullback_backtest import run_pullback_timeline_backtest
 from src.utils.date_helper import resolve_overnight_scan_anchor
 from src.stock_screener import (
     EntryEventTrackPick,
@@ -261,8 +267,8 @@ CHART_NAV_STRIP_W = 50
 DATE_CLAMP_MIN = date(1990, 1, 1)
 
 # 차트 contain 타깃: 프레임 실측에서 여유를 크게 차감(저해상도·우측/하단축 미세 클립 방지)
-CHART_IMG_INNER_MARGIN_X = 20
-CHART_IMG_INNER_MARGIN_Y = 40
+CHART_IMG_INNER_MARGIN_X = 0
+CHART_IMG_INNER_MARGIN_Y = 0
 CHART_IMG_MIN_FW = 300
 CHART_IMG_MIN_FH = 200
 
@@ -315,7 +321,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.30 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v3.45 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -324,6 +330,9 @@ class BacktestGUI(ctk.CTk):
         self._busy = False
         self._scan_cancel_event = threading.Event()
         self._scan_thread: LeaderPullbackScanWorker | None = None
+        self._backtest_busy = False
+        self._backtest_cancel_event = threading.Event()
+        self._cash_format_guard = False
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
@@ -364,7 +373,8 @@ class BacktestGUI(ctk.CTk):
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
         self.var_volume_burst_multiple = ctk.StringVar(value="3.0")
         self.var_vol_shrink_limit = ctk.StringVar(value="0.5")
-        self.var_cash = ctk.StringVar(value="5000000")
+        self.var_keyword = ctk.StringVar(value="")
+        self.var_cash = ctk.StringVar(value="5,000,000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
         self.var_pf_buy_rules = ctk.BooleanVar(value=False)
         self.var_pf_kim_candle = ctk.BooleanVar(value=False)
@@ -386,46 +396,72 @@ class BacktestGUI(ctk.CTk):
         )  # 좌측: 고정 최소폭만 유지하고 세로는 내용 기준 (저해상도 대응)
         left.grid_propagate(True)
 
-        row_search = ctk.CTkFrame(left, fg_color="transparent")
-        row_search.pack(fill="x", padx=14, pady=(12, 6))
-        row_search.grid_columnconfigure(0, weight=0)
-        row_search.grid_columnconfigure(1, weight=1)
+        row_scan_params = ctk.CTkFrame(left, fg_color="transparent")
+        row_scan_params.pack(fill="x", padx=14, pady=(12, 4))
 
-        sf_market = ctk.CTkFrame(row_search, fg_color="transparent")
-        sf_market.grid(row=0, column=0, sticky="nw", padx=(0, 6))
+        sf_market = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        sf_market.pack(side="left", padx=(0, 6))
         ctk.CTkLabel(sf_market, text="시장", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
         self.var_market = ctk.StringVar(value="KOSPI")
         ctk.CTkOptionMenu(
             sf_market,
             values=["KOSPI", "KOSDAQ", "ETF"],
             variable=self.var_market,
-            width=86,
+            width=72,
             font=gui_body_font(),
         ).pack(anchor="w")
 
-        sf_kw = ctk.CTkFrame(row_search, fg_color="transparent")
-        sf_kw.grid(row=0, column=1, sticky="nsew")
-        ctk.CTkLabel(sf_kw, text="종목", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
-        self.var_keyword = ctk.StringVar(value="")
-        self.entry_keyword = ctk.CTkEntry(
-            sf_kw, textvariable=self.var_keyword, height=28, font=gui_body_font()
+        d0 = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        d0.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(d0, text="시작일", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        self._date_start = DateEntry(
+            d0,
+            width=GUI_DATE_ENTRY_WIDTH,
+            date_pattern="yyyy-mm-dd",
+            font=(GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE),
+            **date_entry_theme_kw(),
         )
-        self.entry_keyword.pack(fill="x", expand=True)
-        self.entry_keyword.configure(state="disabled")
+        _ds, _de = default_backtest_period_range()
+        self._date_start.set_date(_ds)
+        self._date_start.pack(anchor="w")
 
-        self.btn_search = ctk.CTkButton(
-            row_search,
-            text="검색 (스캔 실행)",
+        d1 = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        d1.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(d1, text="종료일", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        self._date_end = DateEntry(
+            d1,
+            width=GUI_DATE_ENTRY_WIDTH,
+            date_pattern="yyyy-mm-dd",
+            font=(GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE),
+            **date_entry_theme_kw(),
+        )
+        self._date_end.set_date(_de)
+        self._date_end.pack(anchor="w")
+
+        f_burst = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        f_burst.pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(f_burst, text="세력 배수", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        ctk.CTkEntry(
+            f_burst,
+            textvariable=self.var_volume_burst_multiple,
+            width=52,
             height=28,
             font=gui_body_font(),
-            command=self._on_search,
-        )
-        self.btn_search.grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(5, 10)
-        )
+        ).pack(anchor="w")
+
+        f_shrink = ctk.CTkFrame(row_scan_params, fg_color="transparent")
+        f_shrink.pack(side="left")
+        ctk.CTkLabel(f_shrink, text="눌림 비율", font=gui_body_font()).pack(anchor="w", pady=(0, 2))
+        ctk.CTkEntry(
+            f_shrink,
+            textvariable=self.var_vol_shrink_limit,
+            width=52,
+            height=28,
+            font=gui_body_font(),
+        ).pack(anchor="w")
 
         row_mode = ctk.CTkFrame(left, fg_color="transparent")
-        row_mode.pack(fill="x", padx=14, pady=(4, 6))
+        row_mode.pack(fill="x", padx=14, pady=(4, 4))
         ctk.CTkLabel(
             row_mode,
             text="🔥 주도주 눌림목 리스트",
@@ -433,11 +469,11 @@ class BacktestGUI(ctk.CTk):
         ).pack(anchor="w", pady=(0, 2))
 
         list_frame = ctk.CTkFrame(left, fg_color="transparent")
-        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 8))
+        list_frame.pack(fill="both", expand=True, padx=14, pady=(0, 4))
         self.list_codes = tk.Listbox(
             list_frame,
             height=7,
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            font=gui_list_font_tuple(),
             selectmode=tk.SINGLE,
             activestyle="dotbox",
             exportselection=False,
@@ -450,116 +486,44 @@ class BacktestGUI(ctk.CTk):
         sb.pack(side="right", fill="y")
         self.list_codes.bind("<Double-Button-1>", self._on_search_list_dbl_click)
 
-        row_dt = ctk.CTkFrame(left, fg_color="transparent")
-        row_dt.pack(fill="x", padx=14, pady=(0, 6))
-        row_dt.grid_columnconfigure(0, weight=0, minsize=DATE_GRID_MIN_W)
-        row_dt.grid_columnconfigure(1, weight=0, minsize=DATE_GRID_MIN_W)
-        row_dt.grid_columnconfigure(2, weight=1)
-        d0 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d0.grid(row=0, column=0, sticky="nw", padx=(0, 6))
-        d1 = ctk.CTkFrame(row_dt, fg_color="transparent")
-        d1.grid(row=0, column=1, sticky="nw", padx=(0, 6))
-        fx_cash = ctk.CTkFrame(row_dt, fg_color="transparent")
-        fx_cash.grid(row=0, column=2, sticky="nsew")
-
-        ctk.CTkLabel(d0, text="시작일", font=gui_body_font()).pack(
-            anchor="w", pady=(0, 2)
-        )
-        self._date_start = DateEntry(
-            d0,
-            width=10,
-            date_pattern="yyyy-mm-dd",
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE - 1),
-            **date_entry_theme_kw(),
-        )
-        _ds, _de = default_backtest_period_range()
-        self._date_start.set_date(_ds)
-        self._date_start.pack(anchor="w")
-        ctk.CTkLabel(d1, text="종료일", font=gui_body_font()).pack(
-            anchor="w", pady=(0, 2)
-        )
-        self._date_end = DateEntry(
-            d1,
-            width=10,
-            date_pattern="yyyy-mm-dd",
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE - 1),
-            **date_entry_theme_kw(),
-        )
-        self._date_end.set_date(_de)
-        self._date_end.pack(anchor="w")
-
-        ctk.CTkLabel(fx_cash, text="가상 원금", font=gui_body_font()).pack(anchor="w")
-        ctk.CTkEntry(
-            fx_cash,
-            textvariable=self.var_cash,
-            height=28,
+        row_scan_btns = ctk.CTkFrame(left, fg_color="transparent")
+        row_scan_btns.pack(fill="x", padx=14, pady=(0, 6))
+        row_scan_btns.grid_columnconfigure(0, weight=1)
+        row_scan_btns.grid_columnconfigure(1, weight=1)
+        self.btn_run = ctk.CTkButton(
+            row_scan_btns,
+            text="🔵 스캔",
+            height=36,
             font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0), expand=True)
-
-        row_fee = ctk.CTkFrame(left, fg_color="transparent")
-        row_fee.pack(fill="x", padx=14, pady=(0, 6))
-        row_fee.grid_columnconfigure(0, weight=1)
-        row_fee.grid_columnconfigure(1, weight=1)
-        fbuy = ctk.CTkFrame(row_fee, fg_color="transparent")
-        fbuy.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        fsell = ctk.CTkFrame(row_fee, fg_color="transparent")
-        fsell.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(fbuy, text="매수 수수료(%)", font=gui_body_font()).pack(anchor="w")
-        ctk.CTkEntry(
-            fbuy,
-            textvariable=self.var_buy_fee_pct,
-            height=28,
-            font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(fsell, text="매도 수수료(세금 포함 %)", font=gui_body_font()).pack(
-            anchor="w"
+            command=self._on_search,
         )
-        self.entry_sell_fee = ctk.CTkEntry(
-            fsell,
-            textvariable=self.var_sell_fee_pct,
-            height=28,
+        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_scan_cancel = ctk.CTkButton(
+            row_scan_btns,
+            text="🔴 스캔 중단",
+            height=36,
             font=gui_body_font(),
+            fg_color=("#d32f2f", "#9a1f1f"),
+            hover_color=("#b71c1c", "#7f1a1a"),
+            command=self._on_scan_cancel,
+            state="disabled",
         )
-        self.entry_sell_fee.pack(fill="x", pady=(2, 0))
-        self.entry_sell_fee.configure(state="disabled")
-
-        row_pullback = ctk.CTkFrame(left, fg_color="transparent")
-        row_pullback.pack(fill="x", padx=14, pady=(0, 6))
-        row_pullback.grid_columnconfigure(0, weight=1)
-        row_pullback.grid_columnconfigure(1, weight=1)
-        f_burst = ctk.CTkFrame(row_pullback, fg_color="transparent")
-        f_burst.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        f_shrink = ctk.CTkFrame(row_pullback, fg_color="transparent")
-        f_shrink.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        ctk.CTkLabel(f_burst, text="세력 개입 배수", font=gui_body_font()).pack(anchor="w")
-        ctk.CTkEntry(
-            f_burst,
-            textvariable=self.var_volume_burst_multiple,
-            height=28,
-            font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0))
-        ctk.CTkLabel(f_shrink, text="눌림 거래량 비율", font=gui_body_font()).pack(anchor="w")
-        ctk.CTkEntry(
-            f_shrink,
-            textvariable=self.var_vol_shrink_limit,
-            height=28,
-            font=gui_body_font(),
-        ).pack(fill="x", pady=(2, 0))
+        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
 
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
-        hist_block.pack(fill="x", padx=14, pady=(4, 6))
+        hist_block.pack(fill="x", padx=14, pady=(0, 6))
 
         hist_toolbar = ctk.CTkFrame(hist_block, fg_color="transparent")
         hist_toolbar.pack(fill="x", pady=(0, 4))
         ctk.CTkLabel(
             hist_toolbar,
-            text=f"최근 이력(FIFO {BACKTEST_HISTORY_MAX})",
+            text=f"📂 최근 이력 (FIFO {BACKTEST_HISTORY_MAX})",
             font=gui_body_font(),
         ).pack(side="left", anchor="w")
         self.btn_history_del = ctk.CTkButton(
             hist_toolbar,
-            text="삭제",
-            width=44,
+            text="🗑️ 이력 삭제",
+            width=88,
             height=28,
             font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 1),
             command=self._on_history_delete,
@@ -568,11 +532,10 @@ class BacktestGUI(ctk.CTk):
 
         hist_list_frame = ctk.CTkFrame(hist_block, fg_color="transparent")
         hist_list_frame.pack(fill="x")
-        # 검색 결과 `list_codes` 와 동일 스펙(행 수·폰트·선택 모드·스크롤)
         self.list_history = tk.Listbox(
             hist_list_frame,
-            height=7,
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            height=9,
+            font=gui_list_font_tuple(),
             selectmode=tk.SINGLE,
             activestyle="dotbox",
             exportselection=False,
@@ -585,29 +548,107 @@ class BacktestGUI(ctk.CTk):
         hsb.pack(side="right", fill="y")
         self.list_history.bind("<Double-Button-1>", self._on_history_list_dbl_click)
 
-        row_run = ctk.CTkFrame(left, fg_color="transparent")
-        row_run.pack(fill="x", padx=14, pady=(8, 8))
-        row_run.grid_columnconfigure(0, weight=1)
-        row_run.grid_columnconfigure(1, weight=1)
-        self.btn_run = ctk.CTkButton(
-            row_run,
-            text="🔵 주도주 눌림목 스캔",
-            height=40,
+        backtest_panel = ctk.CTkFrame(left, corner_radius=8, border_width=1)
+        backtest_panel.pack(fill="x", padx=12, pady=(4, 10))
+
+        ctk.CTkLabel(
+            backtest_panel,
+            text="⚙️ 단일 종목 백테스트",
             font=gui_body_font(),
-            command=self._on_search,
+        ).pack(anchor="w", padx=10, pady=(8, 4))
+
+        row_bt_btns = ctk.CTkFrame(backtest_panel, fg_color="transparent")
+        row_bt_btns.pack(fill="x", padx=10, pady=(0, 6))
+        row_bt_btns.grid_columnconfigure(0, weight=1)
+        row_bt_btns.grid_columnconfigure(1, weight=1)
+        self.btn_pullback_backtest = ctk.CTkButton(
+            row_bt_btns,
+            text="🚀 백테스트",
+            height=34,
+            font=gui_body_font(),
+            command=self._on_pullback_backtest,
         )
-        self.btn_run.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.btn_scan_cancel = ctk.CTkButton(
-            row_run,
-            text="스캔 중단",
-            height=40,
+        self.btn_pullback_backtest.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_backtest_cancel = ctk.CTkButton(
+            row_bt_btns,
+            text="⏹️ 테스트 중단",
+            height=34,
             font=gui_body_font(),
             fg_color=("#d32f2f", "#9a1f1f"),
             hover_color=("#b71c1c", "#7f1a1a"),
-            command=self._on_scan_cancel,
+            command=self._on_backtest_cancel,
             state="disabled",
         )
-        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.btn_backtest_cancel.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        row_bt_fields = ctk.CTkFrame(backtest_panel, fg_color="transparent")
+        row_bt_fields.pack(fill="x", padx=10, pady=(0, 4))
+        row_bt_fields.grid_columnconfigure(0, weight=1)
+        row_bt_fields.grid_columnconfigure(1, weight=1)
+
+        fcash = ctk.CTkFrame(row_bt_fields, fg_color="transparent")
+        fcash.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ctk.CTkLabel(fcash, text="가상 원금", font=gui_body_font()).pack(
+            anchor="w", pady=(0, 2)
+        )
+        self.entry_cash_bt = ctk.CTkEntry(
+            fcash,
+            textvariable=self.var_cash,
+            height=28,
+            font=gui_body_font(),
+        )
+        self.entry_cash_bt.pack(fill="x")
+        self.var_cash.trace_add("write", self._on_cash_format_trace)
+
+        fsell = ctk.CTkFrame(row_bt_fields, fg_color="transparent")
+        fsell.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ctk.CTkLabel(fsell, text="매도 시점", font=gui_body_font()).pack(
+            anchor="w", pady=(0, 2)
+        )
+        self.combo_sell_timing = ctk.CTkComboBox(
+            fsell,
+            values=[
+                "0분(시가)",
+                "5분 후",
+                "10분 후",
+                "30분 후",
+                "1시간 후",
+            ],
+            font=gui_body_font(),
+        )
+        self.combo_sell_timing.set("0분(시가)")
+        self.combo_sell_timing.pack(fill="x")
+
+        row_bt_hints = ctk.CTkFrame(backtest_panel, fg_color="transparent")
+        row_bt_hints.pack(fill="x", padx=10, pady=(0, 4))
+        _hint_color = ("gray55", "gray60")
+        ctk.CTkLabel(
+            row_bt_hints,
+            text="※ 매수·매도 수수료는 0.015% / 0.20% 고정 적용",
+            font=gui_hint_font(),
+            text_color=_hint_color,
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            row_bt_hints,
+            text="※ 매도 시점 변경 기능은 향후 1분봉 데이터 파이프라인 도입 후 활성화됩니다.",
+            font=gui_hint_font(),
+            text_color=_hint_color,
+            anchor="w",
+        ).pack(anchor="w")
+
+        self.txt_backtest_report = ctk.CTkTextbox(
+            backtest_panel,
+            height=120,
+            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_LIST_FONT_SIZE),
+            wrap="word",
+        )
+        self.txt_backtest_report.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.txt_backtest_report.insert(
+            "1.0",
+            "차트에 종목을 연 뒤 [🚀 백테스트]로 눌림목 타임라인 검증을 실행하세요.",
+        )
+        self.txt_backtest_report.configure(state="disabled")
 
         self.var_filter_trend = ctk.BooleanVar(value=False)
         self.var_slope_threshold = ctk.StringVar(value="0.01")
@@ -734,7 +775,7 @@ class BacktestGUI(ctk.CTk):
         self.lbl_current_period = ctk.CTkLabel(
             inner_btns,
             text="",
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
+            font=gui_body_font(),
             text_color=("gray25", "gray75"),
         )
         self.lbl_current_period.pack(side="left", padx=(18, 6))
@@ -1206,23 +1247,75 @@ class BacktestGUI(ctk.CTk):
         i0, i1 = self._chart_visible_range()
         visible = max(1, i1 - i0 + 1)
         try:
-            fw, _fh = self._chart_overlay_host_inner_pixel_size()
+            fw, _fh = self._chart_canvas_pixel_size()
         except tk.TclError:
             fw = 800
         return max(1.0, float(fw) / float(visible))
 
+    def _chart_canvas_pixel_size(self) -> tuple[int, int]:
+        """캔버스 실측 픽셀 — 차트 PNG를 꽉 채우고 중앙 정렬."""
+        cvs = getattr(self, "_chart_flat_canvas", None)
+        if cvs is not None:
+            try:
+                cvs.update_idletasks()
+                w = int(cvs.winfo_width())
+                h = int(cvs.winfo_height())
+                if w > 1 and h > 1:
+                    return max(CHART_IMG_MIN_FW, w), max(CHART_IMG_MIN_FH, h)
+            except tk.TclError:
+                pass
+        return self._chart_overlay_host_inner_pixel_size()
+
     def _chart_reset_canvas_image_position(self) -> None:
-        """PNG 갱신·팬 종료 후 이미지 앵커 (0,0) 복귀."""
+        """PNG 갱신·팬 종료 후 이미지 캔버스 정중앙 배치."""
         item = getattr(self, "_chart_canvas_image_item", None)
         cvs = getattr(self, "_chart_flat_canvas", None)
         if item is None or cvs is None:
             return
         try:
-            cvs.coords(item, 0, 0)
+            cvs.update_idletasks()
+            cx = max(1, int(cvs.winfo_width())) // 2
+            cy = max(1, int(cvs.winfo_height())) // 2
+            cvs.coords(item, cx, cy)
+            self._chart_pan_image_origin = (float(cx), float(cy))
         except tk.TclError:
             pass
         self._chart_pan_drag_dx = 0
-        self._chart_pan_image_origin = (0.0, 0.0)
+
+    def _chart_mount_photo_on_canvas(self, cvs_f, photo: ImageTk.PhotoImage) -> None:
+        """캔버스 전체를 채우도록 PhotoImage를 중앙(anchor=CENTER) 배치."""
+        try:
+            cvs_f.configure(bg=self._chart_canvas_bg_plain())
+            cvs_f.update_idletasks()
+            cx = max(1, int(cvs_f.winfo_width())) // 2
+            cy = max(1, int(cvs_f.winfo_height())) // 2
+        except tk.TclError:
+            cx, cy = 0, 0
+
+        swapped = False
+        item_existing = getattr(self, "_chart_canvas_image_item", None)
+        if item_existing is not None:
+            try:
+                cvs_f.itemconfigure(item_existing, image=photo)
+                swapped = True
+            except tk.TclError:
+                self._chart_canvas_image_item = None
+
+        if not swapped:
+            try:
+                cvs_f.delete("all")
+            except tk.TclError:
+                pass
+            self._chart_canvas_image_item = cvs_f.create_image(
+                cx, cy, anchor=tk.CENTER, image=photo, tags=("chart_main",)
+            )
+        else:
+            try:
+                cvs_f.coords(item_existing, cx, cy)
+            except tk.TclError:
+                pass
+        self._chart_pan_image_origin = (float(cx), float(cy))
+        self._chart_pan_drag_dx = 0
 
     def _chart_shift_viewport(self, bar_shift: int) -> None:
         if bar_shift == 0 or not self._chart_canvas_state:
@@ -1432,7 +1525,7 @@ class BacktestGUI(ctk.CTk):
             except tk.TclError:
                 pass
 
-            fw, fh = self._chart_overlay_host_inner_pixel_size()
+            fw, fh = self._chart_canvas_pixel_size()
             if fw <= 0 or fh <= 0:
                 return
 
@@ -1442,31 +1535,10 @@ class BacktestGUI(ctk.CTk):
                 photo = ImageTk.PhotoImage(resized)
                 cvs_f = self._chart_flat_canvas
 
-                swapped = False
-                item_existing = getattr(self, "_chart_canvas_image_item", None)
-                if item_existing is not None:
-                    try:
-                        cvs_f.itemconfigure(item_existing, image=photo)
-                        swapped = True
-                    except tk.TclError:
-                        self._chart_canvas_image_item = None
-
-                try:
-                    cvs_f.configure(bg=self._chart_canvas_bg_plain())
-                    if not swapped:
-                        try:
-                            cvs_f.delete("all")
-                        except tk.TclError:
-                            pass
-                        self._chart_canvas_image_item = cvs_f.create_image(
-                            0, 0, anchor=tk.NW, image=photo, tags=("chart_main",)
-                        )
-                except tk.TclError:
-                    return
+                self._chart_mount_photo_on_canvas(cvs_f, photo)
 
                 self._img_flat_ref = photo
                 self._last_chart_path = image_path
-                self._chart_reset_canvas_image_position()
         except Exception as e:
             self._last_chart_path = None
             self._chart_canvas_image_item = None
@@ -1490,7 +1562,7 @@ class BacktestGUI(ctk.CTk):
             except tk.TclError:
                 pass
 
-            fw, fh = self._chart_overlay_host_inner_pixel_size()
+            fw, fh = self._chart_canvas_pixel_size()
             if fw <= 0 or fh <= 0:
                 return
 
@@ -1500,31 +1572,10 @@ class BacktestGUI(ctk.CTk):
                 photo = ImageTk.PhotoImage(resized)
                 cvs_f = self._chart_flat_canvas
 
-                swapped = False
-                item_existing = getattr(self, "_chart_canvas_image_item", None)
-                if item_existing is not None:
-                    try:
-                        cvs_f.itemconfigure(item_existing, image=photo)
-                        swapped = True
-                    except tk.TclError:
-                        self._chart_canvas_image_item = None
-
-                try:
-                    cvs_f.configure(bg=self._chart_canvas_bg_plain())
-                    if not swapped:
-                        try:
-                            cvs_f.delete("all")
-                        except tk.TclError:
-                            pass
-                        self._chart_canvas_image_item = cvs_f.create_image(
-                            0, 0, anchor=tk.NW, image=photo, tags=("chart_main",)
-                        )
-                except tk.TclError:
-                    return
+                self._chart_mount_photo_on_canvas(cvs_f, photo)
 
                 self._img_flat_ref = photo
                 self._last_chart_path = None
-                self._chart_reset_canvas_image_position()
         except Exception as e:
             self._last_chart_path = None
             self._chart_canvas_image_item = None
@@ -1867,7 +1918,7 @@ class BacktestGUI(ctk.CTk):
         canvas_state: dict | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
+        self.btn_run.configure(state="normal", text="🔵 스캔")
         self._last_active_stock_code = code
         if canvas_state is not None:
             self._chart_install_canvas_state(canvas_state)
@@ -1878,7 +1929,7 @@ class BacktestGUI(ctk.CTk):
 
     def _finish_chart_only_error(self, msg: str) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
+        self.btn_run.configure(state="normal", text="🔵 스캔")
         self._chart_flat_show_message(f"차트 생성 실패: {msg}")
         self.set_status_message(f"차트 생성 실패: {msg}")
 
@@ -2400,12 +2451,199 @@ class BacktestGUI(ctk.CTk):
             "pullback_rank_cap_pct": pb_cap,
         }
 
-    def _begin_search_loading_state(self) -> None:
-        """검색 워커 시작 시 버튼 비활성화·마우스 대기 커서(창 단위)."""
+    def _on_cash_format_trace(self, *_args) -> None:
+        """가상 원금 천단위 쉼표 실시간 마스킹."""
+        if self._cash_format_guard:
+            return
+        raw = str(self.var_cash.get())
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if not digits:
+            formatted = ""
+        else:
+            try:
+                formatted = f"{int(digits):,}"
+            except ValueError:
+                return
+        if formatted == raw:
+            return
+        self._cash_format_guard = True
         try:
-            self.btn_search.configure(state="disabled")
+            self.var_cash.set(formatted)
+        finally:
+            self._cash_format_guard = False
+
+    def _parse_cash_int(self) -> int | None:
+        try:
+            v = int("".join(ch for ch in str(self.var_cash.get()) if ch.isdigit()))
+        except ValueError:
+            return None
+        if v <= 0:
+            return None
+        return v
+
+    def _sell_timing_minutes(self) -> int:
+        label = str(self.combo_sell_timing.get()).strip()
+        mapping = {
+            "0분(시가)": 0,
+            "5분 후": 5,
+            "10분 후": 10,
+            "30분 후": 30,
+            "1시간 후": 60,
+        }
+        return int(mapping.get(label, 0))
+
+    def _active_stock_label_name(self) -> str:
+        text = str(self.lbl_selected_stock.cget("text") or "")
+        if ":" in text:
+            tail = text.split(":", 1)[1].strip()
+            parts = tail.split(None, 1)
+            if len(parts) >= 2:
+                return parts[1].strip()
+            return tail
+        return ""
+
+    def _set_backtest_report_text(self, text: str) -> None:
+        try:
+            self.txt_backtest_report.configure(state="normal")
+            self.txt_backtest_report.delete("1.0", "end")
+            self.txt_backtest_report.insert("1.0", text)
+            self.txt_backtest_report.configure(state="disabled")
         except (tk.TclError, AttributeError):
             pass
+
+    def _begin_backtest_loading_state(self) -> None:
+        try:
+            self.btn_pullback_backtest.configure(state="disabled")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.btn_backtest_cancel.configure(state="normal")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _end_backtest_loading_state(self) -> None:
+        try:
+            self.btn_pullback_backtest.configure(state="normal")
+        except (tk.TclError, AttributeError):
+            pass
+        try:
+            self.btn_backtest_cancel.configure(state="disabled")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _on_backtest_cancel(self) -> None:
+        self._backtest_cancel_event.set()
+        self.set_status_message("백테스트 중단 요청…")
+
+    def _on_pullback_backtest(self) -> None:
+        """v3.40: 차트 활성 종목 단일 눌림목 타임라인 백테스트."""
+        if self._backtest_busy or self._busy:
+            self.set_status_message("다른 작업이 진행 중입니다.")
+            return
+        code = self.current_code
+        if not code or code == "000000":
+            messagebox.showinfo(
+                "백테스트",
+                "먼저 스캔 결과·이력에서 종목을 선택해 차트를 표시하세요.",
+            )
+            return
+        cash = self._parse_cash_int()
+        if cash is None:
+            messagebox.showerror("오류", "가상 원금은 0보다 큰 숫자여야 합니다.")
+            return
+        params = self._parse_leader_pullback_scan_params()
+        if params is None:
+            messagebox.showerror(
+                "오류",
+                "세력 개입 배수·눌림 거래량 비율은 0보다 큰 숫자여야 합니다.",
+            )
+            return
+        burst, shrink = params
+        try:
+            start_s = self._date_start.get_date().strftime("%Y-%m-%d")
+            end_s = self._date_end.get_date().strftime("%Y-%m-%d")
+        except (ValueError, tk.TclError):
+            messagebox.showerror("오류", "시작일·종료일을 확인하세요.")
+            return
+        sell_min = self._sell_timing_minutes()
+        name = self._active_stock_label_name() or code
+
+        self._backtest_busy = True
+        self._backtest_cancel_event.clear()
+        self._begin_backtest_loading_state()
+        self.set_status_message(f"눌림목 백테스트 계산 중… ({code})")
+
+        def work() -> None:
+            try:
+                if self._backtest_cancel_event.is_set():
+                    self.after(0, self._finalize_pullback_backtest_cancelled)
+                    return
+                df = None
+                cache = getattr(self, "_chart_ohlcv_cache_df", None)
+                cache_code = str(getattr(self, "_chart_ohlcv_cache_code", "") or "")
+                if cache is not None and not cache.empty and cache_code == code:
+                    df = cache.copy()
+                if df is None:
+                    _prime_krx_env_from_dotenv()
+                    df = load_ohlcv_for_chart(code, start_s, end_s)
+                if df is None or df.empty:
+                    raise RuntimeError("선택 기간에 일봉 데이터가 없습니다.")
+                df = df.sort_index()
+                ts0 = pd.Timestamp(start_s).normalize()
+                ts1 = pd.Timestamp(end_s).normalize()
+                df = df.loc[(df.index.normalize() >= ts0) & (df.index.normalize() <= ts1)]
+                if df.empty:
+                    raise RuntimeError("기간 필터 후 데이터가 없습니다.")
+                if len(df) < 120:
+                    raise RuntimeError(
+                        "봉 수가 부족합니다(김직선 MA120 검증에 최소 120봉 필요)."
+                    )
+                if self._backtest_cancel_event.is_set():
+                    self.after(0, self._finalize_pullback_backtest_cancelled)
+                    return
+                res = run_pullback_timeline_backtest(
+                    df,
+                    initial_cash=float(cash),
+                    volume_burst_multiple=burst,
+                    vol_shrink_limit=shrink,
+                    sell_timing_minutes=sell_min,
+                    code=code,
+                    name=name,
+                )
+                self.after(0, lambda r=res: self._finalize_pullback_backtest(r))
+            except Exception as ex:
+                self.after(
+                    0,
+                    lambda m=str(ex): self._finalize_pullback_backtest_error(m),
+                )
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _finalize_pullback_backtest_cancelled(self) -> None:
+        self._backtest_busy = False
+        self._end_backtest_loading_state()
+        self.set_status_message("백테스트가 중단되었습니다.")
+
+    def _finalize_pullback_backtest_error(self, msg: str) -> None:
+        self._backtest_busy = False
+        self._end_backtest_loading_state()
+        self._set_backtest_report_text(f"오류: {msg}")
+        self.set_status_message(f"백테스트 실패: {msg}")
+
+    def _finalize_pullback_backtest(self, res) -> None:
+        self._backtest_busy = False
+        self._end_backtest_loading_state()
+        if not res.ok:
+            self._set_backtest_report_text(res.error or "알 수 없는 오류")
+            self.set_status_message("백테스트 오류")
+            return
+        self._set_backtest_report_text(res.report_text)
+        self.set_status_message(
+            f"백테스트 완료 · 진입 {res.n_entries}회 · 최종 {res.final_equity:,.0f}원"
+        )
+
+    def _begin_search_loading_state(self) -> None:
+        """검색 워커 시작 시 버튼 비활성화·마우스 대기 커서(창 단위)."""
         try:
             self.btn_run.configure(state="disabled")
         except (tk.TclError, AttributeError):
@@ -2426,11 +2664,7 @@ class BacktestGUI(ctk.CTk):
     def _end_search_loading_state(self) -> None:
         """검색 종료 후 버튼·커서 원복."""
         try:
-            self.btn_search.configure(state="normal")
-        except (tk.TclError, AttributeError):
-            pass
-        try:
-            self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
+            self.btn_run.configure(state="normal", text="🔵 스캔")
         except (tk.TclError, AttributeError):
             pass
         try:
@@ -2492,6 +2726,8 @@ class BacktestGUI(ctk.CTk):
         pass_burst = 0
         pass_price = 0
         pass_volume = 0
+        pass_kim_long = 0
+        pass_kim_short = 0
         pass_all = 0
         diag_burst = ""
         diag_shrink = ""
@@ -2525,6 +2761,8 @@ class BacktestGUI(ctk.CTk):
             pass_burst = int((st or {}).get("pass_burst", 0))
             pass_price = int((st or {}).get("pass_price", 0))
             pass_volume = int((st or {}).get("pass_volume", 0))
+            pass_kim_long = int((st or {}).get("pass_kim_long", 0))
+            pass_kim_short = int((st or {}).get("pass_kim_short", 0))
             pass_all = int((st or {}).get("pass_all", len(rows)))
             diag_burst = str((st or {}).get("volume_burst_multiple", volume_burst_multiple))
             diag_shrink = str((st or {}).get("vol_shrink_limit", vol_shrink_limit))
@@ -2579,7 +2817,9 @@ class BacktestGUI(ctk.CTk):
             prev_1 = ainfo_fb.prev_1.strftime("%Y-%m-%d")
             prev_2 = ainfo_fb.prev_2.strftime("%Y-%m-%d")
             # 2) 폴백: 종목별 일봉 + v3.30 눌림목 3중 조건
-            warm_start = (pd.Timestamp(anchor_fb) - BDay(35)).strftime("%Y-%m-%d")
+            warm_start = (
+                pd.Timestamp(anchor_fb) - BDay(PULLBACK_SCAN_HISTORY_BDAY + 15)
+            ).strftime("%Y-%m-%d")
             universe = load_v3_0_overnight_scalper_data(
                 start_date=warm_start,
                 end_date=anchor_fb,
@@ -2646,7 +2886,7 @@ class BacktestGUI(ctk.CTk):
 
         debug_lines = [
             "=====================================================",
-            "⚙️ [DEBUG] v3.30 주도주 눌림목 스캐너",
+            "⚙️ [DEBUG] v3.50 주도주 눌림목 스캐너",
             "=====================================================",
             f" - Requested End Date : {requested_scan_date}",
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
@@ -2659,12 +2899,16 @@ class BacktestGUI(ctk.CTk):
             "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult",
             "  2) t low < MA20(close) & t close >= MA20",
             "  3) t vol <= t-1 vol × shrink_limit",
+            "  4) v3.50 종가 > MA120 (장기 정배열)",
+            "  5) v3.50 MA5 >= MA10 (단기 모멘텀)",
             "-----------------------------------------------------",
             " [Pipeline Filtering Pass Count]",
             f"  ▶ Total {market} Tickers Loaded : {total_loaded}개",
             f"  ▶ Pass 1 (세력 개입) : {pass_burst}개",
             f"  ▶ Pass 2 (+ 가격/MA20) : {pass_price}개",
             f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
+            f"  ▶ Pass 4 (+ 종가>MA120) : {pass_kim_long}개",
+            f"  ▶ Pass 5 (+ MA5≥MA10) : {pass_kim_short}개",
             f"  ▶ 최종 : {pass_all}개",
             "=====================================================",
         ]
@@ -2680,7 +2924,7 @@ class BacktestGUI(ctk.CTk):
 
     def _on_search(self) -> None:
         """v3.30 주도주 눌림목 스캔: 코드|종목명|당일 상승률|시총|거래대금."""
-        if self._busy:
+        if self._busy or self._backtest_busy:
             self.set_status_message(
                 "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
             )
@@ -2799,7 +3043,7 @@ class BacktestGUI(ctk.CTk):
         deferred_chart_px: tuple[int, int] | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
+        self.btn_run.configure(state="normal", text="🔵 스캔")
         try:
             self.btn_rules_refresh.configure(state="normal")
         except (tk.TclError, AttributeError):

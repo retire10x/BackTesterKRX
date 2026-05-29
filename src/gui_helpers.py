@@ -229,10 +229,29 @@ def format_gui_list_pipeline(
 
 # GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
 # CTkFont 는 import 시점에 만들 수 없음(기본 Tk 루트 없음) — `gui_body_font()` 로 창 생성 후 사용.
-GUI_FONT_FAMILY = "Segoe UI"
+GUI_FONT_FAMILY = "Malgun Gothic"
 GUI_FONT_SIZE = 13
+GUI_LIST_FONT_SIZE = 10
+GUI_HINT_FONT_SIZE = 9
+GUI_DATE_ENTRY_WIDTH = 11
 
 _gui_body_font_cached: ctk.CTkFont | None = None
+_gui_hint_font_cached: ctk.CTkFont | None = None
+
+
+def gui_list_font_tuple() -> tuple[str, int]:
+    """Listbox 등 밀집 데이터 표 — 본문보다 1~2pt 작게."""
+    return (GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE)
+
+
+def gui_hint_font() -> ctk.CTkFont:
+    """안내·면책 등 보조 텍스트(9pt)."""
+    global _gui_hint_font_cached
+    if _gui_hint_font_cached is None:
+        _gui_hint_font_cached = ctk.CTkFont(
+            family=GUI_FONT_FAMILY, size=GUI_HINT_FONT_SIZE
+        )
+    return _gui_hint_font_cached
 
 
 def gui_body_font() -> ctk.CTkFont:
@@ -589,7 +608,7 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         ui.var_trailing_drop_above_pct.set(str(st["trailing_drop_above_pct"]))
     port = cfg.get("portfolio", {})
     if port.get("initial_cash") is not None:
-        ui.var_cash.set(str(int(port["initial_cash"])))
+        ui.var_cash.set(f"{int(port['initial_cash']):,}")
     tc = cfg.get("trading_costs", {})
     if hasattr(ui, "var_buy_fee_pct") and tc.get("buy_cost") is not None:
         ui.var_buy_fee_pct.set(_decimal_rate_to_pct_str(float(tc["buy_cost"])))

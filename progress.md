@@ -44,8 +44,25 @@
 - [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
 - [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
 - [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
+- [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
+- [x] **v3.45** UI 폴리싱: 차트 패널 구분선 제거·캔버스 중앙 정렬·맑은 고딕 통일·리스트 10pt·날짜 폭 확대·원금/매도 1행·이력 높이 확장
+- [x] **v3.50** 김직선 정배열 추세 필터: 종가>MA120 · MA5≥MA10 — 역배열·우하향 종목 스캔·백테스트 전면 제외
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.50** 김직선 정배열 추세 필터)
+- **`data_loader.py`:** `kim_straight_trend_pass` · 벌크 OHLCV 120영업일 확장 · Pass4(종가>MA120)·Pass5(MA5≥MA10)
+- **`pullback_backtest.py`:** 타임라인 백테스트 진입에 동일 추세 필터 적용
+- **`gui.py`:** 폴백 워밍업 135영업일 · 디버그 Pass 4/5 카운트
+
+### 2026-05-29 (**v3.45** GUI 시각 정합성·타이포그래피)
+- **`backtest_chart.py`:** 가격·거래량 패널 구분선·spine 제거 · 패널 간격 축소
+- **`gui.py`:** 차트 PNG 캔버스 정중앙(CENTER) 배치 · `Malgun Gothic` · 리스트 10pt · DateEntry width 11 · 원금|매도 1행 · 이력 9행 · 안내 9pt
+- **`gui_helpers.py`:** `GUI_FONT_FAMILY`·`GUI_LIST_FONT_SIZE`·`gui_hint_font()` 상수
+
+### 2026-05-29 (**v3.40** 스캔·백테스트 UI 기능 분리)
+- **`gui.py`:** 스캔 파라미터(시장·기간·세력/눌림) 리스트 상단 가로 배치 · 종목 검색창·수수료 입력 제거(0.015%/0.20% 고정) · `🔵 스캔`/`🔴 스캔 중단` · 이력 리스트 하단 · `⚙️ 단일 종목 백테스트` 패널(가상 원금 쉼표 마스킹·매도 시점 콤보·결과 CTkTextbox)
+- **`pullback_backtest.py`:** 차트 활성 종목 기간 내 눌림목 3중 조건 전수·종가 매수→익일 시가 매도 복리 시뮬레이션
 
 ### 2026-05-29 (**v3.30** 주도주 눌림목 스캐너)
 - **`data_loader.py`:** `scan_leader_pullback_candidates_bulk` — 22영업일 OHLCV·`vol_ma20_strictly_prior`(t-2~t-21)·`volume_burst_multiple`·`vol_shrink_limit` · `qualifies_leader_pullback_from_ohlcv` 폴백

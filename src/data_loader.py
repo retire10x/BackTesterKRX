@@ -451,6 +451,44 @@ _V31_PYKRX_EN_TO_KO: dict[str, str] = {
 }
 
 
+# v3.50 김직선 정배열 추세 필터 — MA120·MA5/MA10 동시 검증용 벌크 OHLCV 길이
+PULLBACK_SCAN_HISTORY_BDAY = 119  # t-119..t0 = 120영업일
+
+
+def kim_straight_trend_pass(
+    close: pd.Series | np.ndarray,
+    *,
+    at_index: int | None = None,
+) -> tuple[bool, bool, bool]:
+    """
+    v3.50 김직선 정배열 추세 필터.
+    - 장기 정배열: 종가 > MA120
+    - 단기 모멘텀: MA5 >= MA10
+    반환: (통과, 장기통과, 단기통과)
+    """
+    if isinstance(close, pd.Series):
+        arr = pd.to_numeric(close, errors="coerce").to_numpy(dtype=float)
+    else:
+        arr = np.asarray(close, dtype=float)
+    n = len(arr)
+    if n < 120:
+        return False, False, False
+    i = int(at_index) if at_index is not None else n - 1
+    if i < 119 or i >= n:
+        return False, False, False
+
+    close_t = float(arr[i])
+    ma120 = float(np.nanmean(arr[i - 119 : i + 1]))
+    ma5 = float(np.nanmean(arr[i - 4 : i + 1]))
+    ma10 = float(np.nanmean(arr[i - 9 : i + 1]))
+    if not all(np.isfinite(v) for v in (close_t, ma120, ma5, ma10)):
+        return False, False, False
+
+    long_ok = close_t > ma120
+    short_ok = ma5 >= ma10
+    return bool(long_ok and short_ok), bool(long_ok), bool(short_ok)
+
+
 def qualifies_leader_pullback_from_ohlcv(
     df: pd.DataFrame,
     *,
@@ -458,13 +496,13 @@ def qualifies_leader_pullback_from_ohlcv(
     vol_shrink_limit: float = 0.5,
 ) -> tuple[bool, float]:
     """
-    단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 판정.
+    단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 + v3.50 김직선 정배열 추세 필터.
     반환: (통과 여부, 당일 시가 대비 상승률 % — 리스트 정렬용).
     """
     if df is None or df.empty:
         return False, 0.0
     work = ensure_datetime_index(df.copy()).sort_index()
-    if len(work) < 22:
+    if len(work) < 120:
         return False, 0.0
 
     vol = pd.to_numeric(work["Volume"], errors="coerce")
@@ -497,6 +535,10 @@ def qualifies_leader_pullback_from_ohlcv(
     if not (cond_burst and cond_price and cond_vol):
         return False, 0.0
 
+    kim_ok, _, _ = kim_straight_trend_pass(close)
+    if not kim_ok:
+        return False, 0.0
+
     rise_pct = ((close_t - open_t) / open_t * 100.0) if open_t > 0 else 0.0
     return True, float(rise_pct)
 
@@ -517,6 +559,8 @@ def scan_leader_pullback_candidates_bulk(
     - cond_prev_burst: t-1 거래량 > mean(t-2..t-21) × volume_burst_multiple
     - cond_price: t 저가 < MA20(종가 20일) & t 종가 >= MA20
     - cond_volume: t 거래량 <= t-1 거래량 × vol_shrink_limit
+    - v3.50 cond_kim_long: t 종가 > MA120(120일)
+    - v3.50 cond_kim_short: MA5 >= MA10
     """
     from src.utils.date_helper import resolve_overnight_scan_anchor
 
@@ -551,8 +595,8 @@ def scan_leader_pullback_candidates_bulk(
 
     ainfo = resolve_overnight_scan_anchor(str(end_date).strip()[:10])
     d_today = pd.Timestamp(ainfo.anchor_date).normalize()
-    bdays = pd.bdate_range(d_today - BDay(21), d_today)
-    if len(bdays) < 22:
+    bdays = pd.bdate_range(d_today - BDay(PULLBACK_SCAN_HISTORY_BDAY), d_today)
+    if len(bdays) < 120:
         return {"ok": False, "reason": "ohlcv_history_short"}
 
     def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
@@ -636,10 +680,13 @@ def scan_leader_pullback_candidates_bulk(
         open_m[:, j] = pd.to_numeric(sub["Open"], errors="coerce").to_numpy()
 
     merged = pd.DataFrame(index=codes)
-    merged["vol_ma20_strictly_prior"] = np.nanmean(vol_m[:, 0:20], axis=1)
+    merged["vol_ma20_strictly_prior"] = np.nanmean(vol_m[:, n_days - 22 : n_days - 2], axis=1)
     merged["prev_vol"] = vol_m[:, n_days - 2]
     merged["today_vol"] = vol_m[:, n_days - 1]
     merged["MA20"] = np.nanmean(close_m[:, n_days - 20 : n_days], axis=1)
+    merged["MA120"] = np.nanmean(close_m[:, n_days - 120 : n_days], axis=1)
+    merged["MA5"] = np.nanmean(close_m[:, n_days - 5 : n_days], axis=1)
+    merged["MA10"] = np.nanmean(close_m[:, n_days - 10 : n_days], axis=1)
     merged["Low_t0"] = low_m[:, n_days - 1]
     merged["Close_t0"] = close_m[:, n_days - 1]
     merged["Open_t0"] = open_m[:, n_days - 1]
@@ -710,7 +757,10 @@ def scan_leader_pullback_candidates_bulk(
         merged["Close_t0"] >= merged["MA20"]
     )
     cond_volume = merged["today_vol"] <= (merged["prev_vol"] * shrink_lim)
-    final = merged[cond_burst & cond_price & cond_volume].copy()
+    pass_pullback = cond_burst & cond_price & cond_volume
+    cond_kim_long = merged["Close_t0"] > merged["MA120"]
+    cond_kim_short = merged["MA5"] >= merged["MA10"]
+    final = merged[pass_pullback & cond_kim_long & cond_kim_short].copy()
 
     _stats_diag = {
         "requested_end_date": ainfo.requested_calendar_date.isoformat(),
@@ -730,7 +780,9 @@ def scan_leader_pullback_candidates_bulk(
                 "total_loaded": int(len(merged)),
                 "pass_burst": int(cond_burst.sum()),
                 "pass_price": int((cond_burst & cond_price).sum()),
-                "pass_volume": 0,
+                "pass_volume": int((cond_burst & cond_price & cond_volume).sum()),
+                "pass_kim_long": int((pass_pullback & cond_kim_long).sum()),
+                "pass_kim_short": int((pass_pullback & cond_kim_long & cond_kim_short).sum()),
                 "pass_all": 0,
                 "prev_1": ainfo.prev_1.isoformat(),
                 "prev_2": ainfo.prev_2.isoformat(),
@@ -767,6 +819,8 @@ def scan_leader_pullback_candidates_bulk(
             "pass_burst": int(cond_burst.sum()),
             "pass_price": int((cond_burst & cond_price).sum()),
             "pass_volume": int((cond_burst & cond_price & cond_volume).sum()),
+            "pass_kim_long": int((pass_pullback & cond_kim_long).sum()),
+            "pass_kim_short": int((pass_pullback & cond_kim_long & cond_kim_short).sum()),
             "pass_all": int(len(final)),
             "prev_1": ainfo.prev_1.isoformat(),
             "prev_2": ainfo.prev_2.isoformat(),
