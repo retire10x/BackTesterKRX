@@ -101,3 +101,20 @@ def resolve_overnight_scan_anchor(
     p1 = (ts_a - BDay(1)).date()
     p2 = (ts_a - BDay(2)).date()
     return OvernightScanAnchor(req0, anchor, (p1, p2), reason)
+
+
+def resolve_chart_period_end(requested_end: str | date) -> date:
+    """
+    차트 조회 종료일: 사용자가 고른 달력일을 그대로 사용(미래만 오늘로 클램프).
+
+    오버나이트 스캔의 `resolve_overnight_scan_anchor` 와 달리 장중에도
+    종료일을 전일로 당기지 않는다 — 차트는 '선택한 기간의 봉'을 보여 주기 위함.
+    """
+    if isinstance(requested_end, date):
+        req0 = requested_end
+    else:
+        req0 = pd.Timestamp(str(requested_end).strip()[:10]).date()
+    cur = datetime.now(KST).date()
+    if req0 > cur:
+        return cur
+    return req0

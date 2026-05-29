@@ -12,7 +12,7 @@ import socket
 import threading
 import time
 from collections import OrderedDict
-from datetime import date
+from datetime import date, datetime
 
 import FinanceDataReader as fdr
 import numpy as np
@@ -227,6 +227,90 @@ def load_ohlcv(symbol: str, start: str, end: str) -> pd.DataFrame | None:
         while len(_OHLCV_LRU) > OHLCV_CACHE_MAX_ENTRIES:
             _OHLCV_LRU.popitem(last=False)
     return df.copy()
+
+
+def _merge_intraday_session_bar(
+    df: pd.DataFrame | None,
+    symbol: str,
+    end: str,
+) -> pd.DataFrame | None:
+    """
+  GUI 차트용: 종료일이 '오늘'(KST)이고 장이 열린 뒤면 pykrx로 당일 봉(누적 OHLC)을 보강한다.
+
+  FDR 일봉은 장중·종가 전에는 당일 행이 없는 경우가 많아, 실시간이 아니라
+  데이터 소스·집계 시점 차이로 오늘 봉이 비어 보일 수 있다.
+    """
+    if df is None:
+        base = pd.DataFrame()
+    else:
+        base = ensure_datetime_index(df.copy())
+
+    try:
+        from src.utils.date_helper import (
+            KRX_REGULAR_SESSION_OPEN_TIME,
+            KST,
+        )
+    except ImportError:
+        return base if not base.empty else None
+
+    end_ts = pd.Timestamp(str(end).strip()[:10]).normalize()
+    now = datetime.now(KST)
+    today = pd.Timestamp(now.date()).normalize()
+    if end_ts != today or now.time() < KRX_REGULAR_SESSION_OPEN_TIME:
+        return base if not base.empty else None
+
+    krx_id = str(os.getenv("KRX_ID") or "").strip()
+    krx_pw = str(os.getenv("KRX_PW") or "").strip()
+    if len(krx_id) < 2 or len(krx_pw) < 2:
+        return base if not base.empty else None
+
+    cdf = str(symbol or "").strip().zfill(6)
+    s_day = end_ts.strftime("%Y%m%d")
+    try:
+        from pykrx import stock as pykrx_stock  # type: ignore
+
+        with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
+            raw = pykrx_stock.get_market_ohlcv_by_date(s_day, s_day, cdf)
+    except Exception:
+        return base if not base.empty else None
+
+    if raw is None or getattr(raw, "empty", True):
+        return base if not base.empty else None
+
+    row_df = _normalize_pykrx_ohlcv_columns(raw)
+    if row_df.empty:
+        return base if not base.empty else None
+
+    row_df = ensure_datetime_index(row_df)
+    row_df.index = row_df.index.normalize()
+    last = row_df.iloc[-1:]
+    if last.empty:
+        return base if not base.empty else None
+
+    o = float(last["Open"].iloc[0])
+    if not (np.isfinite(o) and o > 0):
+        return base if not base.empty else None
+
+    if base.empty:
+        return last
+
+    base.index = pd.DatetimeIndex(base.index).normalize()
+    if end_ts in base.index:
+        base.loc[end_ts, ["Open", "High", "Low", "Close", "Volume"]] = last.iloc[0][
+            ["Open", "High", "Low", "Close", "Volume"]
+        ].values
+    else:
+        base = pd.concat([base, last])
+    return ensure_datetime_index(base)
+
+
+def load_ohlcv_for_chart(symbol: str, start: str, end: str) -> pd.DataFrame | None:
+    """차트 전용 OHLCV: FDR 로드 후 장중 당일 봉(pykrx) 보강."""
+    df = load_ohlcv(symbol, start, end)
+    merged = _merge_intraday_session_bar(df, symbol, end)
+    if merged is None or merged.empty:
+        return None
+    return merged
 
 
 def clear_ohlcv_cache() -> None:

@@ -14,7 +14,7 @@ import customtkinter as ctk
 
 import numpy as np
 
-from src.backtest_constants import TREND_MA_PERIODS
+from src.backtest_constants import CHART_MA_TOGGLE_PERIODS
 from src.data_loader import (
     default_backtest_period_range,
     load_config,
@@ -559,14 +559,12 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
         mp = int(st["ma_period"])
         ui.var_ma_period.set(str(mp) if mp in (5, 10, 20) else "20")
     tf = trend_overlay_flags_from_strategy(st)
-    for p in TREND_MA_PERIODS:
+    for p in CHART_MA_TOGGLE_PERIODS:
         ui._trend_vars[p].set(tf[p])
     if "show_chart_candle" in st:
         ui.var_show_candle.set(bool(st["show_chart_candle"]))
     if "show_chart_volume" in st:
         ui.var_show_volume.set(bool(st["show_chart_volume"]))
-    if "show_return_overlay" in st and hasattr(ui, "var_show_return_overlay"):
-        ui.var_show_return_overlay.set(bool(st["show_return_overlay"]))
     if "golden_buy_enabled" in st:
         ui.var_golden_buy.set(bool(st["golden_buy_enabled"]))
     if "dead_cross_sell_enabled" in st:
@@ -945,16 +943,13 @@ def try_build_config(
         cfg.setdefault("trading_costs", {})["buy_cost"] = br
         cfg["trading_costs"]["sell_cost"] = sr
 
-    for p in TREND_MA_PERIODS:
+    for p in CHART_MA_TOGGLE_PERIODS:
         cfg.setdefault("strategy", {})[f"show_trend_ma{p}"] = bool(ui._trend_vars[p].get())
-    for legacy in ("show_ma120", "show_ma200"):
+    for legacy in ("show_ma120", "show_ma200", "show_return_overlay"):
         cfg.get("strategy", {}).pop(legacy, None)
 
     cfg.setdefault("strategy", {})["show_chart_candle"] = bool(ui.var_show_candle.get())
     cfg.setdefault("strategy", {})["show_chart_volume"] = bool(ui.var_show_volume.get())
-    cfg.setdefault("strategy", {})["show_return_overlay"] = bool(
-        ui.var_show_return_overlay.get()
-    )
     cfg.get("strategy", {}).pop("show_chart_return", None)
     cfg.get("strategy", {}).pop("show_chart_scroll", None)
 

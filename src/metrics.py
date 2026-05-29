@@ -27,7 +27,11 @@ from .backtest_chart import (
     save_backtest_report_png,
     save_figure_as_png,
 )
-from .backtest_constants import FIG_ATTR_TRADE_MARKERS_SKIPPED, TREND_MA_PERIODS
+from .backtest_constants import (
+    CHART_MA_TOGGLE_PERIODS,
+    FIG_ATTR_TRADE_MARKERS_SKIPPED,
+    TREND_MA_PERIODS,
+)
 from .data_loader import (
     default_backtest_period_range,
     ensure_datetime_index,
@@ -138,19 +142,41 @@ def metrics_total_cagr_mdd_equity(
 
 
 def trend_overlay_flags_from_strategy(st: dict) -> dict[int, bool]:
-    """차트 추세선 6종 표시 여부. 신규 키 show_trend_ma{기간} 우선, 없으면 구 show_ma120/200."""
+    """차트 추세선 표시 여부. v3.15 GUI 5중 이평(5·10·20·60·120)은 키 생략 시 기본 ON."""
     flags: dict[int, bool] = {}
     for p in TREND_MA_PERIODS:
         k = f"show_trend_ma{p}"
         if k in st:
             flags[p] = bool(st[k])
         elif p == 120:
-            flags[p] = bool(st.get("show_ma120", False))
+            flags[p] = bool(st.get("show_ma120", True))
         elif p == 200:
             flags[p] = bool(st.get("show_ma200", False))
+        elif p in CHART_MA_TOGGLE_PERIODS:
+            flags[p] = True
         else:
             flags[p] = False
     return flags
+
+
+def prepare_chart_trend_ma(
+    full_close: pd.Series,
+    sim_index: pd.DatetimeIndex,
+    trend_flags: dict[int, bool],
+) -> tuple[dict[int, pd.Series] | None, dict[int, bool]]:
+    """v3.15: 5중 이평은 항상 계산·체크 상태로 가시성만 토글(CLI 200일선 등 추가 기간 포함)."""
+    periods: set[int] = set(CHART_MA_TOGGLE_PERIODS)
+    for p in TREND_MA_PERIODS:
+        if trend_flags.get(p) and p not in CHART_MA_TOGGLE_PERIODS:
+            periods.add(p)
+    if not periods:
+        return None, {}
+    trend_ma = {p: rolling_trend_ma_series(full_close, p) for p in sorted(periods)}
+    trend_plot = {p: s.reindex(sim_index) for p, s in trend_ma.items()}
+    visible = {
+        p: bool(trend_flags.get(p, p in CHART_MA_TOGGLE_PERIODS)) for p in trend_plot
+    }
+    return trend_plot, visible
 
 
 def rolling_trend_ma_series(close: pd.Series, period: int) -> pd.Series:
@@ -248,7 +274,7 @@ def materialize_backtest_chart_png(
     v4.10: 연기된 차트 재생(dict)만으로 mpl Figure·PNG 생성. 통계 재계산 없음.
 
     replay 키: sim, trades, name, selected_code, bar_label, ma_n, ret_series,
-    full_close, trend_flags, show_chart_candle, show_chart_volume, show_return_overlay
+    full_close, trend_flags, show_chart_candle, show_chart_volume
     """
     sim = replay["sim"]
     trades = replay["trades"]
@@ -261,15 +287,9 @@ def materialize_backtest_chart_png(
     trend_flags = replay["trend_flags"]
     show_chart_candle = bool(replay.get("show_chart_candle", True))
     show_chart_volume = bool(replay.get("show_chart_volume", True))
-    show_return_overlay = bool(replay.get("show_return_overlay", False))
 
-    trend_ma: dict[int, pd.Series] = {}
-    for p in TREND_MA_PERIODS:
-        if not trend_flags.get(p):
-            continue
-        trend_ma[p] = rolling_trend_ma_series(full_close, p)
-    trend_plot = (
-        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    trend_plot, trend_visible = prepare_chart_trend_ma(
+        full_close, sim.index, trend_flags
     )
 
     out_png = out_path or os.path.join("output", "backtest_report.png")
@@ -303,9 +323,9 @@ def materialize_backtest_chart_png(
         ma_n,
         ret_series,
         trend_ma=trend_plot,
+        trend_ma_visible=trend_visible,
         show_candle=show_chart_candle,
         show_volume=show_chart_volume,
-        show_return_overlay=show_return_overlay,
         figsize=figsize_inch,
     )
     skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
@@ -340,15 +360,9 @@ def materialize_backtest_chart_png_bytes(
     trend_flags = replay["trend_flags"]
     show_chart_candle = bool(replay.get("show_chart_candle", True))
     show_chart_volume = bool(replay.get("show_chart_volume", True))
-    show_return_overlay = bool(replay.get("show_return_overlay", False))
 
-    trend_ma: dict[int, pd.Series] = {}
-    for p in TREND_MA_PERIODS:
-        if not trend_flags.get(p):
-            continue
-        trend_ma[p] = rolling_trend_ma_series(full_close, p)
-    trend_plot = (
-        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    trend_plot, trend_visible = prepare_chart_trend_ma(
+        full_close, sim.index, trend_flags
     )
 
     dpi_save = DEFAULT_CLI_SAVE_DPI
@@ -380,9 +394,9 @@ def materialize_backtest_chart_png_bytes(
         ma_n,
         ret_series,
         trend_ma=trend_plot,
+        trend_ma_visible=trend_visible,
         show_candle=show_chart_candle,
         show_volume=show_chart_volume,
-        show_return_overlay=show_return_overlay,
         figsize=figsize_inch,
     )
     skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
@@ -435,8 +449,6 @@ def run_backtest_detailed(
     trend_flags = trend_overlay_flags_from_strategy(st)
     show_chart_candle = bool(st.get("show_chart_candle", True))
     show_chart_volume = bool(st.get("show_chart_volume", True))
-    # v4.7: 하단 누적수익률 패널 제거 — 레거시 show_chart_return 은 무시
-    show_return_overlay = bool(st.get("show_return_overlay", False))
 
     costs = cfg.get("trading_costs", {})
     buy_c = float(costs.get("buy_cost", 0.00015))
@@ -638,17 +650,11 @@ def run_backtest_detailed(
 
     if omit_report_artifacts:
         trend_plot_rb: dict[int, pd.Series] | None = None
+        trend_visible_rb: dict[int, bool] = {}
         if embed_figure:
             full_close_rb = sig_df["Close"].astype(float)
-            trend_ma_rb: dict[int, pd.Series] = {}
-            for p in TREND_MA_PERIODS:
-                if not trend_flags.get(p):
-                    continue
-                trend_ma_rb[p] = rolling_trend_ma_series(full_close_rb, p)
-            trend_plot_rb = (
-                {p: s.reindex(sim.index) for p, s in trend_ma_rb.items()}
-                if trend_ma_rb
-                else None
+            trend_plot_rb, trend_visible_rb = prepare_chart_trend_ma(
+                full_close_rb, sim.index, trend_flags
             )
 
         replay_chart_rb: dict | None = None
@@ -661,9 +667,9 @@ def run_backtest_detailed(
                 "ma_n": ma_n,
                 "ret_series": ret_series,
                 "trend_ma": trend_plot_rb,
+                "trend_ma_visible": trend_visible_rb,
                 "show_chart_candle": show_chart_candle,
                 "show_chart_volume": show_chart_volume,
-                "show_return_overlay": show_return_overlay,
             }
 
         lines.append(
@@ -697,7 +703,6 @@ def run_backtest_detailed(
             "trend_flags": tf_dict,
             "show_chart_candle": show_chart_candle,
             "show_chart_volume": show_chart_volume,
-            "show_return_overlay": show_return_overlay,
         }
         lines.append(
             f"[그래프] 분리(v4.10): PNG 생략(후속 렌더) — 매수 {n_buy}회 / 매도 {n_sell}회"
@@ -716,13 +721,8 @@ def run_backtest_detailed(
         )
 
     full_close = sig_df["Close"].astype(float)
-    trend_ma: dict[int, pd.Series] = {}
-    for p in TREND_MA_PERIODS:
-        if not trend_flags.get(p):
-            continue
-        trend_ma[p] = rolling_trend_ma_series(full_close, p)
-    trend_plot = (
-        {p: s.reindex(sim.index) for p, s in trend_ma.items()} if trend_ma else None
+    trend_plot, trend_visible = prepare_chart_trend_ma(
+        full_close, sim.index, trend_flags
     )
 
     out_png = os.path.join("output", "backtest_report.png")
@@ -752,9 +752,9 @@ def run_backtest_detailed(
         ma_n,
         ret_series,
         trend_ma=trend_plot,
+        trend_ma_visible=trend_visible,
         show_candle=show_chart_candle,
         show_volume=show_chart_volume,
-        show_return_overlay=show_return_overlay,
         figsize=figsize_inch,
     )
     trade_markers_skipped = int(getattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, 0))
@@ -780,9 +780,9 @@ def run_backtest_detailed(
             "ma_n": ma_n,
             "ret_series": ret_series,
             "trend_ma": trend_plot,
+            "trend_ma_visible": trend_visible,
             "show_chart_candle": show_chart_candle,
             "show_chart_volume": show_chart_volume,
-            "show_return_overlay": show_return_overlay,
         }
 
     lines.append(f"[그래프] {out_png} (매수 {n_buy}회 / 매도 {n_sell}회)")
@@ -811,6 +811,7 @@ __all__ = [
     "materialize_backtest_chart_png_bytes",
     "metrics_total_cagr_mdd_equity",
     "normalize_interval",
+    "prepare_chart_trend_ma",
     "rolling_trend_ma_series",
     "run_backtest_detailed",
     "save_backtest_report_png",

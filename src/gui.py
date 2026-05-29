@@ -38,6 +38,7 @@ from src.data_loader import (
     load_v3_0_overnight_scalper_data,
     load_config,
     load_ohlcv,
+    load_ohlcv_for_chart,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
     scan_v3_overnight_candidates_bulk,
@@ -59,12 +60,17 @@ from src.gui_helpers import (
     GUI_FONT_FAMILY,
     GUI_FONT_SIZE,
 )
-from src.backtest_constants import TREND_MA_PERIODS
-from src.backtest_chart import render_backtest_chart_png_bytes
+from src.backtest_constants import (
+    CHART_MA_TOGGLE_PERIODS,
+    CHART_ZOOM_MIN_VISIBLE_BARS,
+    CHART_ZOOM_WHEEL_FACTOR,
+)
+from src.backtest_chart import render_backtest_chart_png_bytes, slice_chart_viewport
 from src.metrics import (
     BacktestResult,
     materialize_backtest_chart_png_bytes,
     normalize_interval,
+    prepare_chart_trend_ma,
     run_backtest_detailed,
 )
 from src.utils.date_helper import resolve_overnight_scan_anchor
@@ -310,7 +316,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.1 Overnight Scanner")
+        self.title("BackTesterKRX v3.15 Overnight Scanner")
 
         self._apply_initial_window_geometry()
 
@@ -337,15 +343,24 @@ class BacktestGUI(ctk.CTk):
         self._chart_spinner_after_id: str | None = None
         self._chart_spinner_active: bool = False
         self._chart_spinner_idx: int = 0
+        # 휠 줌: 전체 봉 캐시 + 표시 구간 [i0, i1] (i1=None 이면 마지막 봉)
+        self._chart_canvas_state: dict | None = None
+        self._chart_zoom_i0: int = 0
+        self._chart_zoom_i1: int | None = None
+        self._chart_zoom_after_id: str | None = None
+        # 드래그 팬: 이동 중 캔버스 이미지만 이동, 릴리스 시 구간 반영·재렌더
+        self._chart_pan_active: bool = False
+        self._chart_pan_press_x: int = 0
+        self._chart_pan_drag_dx: int = 0
+        self._chart_pan_image_origin: tuple[float, float] = (0.0, 0.0)
 
         self.var_interval = ctk.StringVar(value="daily")
         self.var_ma_period = ctk.StringVar(value="20")
         self._trend_vars: dict[int, ctk.BooleanVar] = {
-            p: ctk.BooleanVar(value=(p in (20, 120))) for p in TREND_MA_PERIODS
+            p: ctk.BooleanVar(value=True) for p in CHART_MA_TOGGLE_PERIODS
         }
         self.var_show_candle = ctk.BooleanVar(value=True)
         self.var_show_volume = ctk.BooleanVar(value=True)
-        self.var_show_return_overlay = ctk.BooleanVar(value=False)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
         self.var_cash = ctk.StringVar(value="5000000")
@@ -709,17 +724,36 @@ class BacktestGUI(ctk.CTk):
         )
         self.lbl_chart_loading.pack(side="left", padx=(4, 0))
 
-        self.cb_return_overlay = ctk.CTkCheckBox(
-            btn_container,
-            text="수익률",
-            variable=self.var_show_return_overlay,
+        ma_toggle_frame = ctk.CTkFrame(btn_container, fg_color="transparent")
+        ma_toggle_frame.pack(side="right", padx=(10, 2), pady=0)
+        self._ma_toggle_checkboxes: dict[int, ctk.CTkCheckBox] = {}
+        for p in CHART_MA_TOGGLE_PERIODS:
+            cb = ctk.CTkCheckBox(
+                ma_toggle_frame,
+                text=f"{p}일",
+                variable=self._trend_vars[p],
+                font=gui_body_font(),
+                width=24,
+                checkbox_width=14,
+                checkbox_height=14,
+            )
+            cb.pack(side="left", padx=(2, 4))
+            self._ma_toggle_checkboxes[p] = cb
+            HoverTooltip(cb, f"{p}일 이동평균선 표시/숨김")
+
+        self.btn_chart_zoom_reset = ctk.CTkButton(
+            ma_toggle_frame,
+            text="줌 리셋",
+            width=56,
+            height=24,
             font=gui_body_font(),
-            width=28,
-            checkbox_width=14,
-            checkbox_height=14,
+            command=self._chart_reset_zoom,
         )
-        self.cb_return_overlay.pack(side="right", padx=(10, 2), pady=0)
-        HoverTooltip(self.cb_return_overlay, "주가 차트 배경에 누적 수익률(%) 음영 오버레이")
+        self.btn_chart_zoom_reset.pack(side="left", padx=(4, 0))
+        HoverTooltip(
+            self.btn_chart_zoom_reset,
+            "차트 확대/축소를 처음 구간으로 되돌립니다",
+        )
 
         self.chart_frame = ctk.CTkFrame(
             right, fg_color=("gray95", "gray17")
@@ -744,6 +778,7 @@ class BacktestGUI(ctk.CTk):
             bg=_flat_bg,
         )
         self._chart_flat_canvas.pack(fill="both", expand=True)
+        self._bind_chart_zoom_events(self._chart_flat_canvas)
 
         self.chart_overlay_host.bind("<Configure>", self._on_chart_frame_configure)
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
@@ -771,10 +806,11 @@ class BacktestGUI(ctk.CTk):
             "write", lambda *_: self._refresh_trading_rules_display()
         )
 
-        self.var_show_return_overlay.trace_add(
-            "write",
-            lambda *_: self.after(0, self._on_rules_refresh_chart),
-        )
+        for p in CHART_MA_TOGGLE_PERIODS:
+            self._trend_vars[p].trace_add(
+                "write",
+                lambda *_: self.after(0, self._on_rules_refresh_chart),
+            )
 
         self.lbl_status = ctk.CTkLabel(
             self,
@@ -861,6 +897,7 @@ class BacktestGUI(ctk.CTk):
 
     def _chart_flat_show_message(self, message: str) -> None:
         """PNG 없을 때·오류 메시지 — CTkImage 없이 순수 tk.Canvas 텍스트."""
+        self._chart_pan_active = False
         self._img_flat_ref = None
         self._chart_canvas_image_item = None
         c = getattr(self, "_chart_flat_canvas", None)
@@ -1040,6 +1077,320 @@ class BacktestGUI(ctk.CTk):
         )
         return fw, fh
 
+    def _bind_chart_zoom_events(self, canvas: tk.Canvas) -> None:
+        """차트 캔버스 휠 줌·왼쪽 드래그 팬(Windows/Linux)."""
+        canvas.bind("<Enter>", lambda _e: canvas.focus_set())
+        canvas.bind("<MouseWheel>", self._on_chart_mousewheel)
+        canvas.bind("<Button-4>", self._on_chart_mousewheel_linux)
+        canvas.bind("<Button-5>", self._on_chart_mousewheel_linux)
+        canvas.bind("<ButtonPress-1>", self._on_chart_pan_press)
+        canvas.bind("<B1-Motion>", self._on_chart_pan_motion)
+        canvas.bind("<ButtonRelease-1>", self._on_chart_pan_release)
+
+    def _on_chart_mousewheel(self, event: tk.Event) -> None:
+        if getattr(event, "delta", 0) > 0:
+            self._chart_zoom_step(1)
+        elif getattr(event, "delta", 0) < 0:
+            self._chart_zoom_step(-1)
+
+    def _on_chart_mousewheel_linux(self, event: tk.Event) -> None:
+        if int(getattr(event, "num", 0)) == 4:
+            self._chart_zoom_step(1)
+        elif int(getattr(event, "num", 0)) == 5:
+            self._chart_zoom_step(-1)
+
+    def _chart_render_kw_from_px(
+        self, chart_px: tuple[int, int] | None
+    ) -> dict[str, object]:
+        if chart_px is None:
+            return {
+                "figsize": None,
+                "save_dpi": 300,
+                "layout_preset": "report",
+            }
+        w_px, h_px = chart_px
+        dpi = 100
+        return {
+            "figsize": (
+                max(3.2, float(w_px) / dpi),
+                max(2.2, float(h_px) / dpi),
+            ),
+            "save_dpi": dpi,
+            "layout_preset": "gui_target",
+        }
+
+    def _chart_state_from_replay(
+        self, replay: dict, *, render_kw: dict[str, object]
+    ) -> dict:
+        sim = replay["sim"]
+        full_close = replay["full_close"]
+        trend_flags = replay["trend_flags"]
+        trend_plot, trend_vis = prepare_chart_trend_ma(
+            full_close, sim.index, trend_flags
+        )
+        for p in CHART_MA_TOGGLE_PERIODS:
+            trend_vis[p] = bool(self._trend_vars[p].get())
+        return {
+            "sim": sim,
+            "trades": list(replay.get("trades") or []),
+            "name": str(replay.get("name") or ""),
+            "bar_label": str(replay.get("bar_label") or "일봉"),
+            "ma_n": int(replay.get("ma_n", 20)),
+            "ret_series": replay["ret_series"],
+            "trend_ma": trend_plot,
+            "trend_visible": trend_vis,
+            "show_candle": bool(replay.get("show_chart_candle", True)),
+            "show_volume": bool(replay.get("show_chart_volume", True)),
+            **render_kw,
+        }
+
+    def _chart_install_canvas_state(self, state: dict | None) -> None:
+        """줌용 전체 봉 캐시 설치 및 구간 초기화."""
+        self._chart_canvas_state = state
+        self._chart_zoom_i0 = 0
+        self._chart_zoom_i1 = None
+
+    def _chart_visible_range(self) -> tuple[int, int]:
+        st = self._chart_canvas_state
+        if not st:
+            return 0, 0
+        n = len(st["sim"])
+        if n <= 0:
+            return 0, 0
+        i0 = max(0, int(self._chart_zoom_i0))
+        i1 = (
+            n - 1
+            if self._chart_zoom_i1 is None
+            else min(n - 1, int(self._chart_zoom_i1))
+        )
+        if i0 > i1:
+            i0, i1 = 0, n - 1
+        return i0, i1
+
+    def _chart_is_zoomed_in(self) -> bool:
+        """전체 구간보다 좁게 보일 때만 드래그 팬 허용."""
+        st = self._chart_canvas_state
+        if not st:
+            return False
+        n = len(st["sim"])
+        if n < 2:
+            return False
+        i0, i1 = self._chart_visible_range()
+        return (i1 - i0 + 1) < n
+
+    def _chart_pixels_per_bar(self) -> float:
+        i0, i1 = self._chart_visible_range()
+        visible = max(1, i1 - i0 + 1)
+        try:
+            fw, _fh = self._chart_overlay_host_inner_pixel_size()
+        except tk.TclError:
+            fw = 800
+        return max(1.0, float(fw) / float(visible))
+
+    def _chart_reset_canvas_image_position(self) -> None:
+        """PNG 갱신·팬 종료 후 이미지 앵커 (0,0) 복귀."""
+        item = getattr(self, "_chart_canvas_image_item", None)
+        cvs = getattr(self, "_chart_flat_canvas", None)
+        if item is None or cvs is None:
+            return
+        try:
+            cvs.coords(item, 0, 0)
+        except tk.TclError:
+            pass
+        self._chart_pan_drag_dx = 0
+        self._chart_pan_image_origin = (0.0, 0.0)
+
+    def _chart_shift_viewport(self, bar_shift: int) -> None:
+        if bar_shift == 0 or not self._chart_canvas_state:
+            return
+        n = len(self._chart_canvas_state["sim"])
+        i0, i1 = self._chart_visible_range()
+        new_i0 = i0 + int(bar_shift)
+        new_i1 = i1 + int(bar_shift)
+        if new_i0 < 0:
+            new_i1 -= new_i0
+            new_i0 = 0
+        if new_i1 >= n:
+            new_i0 -= new_i1 - (n - 1)
+            new_i1 = n - 1
+        new_i0 = max(0, new_i0)
+        if new_i1 < new_i0:
+            return
+        self._chart_zoom_i0 = new_i0
+        self._chart_zoom_i1 = new_i1
+
+    def _on_chart_pan_press(self, event: tk.Event) -> None:
+        if self._busy or not self._chart_is_zoomed_in():
+            return
+        item = getattr(self, "_chart_canvas_image_item", None)
+        cvs = getattr(self, "_chart_flat_canvas", None)
+        if item is None or cvs is None:
+            return
+        try:
+            coords = cvs.coords(item)
+        except tk.TclError:
+            return
+        self._chart_pan_active = True
+        self._chart_pan_press_x = int(event.x)
+        self._chart_pan_drag_dx = 0
+        ox = float(coords[0]) if coords else 0.0
+        oy = float(coords[1]) if len(coords) > 1 else 0.0
+        self._chart_pan_image_origin = (ox, oy)
+        try:
+            cvs.configure(cursor="fleur")
+        except tk.TclError:
+            pass
+
+    def _on_chart_pan_motion(self, event: tk.Event) -> None:
+        if not self._chart_pan_active:
+            return
+        item = getattr(self, "_chart_canvas_image_item", None)
+        cvs = getattr(self, "_chart_flat_canvas", None)
+        if item is None or cvs is None:
+            return
+        dx = int(event.x) - self._chart_pan_press_x
+        self._chart_pan_drag_dx = dx
+        ox, oy = self._chart_pan_image_origin
+        try:
+            cvs.coords(item, ox + dx, oy)
+        except tk.TclError:
+            pass
+
+    def _on_chart_pan_release(self, event: tk.Event) -> None:
+        if not self._chart_pan_active:
+            return
+        self._chart_pan_active = False
+        cvs = getattr(self, "_chart_flat_canvas", None)
+        if cvs is not None:
+            try:
+                cvs.configure(cursor="")
+            except tk.TclError:
+                pass
+
+        dx = int(self._chart_pan_drag_dx)
+        self._chart_reset_canvas_image_position()
+
+        if abs(dx) < 4 or not self._chart_canvas_state:
+            return
+
+        ppb = self._chart_pixels_per_bar()
+        bar_shift = int(round(-dx / ppb)) if ppb > 0 else 0
+        if bar_shift == 0:
+            bar_shift = 1 if dx < 0 else -1
+
+        self._chart_shift_viewport(bar_shift)
+        if self._chart_zoom_after_id is not None:
+            try:
+                self.after_cancel(self._chart_zoom_after_id)
+            except Exception:
+                pass
+            self._chart_zoom_after_id = None
+        if self._busy:
+            self._schedule_chart_zoom_rerender()
+            return
+        try:
+            self._render_chart_viewport_sync()
+        except Exception as e:
+            self.set_status_message(f"차트 팬 갱신 실패: {e}")
+
+    def _chart_zoom_step(self, direction: int) -> None:
+        """direction: +1 확대(휠 업), -1 축소(휠 다운)."""
+        if not self._chart_canvas_state:
+            return
+        sim = self._chart_canvas_state["sim"]
+        n = len(sim)
+        if n < 2:
+            return
+        i0, i1 = self._chart_visible_range()
+        visible = i1 - i0 + 1
+        center = (i0 + i1) / 2.0
+        min_vis = CHART_ZOOM_MIN_VISIBLE_BARS
+
+        if direction > 0:
+            new_vis = max(min_vis, int(round(visible * CHART_ZOOM_WHEEL_FACTOR)))
+        else:
+            new_vis = min(
+                n,
+                max(min_vis, int(round(visible / CHART_ZOOM_WHEEL_FACTOR))),
+            )
+            if new_vis >= n:
+                self._chart_reset_zoom()
+                return
+
+        new_i0 = int(round(center - (new_vis - 1) / 2.0))
+        new_i1 = new_i0 + new_vis - 1
+        if new_i0 < 0:
+            new_i1 -= new_i0
+            new_i0 = 0
+        if new_i1 >= n:
+            shift = new_i1 - (n - 1)
+            new_i0 = max(0, new_i0 - shift)
+            new_i1 = n - 1
+
+        self._chart_zoom_i0 = new_i0
+        self._chart_zoom_i1 = new_i1
+        self._schedule_chart_zoom_rerender()
+
+    def _chart_reset_zoom(self) -> None:
+        if not self._chart_canvas_state:
+            return
+        self._chart_zoom_i0 = 0
+        self._chart_zoom_i1 = None
+        self._schedule_chart_zoom_rerender()
+
+    def _schedule_chart_zoom_rerender(self) -> None:
+        if self._chart_zoom_after_id is not None:
+            try:
+                self.after_cancel(self._chart_zoom_after_id)
+            except Exception:
+                pass
+        self._chart_zoom_after_id = self.after(100, self._chart_zoom_rerender_flush)
+
+    def _chart_zoom_rerender_flush(self) -> None:
+        self._chart_zoom_after_id = None
+        if self._busy:
+            self._chart_zoom_after_id = self.after(150, self._chart_zoom_rerender_flush)
+            return
+        try:
+            self._render_chart_viewport_sync()
+        except Exception as e:
+            self.set_status_message(f"차트 줌 갱신 실패: {e}")
+
+    def _render_chart_viewport_sync(self) -> None:
+        """메모리 PNG 재생성(줌·이평 토글). output/ 미기록."""
+        st = self._chart_canvas_state
+        if not st:
+            return
+        i0, i1 = self._chart_visible_range()
+        sim_v, trades_v, ret_v, trend_v = slice_chart_viewport(
+            st["sim"],
+            st["trades"],
+            st["ret_series"],
+            st.get("trend_ma"),
+            i0,
+            i1,
+        )
+        trend_vis = dict(st.get("trend_visible") or {})
+        for p in CHART_MA_TOGGLE_PERIODS:
+            trend_vis[p] = bool(self._trend_vars[p].get())
+
+        png_bytes = render_backtest_chart_png_bytes(
+            sim_v,
+            trades_v,
+            str(st["name"]),
+            str(st["bar_label"]),
+            int(st["ma_n"]),
+            ret_v,
+            trend_ma=trend_v,
+            trend_ma_visible=trend_vis,
+            show_candle=bool(st.get("show_candle", True)),
+            show_volume=bool(st.get("show_volume", True)),
+            figsize=st.get("figsize"),
+            save_dpi=int(st.get("save_dpi", 100)),
+            layout_preset=str(st.get("layout_preset", "gui_target")),
+        )
+        self._update_chart_image_from_png_bytes(png_bytes)
+
     def _update_chart_image(self, image_path: str | None) -> None:
         """엔진 PNG 표시 — tk.Canvas. v4.11: 같은 image item 에 itemconfig 스왑(선 delete 금지)."""
         if not image_path or not os.path.isfile(image_path):
@@ -1091,6 +1442,7 @@ class BacktestGUI(ctk.CTk):
 
                 self._img_flat_ref = photo
                 self._last_chart_path = image_path
+                self._chart_reset_canvas_image_position()
         except Exception as e:
             self._last_chart_path = None
             self._chart_canvas_image_item = None
@@ -1148,6 +1500,7 @@ class BacktestGUI(ctk.CTk):
 
                 self._img_flat_ref = photo
                 self._last_chart_path = None
+                self._chart_reset_canvas_image_position()
         except Exception as e:
             self._last_chart_path = None
             self._chart_canvas_image_item = None
@@ -1386,6 +1739,10 @@ class BacktestGUI(ctk.CTk):
             return
 
         self._pending_run_code = code
+        uni_u = cfg.get("universe") or {}
+        self._pending_display_name = str(
+            uni_u.get("selected_display_name") or ""
+        ).strip()
         self._busy = True
         self._update_period_label()
         self.btn_run.configure(state="disabled", text="차트 로딩 중…")
@@ -1393,13 +1750,16 @@ class BacktestGUI(ctk.CTk):
         chart_px = self._chart_render_targets_for_engine()
         show_candle = bool((cfg.get("strategy") or {}).get("show_chart_candle", True))
         show_volume = bool((cfg.get("strategy") or {}).get("show_chart_volume", True))
-        show_overlay = bool((cfg.get("strategy") or {}).get("show_return_overlay", False))
         ma_n = int((cfg.get("strategy") or {}).get("ma_period", 20))
-        trend_periods = [p for p in TREND_MA_PERIODS if bool(self._trend_vars[p].get())]
+        trend_ma: dict[int, pd.Series] = {}
+        trend_visible: dict[int, bool] = {}
+        for p in CHART_MA_TOGGLE_PERIODS:
+            trend_visible[p] = bool(self._trend_vars[p].get())
 
         def work() -> None:
             try:
-                ohlcv = load_ohlcv(code, start_s, end_s)
+                _prime_krx_env_from_dotenv()
+                ohlcv = load_ohlcv_for_chart(code, start_s, end_s)
                 if ohlcv is None or ohlcv.empty:
                     raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
 
@@ -1413,8 +1773,7 @@ class BacktestGUI(ctk.CTk):
                 sim = sim.sort_index()
                 close = pd.to_numeric(sim["Close"], errors="coerce")
                 ret_series = pd.Series(0.0, index=sim.index)
-                trend_ma: dict[int, pd.Series] = {}
-                for p in trend_periods:
+                for p in CHART_MA_TOGGLE_PERIODS:
                     trend_ma[p] = close.rolling(int(p), min_periods=1).mean()
 
                 figsize = None
@@ -1430,35 +1789,68 @@ class BacktestGUI(ctk.CTk):
                     save_dpi = dpi
                     layout_preset = "gui_target"
 
+                chart_title = (
+                    str(getattr(self, "_pending_display_name", "") or "").strip()
+                    or code
+                )
+                canvas_state = {
+                    "sim": sim,
+                    "trades": [],
+                    "name": chart_title,
+                    "bar_label": "일봉",
+                    "ma_n": ma_n,
+                    "ret_series": ret_series,
+                    "trend_ma": trend_ma,
+                    "trend_visible": dict(trend_visible),
+                    "show_candle": show_candle,
+                    "show_volume": show_volume,
+                    "figsize": figsize,
+                    "save_dpi": save_dpi,
+                    "layout_preset": layout_preset,
+                }
                 png_bytes = render_backtest_chart_png_bytes(
                     sim=sim,
                     trades=[],
-                    name=code,
+                    name=chart_title,
                     bar_label="일봉",
                     ma_n=ma_n,
                     ret_series=ret_series,
                     trend_ma=trend_ma,
+                    trend_ma_visible=trend_visible,
                     show_candle=show_candle,
                     show_volume=show_volume,
-                    show_return_overlay=show_overlay,
                     figsize=figsize,
                     save_dpi=save_dpi,
                     layout_preset=layout_preset,
                 )
 
-                self.after(0, lambda b=png_bytes: self._finish_chart_only(code, b))
+                self.after(
+                    0,
+                    lambda b=png_bytes, ct=chart_title, cs=canvas_state: self._finish_chart_only(
+                        code, b, ct, cs
+                    ),
+                )
             except Exception as e:
                 self.after(0, lambda m=str(e): self._finish_chart_only_error(m))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _finish_chart_only(self, code: str, png_bytes: bytes) -> None:
+    def _finish_chart_only(
+        self,
+        code: str,
+        png_bytes: bytes,
+        display_name: str = "",
+        canvas_state: dict | None = None,
+    ) -> None:
         self._busy = False
         self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
         self._last_active_stock_code = code
+        if canvas_state is not None:
+            self._chart_install_canvas_state(canvas_state)
         self._update_chart_image_from_png_bytes(png_bytes)
         self.set_status_message("완료")
-        self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {code}")
+        nm = str(display_name or "").strip() or code
+        self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {nm}")
 
     def _finish_chart_only_error(self, msg: str) -> None:
         self._busy = False
@@ -1593,6 +1985,7 @@ class BacktestGUI(ctk.CTk):
         listing_market_override: str | None = None,
         silent_try_build: bool = False,
         search_keyword_override: str | None = None,
+        selected_display_name: str | None = None,
     ) -> None:
         """
         검색 결과 더블클릭·「백테스트 실행」·이력 라우팅 공통 진입점.
@@ -1610,6 +2003,9 @@ class BacktestGUI(ctk.CTk):
         )
         if cfg is None:
             return
+        nm = str(selected_display_name or "").strip()
+        if nm:
+            cfg.setdefault("universe", {})["selected_display_name"] = nm
         self._run_chart_only(cfg)
 
     def _run_single_from_run_button(self) -> None:
@@ -1623,10 +2019,11 @@ class BacktestGUI(ctk.CTk):
                 raw = self.list_codes.get(cs[0])
             except (tk.TclError, IndexError):
                 raw = ""
-            cd, _nm = self._split_codes_list_line(str(raw))
+            cd, nm = self._split_codes_list_line(str(raw))
             self._run_single_with_code(
                 cd,
                 search_keyword_override="",
+                selected_display_name=nm,
             )
             return
 
@@ -1901,7 +2298,11 @@ class BacktestGUI(ctk.CTk):
             trade_amount_text=amt_s,
             skip_if_exists=True,
         )
-        self.set_status_message(f"최근 이력에 추가됨: {cd} {nm}")
+        self._run_single_with_code(
+            cd,
+            selected_display_name=nm,
+        )
+        self.set_status_message(f"차트 표시 · 이력 추가: {nm} ({cd})")
 
     def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
         sel = self.list_history.curselection()
@@ -1913,7 +2314,7 @@ class BacktestGUI(ctk.CTk):
             return
         if not (0 <= idx_h < len(self._history_deque)):
             return
-        cd, _nm_hist, _mc, mk = history_row_normalize(list(self._history_deque)[idx_h])
+        cd, nm_hist, _mc, mk = history_row_normalize(list(self._history_deque)[idx_h])
         if not cd:
             return
         # UI 동기화: 이력에 기록된 상장 시장·종목명을 메인 폼에 반영
@@ -1925,6 +2326,7 @@ class BacktestGUI(ctk.CTk):
             listing_market_override=k_h,
             silent_try_build=True,
             search_keyword_override="",
+            selected_display_name=nm_hist,
         )
 
     def _search_screen_universe_params(self) -> dict[str, object] | None:
@@ -2448,6 +2850,7 @@ class BacktestGUI(ctk.CTk):
 
             replay_copy = dict(res.replay_chart)
             px = deferred_chart_px
+            render_kw = self._chart_render_kw_from_px(px)
             tk_snap = ticket
 
             def _chart_paint_task() -> None:
@@ -2461,7 +2864,11 @@ class BacktestGUI(ctk.CTk):
                         0,
                         lambda b=png_blob,
                         sk=skipped,
-                        tt=tk_snap: self._materialized_chart_dispatch_bytes(tt, b, sk),
+                        tt=tk_snap,
+                        rp=replay_copy,
+                        rk=render_kw: self._materialized_chart_dispatch_bytes(
+                            tt, b, sk, rp, rk
+                        ),
                     )
                 except Exception as chart_ex:
                     em = str(chart_ex)
@@ -2495,11 +2902,20 @@ class BacktestGUI(ctk.CTk):
         ticket: int,
         png_bytes: bytes | None,
         trade_markers_skipped: int,
+        replay: dict | None = None,
+        render_kw: dict | None = None,
     ) -> None:
         """연기 PNG를 디스크 없이 메모리 버퍼만으로 표시(v3.1 output/ I/O 차단)."""
         if ticket != self._chart_materialize_ticket:
             return
         self._stop_chart_loading_spinner()
+        if replay is not None and render_kw is not None:
+            try:
+                self._chart_install_canvas_state(
+                    self._chart_state_from_replay(replay, render_kw=render_kw)
+                )
+            except Exception:
+                self._chart_canvas_state = None
         self.update_idletasks()
         self.after_idle(
             lambda b=png_bytes: self._update_chart_image_from_png_bytes(b)

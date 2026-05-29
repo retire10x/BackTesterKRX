@@ -41,8 +41,21 @@
 - [x] **v3.1** 차트 전용 전환: 주도주/이력 더블클릭 시 백테스트 미실행·기간 OHLC 차트만 렌더
 - [x] **v3.1** 스캐너 디버그 보강: KOSPI 전수(`universe_limit=0`)·단계별 생존 카운트 로그 파일 출력
 - [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
+- [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
+- [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.16** 차트 X축·패널 구분·휠 줌)
+- **`backtest_chart.py`:** `_apply_chart_xaxis_price_panel_dates`(가격 패널 하단만 MM.DD·거래량 무 라벨·패널 간격 확대) · `_draw_price_volume_panel_divider` · `slice_chart_viewport` · `FIG_ATTR_PRICE_PANEL_XDATE`
+- **`gui.py`:** 캔버스 `<MouseWheel>`/Linux Button-4·5 줌 · **줌 리셋** 버튼 · `_chart_canvas_state` 캐시 후 `render_backtest_chart_png_bytes` 재호출(output/ 미기록)
+- **`gui.py` (v3.16 팬):** 확대 시 왼쪽 드래그 → 이동 중 `canvas.coords` 이미지만 이동 · 릴리스 시 `bar_shift` 반영·Y축 재렌더(드래그 중 PNG 생성 없음)
+
+### 2026-05-29 (**v3.15** GUI 차트 이평선 토글 · 수익률 버튼 제거)
+- **`gui.py`:** 차트 상단 **수익률** 체크박스 삭제 → **5·10·20·60·120일** 이평 토글(기본 ON) 가로 배치 · `stateChanged`→`_on_rules_refresh_chart` · `render_backtest_chart_png_bytes` 메모리 경로 유지
+- **`backtest_chart.py`:** 기간별 MA 색·두께(5/10=0.8, 20=1.5, 60=1.0, 120=2.0) · `trend_ma_visible`+`line.set_visible` · 범례는 표시 중인 선만 · `_draw_cumulative_return_overlay` 제거
+- **`metrics.py`:** `prepare_chart_trend_ma` · `show_return_overlay` 파이프라인 제거 · 5중 이평 기본 ON
+- **`gui_helpers.py`·`config/settings.yaml`:** `show_return_overlay` 폐기 · `show_trend_ma5~120` 기본 true
 
 ### 2026-05-27 (**v3.1** 최종 배포 — 리스트 시총·대금·PNG 억제)
 - **리스트:** 스캔 결과에 시가총액·당일 거래대금 컬럼 추가(억 단위 반올림, 극대 시총은 `N천억` 표기)

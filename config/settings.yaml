@@ -39,18 +39,16 @@ strategy:
   # v4.6 기본 크로스 스위치 (strategy.add_signals / simulate 데드 매도 실행). GUI 초기 선택은 모두 끔.
   golden_buy_enabled: false
   dead_cross_sell_enabled: false
-  # 추세선 오버레이 (차트 PNG) — 체크한 기간만 표시 (매매 기준 N과 차트상 독립)
-  show_trend_ma5: false
-  show_trend_ma10: false
+  # 추세선 오버레이 (차트 PNG) — v3.15 GUI 5중 이평 토글(기본 모두 ON)
+  show_trend_ma5: true
+  show_trend_ma10: true
   show_trend_ma20: true
-  show_trend_ma60: false
+  show_trend_ma60: true
   show_trend_ma120: true
   show_trend_ma200: false
   # 차트 패널 표시 (GUI·YAML 공통)
   show_chart_candle: true
   show_chart_volume: true
-  # 하단 독립 누적수익률 패널(v4.6-) 폐기. 가격 패널 배경 음영·우측 % 축(v4.10 GUI 기본 OFF)
-  show_return_overlay: false
   # v4.0 매수 진입 필터 (시뮬 엔진 simulate_single.entry_filters)
   filter_trend_slope: false
   slope_threshold: 0.01

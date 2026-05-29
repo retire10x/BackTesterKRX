@@ -25,6 +25,8 @@ from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
 from .backtest_constants import (
+    FIG_ATTR_NO_XDATE_LABELS,
+    FIG_ATTR_PRICE_PANEL_XDATE,
     FIG_ATTR_TRADE_MARKERS_SKIPPED,
     MARKER_ANNOT_SIZE,
     MARKER_BUY_COLOR,
@@ -35,6 +37,7 @@ from .backtest_constants import (
     MARKER_TRAIL_STOP_OUTLINE,
     TREND_MA_COLORS,
     TREND_MA_LINEWIDTH,
+    TREND_MA_LINEWIDTHS,
     TRADE_MARKER_OFFSET_PT,
 )
 
@@ -114,10 +117,35 @@ def _prepare_figure_for_png_export(fig: Figure, *, layout_preset: str) -> None:
                 )
         except Exception:
             pass
-        try:
-            fig.autofmt_xdate()
-        except Exception:
-            pass
+        price_xdate = bool(getattr(fig, FIG_ATTR_PRICE_PANEL_XDATE, False))
+        no_xdate = bool(getattr(fig, FIG_ATTR_NO_XDATE_LABELS, False))
+        if not price_xdate and not no_xdate:
+            try:
+                fig.autofmt_xdate()
+            except Exception:
+                pass
+        else:
+            try:
+                hspace = 0.44 if price_xdate else 0.38
+                bottom = 0.08 if price_xdate else 0.06
+                if layout_preset == "gui_target":
+                    fig.subplots_adjust(
+                        left=0.07,
+                        right=0.90,
+                        top=0.91,
+                        bottom=bottom,
+                        hspace=hspace,
+                    )
+                else:
+                    fig.subplots_adjust(
+                        left=0.05,
+                        right=0.92,
+                        top=0.93,
+                        bottom=bottom,
+                        hspace=hspace,
+                    )
+            except Exception:
+                pass
 
 
 def save_figure_as_png(
@@ -423,12 +451,12 @@ def _share_x_axes(fig: Figure, ax_primary) -> None:
             continue
 
 
-def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
-    """세로 격자 + 날짜 눈금·포매터. 라벨 회전은 적용하지 않음(저장 시 `save_figure_as_png` 의 `autofmt_xdate` 에 맡김)."""
+def _apply_chart_xaxis_grid_and_locators(
+    fig: Figure, idx: pd.DatetimeIndex
+) -> tuple[mticker.MultipleLocator, mticker.MultipleLocator, mticker.Formatter]:
+    """모든 패널 공통 X 격자·로케이터."""
     n = len(idx)
-    if n == 0:
-        return
-    maj_step = max(1, min(45, n // 14))
+    maj_step = max(1, min(45, n // 14)) if n else 1
     min_step = max(1, maj_step // 2)
     maj_loc = mticker.MultipleLocator(base=maj_step)
     min_loc = mticker.MultipleLocator(base=min_step)
@@ -437,15 +465,6 @@ def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
     for ax in fig.axes:
         ax.xaxis.set_major_locator(maj_loc)
         ax.xaxis.set_minor_locator(min_loc)
-        ax.xaxis.set_major_formatter(formatter)
-        ax.tick_params(
-            axis="x",
-            which="major",
-            labelsize=8.5,
-            bottom=True,
-            labelbottom=True,
-        )
-        ax.tick_params(axis="x", which="minor", bottom=True)
         ax.grid(True, which="major", axis="x", linestyle="--", linewidth=0.55, color="#cfcfcf")
         ax.grid(
             True,
@@ -456,6 +475,121 @@ def _apply_hts_style_xaxis(fig: Figure, idx: pd.DatetimeIndex) -> None:
             color="#e8e8e8",
             alpha=0.95,
         )
+    return maj_loc, min_loc, formatter
+
+
+def _apply_chart_xaxis_price_panel_dates(
+    fig: Figure,
+    idx: pd.DatetimeIndex,
+    ax_price,
+    ax_vol=None,
+) -> None:
+    """가격 패널 하단에만 날짜 라벨 — 거래량 패널은 라벨·하단 눈금 없음(v3.16)."""
+    if ax_price is None or len(idx) == 0:
+        return
+    _maj_loc, _min_loc, formatter = _apply_chart_xaxis_grid_and_locators(fig, idx)
+
+    for ax in fig.axes:
+        if ax is ax_price:
+            continue
+        ax.xaxis.set_major_formatter(mticker.NullFormatter())
+        ax.tick_params(
+            axis="x",
+            which="both",
+            bottom=False,
+            top=False,
+            labelbottom=False,
+            labeltop=False,
+        )
+
+    ax_price.xaxis.set_major_formatter(formatter)
+    ax_price.tick_params(
+        axis="x",
+        which="major",
+        labelbottom=True,
+        labeltop=False,
+        bottom=True,
+        top=False,
+        labelsize=8.0,
+        pad=3,
+    )
+    ax_price.tick_params(
+        axis="x",
+        which="minor",
+        bottom=True,
+        top=False,
+        labelbottom=False,
+        labeltop=False,
+    )
+    if ax_vol is not None:
+        ax_vol.tick_params(
+            axis="x",
+            which="both",
+            labelbottom=False,
+            labeltop=False,
+            bottom=False,
+            top=False,
+        )
+
+
+def _draw_price_volume_panel_divider(fig: Figure, ax_price, ax_vol) -> None:
+    """가격·거래량 패널 경계에 figure 좌표 수평 구분선."""
+    if ax_price is None or ax_vol is None:
+        return
+    import matplotlib.lines as mlines
+
+    pos_p = ax_price.get_position()
+    pos_v = ax_vol.get_position()
+    y_line = (pos_p.y0 + pos_v.y1) * 0.5
+    x0 = min(pos_p.x0, pos_v.x0)
+    x1 = max(pos_p.x0 + pos_p.width, pos_v.x0 + pos_v.width)
+    fig.add_artist(
+        mlines.Line2D(
+            [x0, x1],
+            [y_line, y_line],
+            transform=fig.transFigure,
+            color="#757575",
+            linewidth=1.35,
+            solid_capstyle="round",
+            zorder=50,
+            clip_on=False,
+        )
+    )
+
+
+def slice_chart_viewport(
+    sim: pd.DataFrame,
+    trades: list[dict],
+    ret_series: pd.Series,
+    trend_ma: dict[int, pd.Series] | None,
+    i0: int,
+    i1: int,
+) -> tuple[pd.DataFrame, list[dict], pd.Series, dict[int, pd.Series] | None]:
+    """휠 줌용 봉 구간 [i0, i1] 슬라이스(가격·거래량·이평·타점 동기)."""
+    n = len(sim)
+    if n == 0:
+        return sim, trades, ret_series, trend_ma
+    i0 = max(0, min(int(i0), n - 1))
+    i1 = max(i0, min(int(i1), n - 1))
+    sim_s = sim.iloc[i0 : i1 + 1]
+    idx_s = sim_s.index
+    ret_s = ret_series.reindex(idx_s)
+    trend_s = None
+    if trend_ma:
+        trend_s = {
+            p: ser.reindex(idx_s) for p, ser in trend_ma.items()
+        }
+    idx_norm = idx_s.normalize()
+    trades_s: list[dict] = []
+    for t in trades:
+        try:
+            ts = pd.Timestamp(t["date"]).normalize()
+        except Exception:
+            continue
+        pos = idx_norm.get_indexer([ts], method=None)
+        if pos.size and int(pos[0]) >= 0:
+            trades_s.append(t)
+    return sim_s, trades_s, ret_s, trend_s
 
 
 def _chart_panel_ratios(show_volume: bool) -> tuple[int, ...]:
@@ -463,93 +597,12 @@ def _chart_panel_ratios(show_volume: bool) -> tuple[int, ...]:
     return (6, 2) if show_volume else (1,)
 
 
-def _draw_cumulative_return_overlay(
-    ax_price,
-    ohlc_index: pd.DatetimeIndex,
-    ret_series: pd.Series,
-) -> None:
-    """가격 패널 twinx: 누적 수익률 배경(fill) + 우측 Y축 눈금·레이블(%). 저장 시 우측 여백 확보용 플래그 설정."""
-    if ax_price is None:
-        return
-    n = len(ohlc_index)
-    if n == 0:
-        return
-    ret_aligned = ret_series.reindex(ohlc_index).astype(float).ffill().bfill().fillna(0.0)
-    y = ret_aligned.to_numpy(dtype=float)
-    x = np.arange(n, dtype=float)
-
-    ax_ov = ax_price.twinx()
-    ax_ov.patch.set_visible(False)
-    for side, sp in ax_ov.spines.items():
-        sp.set_visible(side == "right")
-    try:
-        sp_r = ax_ov.spines["right"]
-        sp_r.set_linewidth(0.8)
-        sp_r.set_alpha(0.55)
-        sp_r.set_color("#6a89b5")
-    except Exception:
-        pass
-    clr = "#3d6dad"
-    ymin_d = float(np.nanmin(y)) if y.size else 0.0
-    ymax_d = float(np.nanmax(y)) if y.size else 0.0
-    span = ymax_d - ymin_d if np.isfinite(ymax_d - ymin_d) else 0.0
-    pad = max(abs(span) * 0.12, 0.5 if span <= 1e-9 else span * 0.02)
-    lo = ymin_d - pad
-    hi = ymax_d + pad
-    if not (np.isfinite(lo) and np.isfinite(hi)) or hi <= lo:
-        lo, hi = -1.0, 1.0
-    ax_ov.set_ylim(lo, hi)
-
-    lbl_fs = float(matplotlib.rcParams.get("axes.labelsize", 9.0))
-    ax_ov.tick_params(
-        axis="y",
-        which="major",
-        labelleft=False,
-        labelright=True,
-        left=False,
-        right=True,
-        length=3,
-        pad=2,
-        labelsize=max(7.35, lbl_fs - 1.05),
-        colors=clr,
-        labelcolor=clr,
-    )
-    ax_ov.yaxis.set_major_locator(mticker.MaxNLocator(nbins=5, prune=None))
-    ax_ov.yaxis.set_major_formatter(
-        mticker.FuncFormatter(lambda val, _: f"{val:.1f}")
-    )
-    ax_ov.yaxis.set_label_position("right")
-    ax_ov.set_ylabel(
-        "누적 수익률 (%)",
-        fontsize=max(8.35, lbl_fs * 0.93),
-        color=clr,
-        labelpad=8,
-        rotation=270,
-        va="center",
-    )
-
-    ax_ov.fill_between(
-        x,
-        0.0,
-        y,
-        color="#56b4e9",
-        alpha=0.10,
-        linewidth=0,
-        zorder=-6,
-        clip_on=False,
-    )
-
-    try:
-        setattr(ax_price.figure, "_btkrx_return_dual_y", True)
-    except Exception:
-        pass
-
-
 def _autoscale_price_panel_y_with_trends(
     ax_price,
     odata: pd.DataFrame,
     trend_ma: dict[int, pd.Series] | None,
     idx: pd.DatetimeIndex,
+    trend_ma_visible: dict[int, bool] | None = None,
 ) -> None:
     """저가~고가 및 표시 중인 추세 이평을 포함해 가격 축 범위를 잡아 봉이 하단에 치우치지 않게 함."""
     low = odata["Low"].astype(float)
@@ -557,7 +610,9 @@ def _autoscale_price_panel_y_with_trends(
     ymin = float(np.nanmin(low.to_numpy()))
     ymax = float(np.nanmax(high.to_numpy()))
     if trend_ma:
-        for ser in trend_ma.values():
+        for period, ser in trend_ma.items():
+            if trend_ma_visible is not None and not bool(trend_ma_visible.get(period, True)):
+                continue
             v = ser.reindex(idx).astype(float).dropna()
             if v.empty:
                 continue
@@ -575,32 +630,39 @@ def _draw_trend_ma_lines_and_legend(
     idx: pd.DatetimeIndex,
     trend_ma: dict[int, pd.Series] | None,
     _bar_label: str,
+    trend_ma_visible: dict[int, bool] | None = None,
 ) -> None:
-    """추세 이평 오버레이(체크한 기간만) + 좌측 상단 순정 Legend(v4.5)."""
-    mw = float(TREND_MA_LINEWIDTH)
+    """추세 이평 오버레이(v3.15: 기간별 두께·색·가시성) + 좌측 상단 Legend."""
     if not trend_ma:
         return
     x = np.arange(len(idx))
-    n_visible = 0
+    legend_handles = []
     for period in sorted(trend_ma.keys()):
         ser = trend_ma[period].reindex(idx).astype(float)
         if not ser.notna().any():
             continue
+        is_visible = True if trend_ma_visible is None else bool(
+            trend_ma_visible.get(period, True)
+        )
         color = TREND_MA_COLORS.get(period, "#546e7a")
-        ax_price.plot(
+        lw = float(TREND_MA_LINEWIDTHS.get(period, TREND_MA_LINEWIDTH))
+        (line,) = ax_price.plot(
             x,
             ser.to_numpy(),
             color=color,
-            linewidth=mw,
+            linewidth=lw,
             solid_capstyle="round",
             zorder=4,
             label=f"{period}일선",
         )
-        n_visible += 1
-    if n_visible == 0:
+        line.set_visible(is_visible)
+        if is_visible:
+            legend_handles.append(line)
+    if not legend_handles:
         return
-    ncol = 2 if n_visible > 3 else 1
+    ncol = 2 if len(legend_handles) > 3 else 1
     ax_price.legend(
+        handles=legend_handles,
         loc="upper left",
         fontsize=8.5,
         framealpha=0.55,
@@ -623,12 +685,12 @@ def make_backtest_figure(
     ret_series: pd.Series,
     trend_ma: dict[int, pd.Series] | None = None,
     *,
+    trend_ma_visible: dict[int, bool] | None = None,
     show_candle: bool = True,
     show_volume: bool = True,
-    show_return_overlay: bool = False,
     figsize: tuple[float, float] | None = None,
 ) -> Figure:
-    """가격(OHLC)·선택 거래량 2패널 mplfinance 렌더. 누적 수익률 독립 패널 없음; 옵션 시 가격 패널 음영."""
+    """가격(OHLC)·선택 거래량 2패널 mplfinance 렌더."""
     import matplotlib.pyplot as plt
     import mplfinance as mpf
 
@@ -687,7 +749,8 @@ def make_backtest_figure(
         ylabel="",
         ylabel_lower="",
     )
-    _expand_mpf_vertical_panel_gaps(fig, gap_each=0.028)
+    panel_gap = 0.042 if show_volume else 0.028
+    _expand_mpf_vertical_panel_gaps(fig, gap_each=panel_gap)
 
     primary_axes = _mplfinance_primary_axes(axlist)
     ax_price, ax_vol = _assign_price_volume_axes(primary_axes, show_volume=show_volume)
@@ -700,16 +763,19 @@ def make_backtest_figure(
         _panel_upper_left_badge(ax_vol, "📊 Volume")
 
     _share_x_axes(fig, ax_price)
-    _apply_hts_style_xaxis(fig, idx)
+    _apply_chart_xaxis_price_panel_dates(fig, idx, ax_price, ax_vol if show_volume else None)
+    if show_volume:
+        _draw_price_volume_panel_divider(fig, ax_price, ax_vol)
     n_skip_tm = _draw_trade_markers_matplotlib(ax_price, buys, sells, odata)
     setattr(fig, FIG_ATTR_TRADE_MARKERS_SKIPPED, int(n_skip_tm))
-    _draw_trend_ma_lines_and_legend(ax_price, idx, trend_ma, bar_label)
-    _autoscale_price_panel_y_with_trends(ax_price, odata, trend_ma, idx)
-    if show_return_overlay:
-        _draw_cumulative_return_overlay(ax_price, idx, ret_series)
-    # sharex 시 상단 패널 라벨 겹침 완화 — 최종 회전·여백은 save_figure_as_png(autofmt_xdate·subplots_adjust)에서 처리.
-    for ax in fig.axes:
-        plt.setp(ax.get_xticklabels(), visible=True)
+    setattr(fig, FIG_ATTR_PRICE_PANEL_XDATE, True)
+    setattr(fig, FIG_ATTR_NO_XDATE_LABELS, True)
+    _draw_trend_ma_lines_and_legend(
+        ax_price, idx, trend_ma, bar_label, trend_ma_visible=trend_ma_visible
+    )
+    _autoscale_price_panel_y_with_trends(
+        ax_price, odata, trend_ma, idx, trend_ma_visible=trend_ma_visible
+    )
     return fig
 
 
@@ -723,9 +789,9 @@ def save_backtest_report_png(
     out_path: str,
     trend_ma: dict[int, pd.Series] | None = None,
     *,
+    trend_ma_visible: dict[int, bool] | None = None,
     show_candle: bool = True,
     show_volume: bool = True,
-    show_return_overlay: bool = False,
     figsize: tuple[float, float] | None = None,
     save_dpi: int = DEFAULT_CLI_SAVE_DPI,
     layout_preset: str = "report",
@@ -738,9 +804,9 @@ def save_backtest_report_png(
         ma_n,
         ret_series,
         trend_ma=trend_ma,
+        trend_ma_visible=trend_ma_visible,
         show_candle=show_candle,
         show_volume=show_volume,
-        show_return_overlay=show_return_overlay,
         figsize=figsize,
     )
     try:
@@ -758,9 +824,9 @@ def render_backtest_chart_png_bytes(
     ret_series: pd.Series,
     trend_ma: dict[int, pd.Series] | None = None,
     *,
+    trend_ma_visible: dict[int, bool] | None = None,
     show_candle: bool = True,
     show_volume: bool = True,
-    show_return_overlay: bool = False,
     figsize: tuple[float, float] | None = None,
     save_dpi: int = DEFAULT_CLI_SAVE_DPI,
     layout_preset: str = "report",
@@ -776,9 +842,9 @@ def render_backtest_chart_png_bytes(
         ma_n,
         ret_series,
         trend_ma=trend_ma,
+        trend_ma_visible=trend_ma_visible,
         show_candle=show_candle,
         show_volume=show_volume,
-        show_return_overlay=show_return_overlay,
         figsize=figsize,
     )
     try:
