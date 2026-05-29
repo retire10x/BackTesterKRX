@@ -451,20 +451,72 @@ _V31_PYKRX_EN_TO_KO: dict[str, str] = {
 }
 
 
-def scan_v3_overnight_candidates_bulk(
+def qualifies_leader_pullback_from_ohlcv(
+    df: pd.DataFrame,
+    *,
+    volume_burst_multiple: float = 3.0,
+    vol_shrink_limit: float = 0.5,
+) -> tuple[bool, float]:
+    """
+    단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 판정.
+    반환: (통과 여부, 당일 시가 대비 상승률 % — 리스트 정렬용).
+    """
+    if df is None or df.empty:
+        return False, 0.0
+    work = ensure_datetime_index(df.copy()).sort_index()
+    if len(work) < 22:
+        return False, 0.0
+
+    vol = pd.to_numeric(work["Volume"], errors="coerce")
+    low = pd.to_numeric(work["Low"], errors="coerce")
+    close = pd.to_numeric(work["Close"], errors="coerce")
+    opn = pd.to_numeric(work["Open"], errors="coerce")
+
+    vol_ma20_prior = float(vol.iloc[-22:-2].mean())
+    prev_vol = float(vol.iloc[-2])
+    today_vol = float(vol.iloc[-1])
+    ma20 = float(close.iloc[-20:].mean())
+    low_t = float(low.iloc[-1])
+    close_t = float(close.iloc[-1])
+    open_t = float(opn.iloc[-1])
+
+    if not (
+        np.isfinite(vol_ma20_prior)
+        and vol_ma20_prior > 0
+        and np.isfinite(prev_vol)
+        and prev_vol > 0
+        and np.isfinite(ma20)
+    ):
+        return False, 0.0
+
+    burst = float(volume_burst_multiple)
+    shrink = float(vol_shrink_limit)
+    cond_burst = prev_vol > (vol_ma20_prior * burst)
+    cond_price = (low_t < ma20) and (close_t >= ma20)
+    cond_vol = today_vol <= (prev_vol * shrink)
+    if not (cond_burst and cond_price and cond_vol):
+        return False, 0.0
+
+    rise_pct = ((close_t - open_t) / open_t * 100.0) if open_t > 0 else 0.0
+    return True, float(rise_pct)
+
+
+def scan_leader_pullback_candidates_bulk(
     end_date: str,
     *,
     market: str = "KOSPI",
     cancel_event: threading.Event | None = None,
     universe_limit: int | None = None,
+    volume_burst_multiple: float = 3.0,
+    vol_shrink_limit: float = 0.5,
 ) -> dict[str, object]:
     """
-    v3.1 스캐너 고속 경로(벌크+벡터화).
+    v3.30 주도주 눌림목 벌크 스캐너.
 
-    - pykrx `get_market_ohlcv_by_ticker` 3회(t0 / prev_1 / prev_2)
-    - `resolve_overnight_scan_anchor` 와 동일한 영업일 인덱스 (CLI와 공통)
-    - 설정 `v3_0.universe_limit`(기본 100)·시가총액 상위 순으로 벌크 병합 직후 슬라이스
-    - 시총/거래대금 출력은 벌크 시총 테이블 1회 재사용(join 후 최종 종목 한정 가능)
+    - pykrx 일별 전종목 OHLCV 스냅샷 22영업일(t-21~t0) — 당일(t) 거래량이 MA20에 섞이지 않음
+    - cond_prev_burst: t-1 거래량 > mean(t-2..t-21) × volume_burst_multiple
+    - cond_price: t 저가 < MA20(종가 20일) & t 종가 >= MA20
+    - cond_volume: t 거래량 <= t-1 거래량 × vol_shrink_limit
     """
     from src.utils.date_helper import resolve_overnight_scan_anchor
 
@@ -482,6 +534,9 @@ def scan_v3_overnight_candidates_bulk(
     except Exception:
         return {"ok": False, "reason": "pykrx_import_failed"}
 
+    burst_mult = max(0.1, float(volume_burst_multiple))
+    shrink_lim = max(0.01, float(vol_shrink_limit))
+
     lim = universe_limit
     if lim is None:
         try:
@@ -496,8 +551,9 @@ def scan_v3_overnight_candidates_bulk(
 
     ainfo = resolve_overnight_scan_anchor(str(end_date).strip()[:10])
     d_today = pd.Timestamp(ainfo.anchor_date).normalize()
-    d_prev1 = pd.Timestamp(ainfo.prev_1).normalize()
-    d_prev2 = pd.Timestamp(ainfo.prev_2).normalize()
+    bdays = pd.bdate_range(d_today - BDay(21), d_today)
+    if len(bdays) < 22:
+        return {"ok": False, "reason": "ohlcv_history_short"}
 
     def _normalize_pykrx_columns_to_ko(df: pd.DataFrame) -> pd.DataFrame:
         """pykrx/래퍼에 따라 영문·소문영문 컬럼이 오는 경우까지 한글 정규화."""
@@ -526,79 +582,67 @@ def scan_v3_overnight_candidates_bulk(
                 break
         return x
 
-    def _prep(df: pd.DataFrame, suffix: str) -> pd.DataFrame:
+    def _prep_day(df: pd.DataFrame) -> pd.DataFrame:
         x = _normalize_pykrx_columns_to_ko(df)
         x.index = x.index.map(lambda v: str(v).zfill(6))
-        # pykrx 일자별 전종목 시세 컬럼: 시가/고가/저가/종가/거래량/거래대금/등락률
-        x = x.rename(
-            columns={
-                "시가": f"Open{suffix}",
-                "고가": f"High{suffix}",
-                "저가": f"Low{suffix}",
-                "종가": f"Close{suffix}",
-                "거래량": f"Volume{suffix}",
-                "거래대금": f"Amount{suffix}",
-                "등락률": f"ChangePct{suffix}",
-            }
-        )
-        keep = [
-            f"Open{suffix}",
-            f"High{suffix}",
-            f"Low{suffix}",
-            f"Close{suffix}",
-            f"Volume{suffix}",
-            f"Amount{suffix}",
-            f"ChangePct{suffix}",
-        ]
-        out = x[[c for c in keep if c in x.columns]].copy()
-        for c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce")
+        out = pd.DataFrame(index=x.index)
+        for ko, en in (
+            ("시가", "Open"),
+            ("고가", "High"),
+            ("저가", "Low"),
+            ("종가", "Close"),
+            ("거래량", "Volume"),
+            ("거래대금", "Amount"),
+        ):
+            if ko in x.columns:
+                out[en] = pd.to_numeric(x[ko], errors="coerce")
         return out
 
-    def _fetch_merge_triplet(
-        ts0: pd.Timestamp, ts1: pd.Timestamp, ts2: pd.Timestamp
-    ) -> tuple[pd.DataFrame | None, str]:
-        s0 = ts0.strftime("%Y%m%d")
-        s1 = ts1.strftime("%Y%m%d")
-        s2 = ts2.strftime("%Y%m%d")
+    day_frames: list[pd.DataFrame] = []
+    for d_ts in bdays:
+        if cancel_event is not None and cancel_event.is_set():
+            return {"ok": False, "reason": "cancelled"}
+        s_d = d_ts.strftime("%Y%m%d")
         try:
             with _temporary_socket_timeout(NETWORK_TIMEOUT_SEC):
-                df_today = pykrx_stock.get_market_ohlcv_by_ticker(s0, market=m)
-                if cancel_event is not None and cancel_event.is_set():
-                    return None, "cancelled"
-                df_prev1 = pykrx_stock.get_market_ohlcv_by_ticker(s1, market=m)
-                if cancel_event is not None and cancel_event.is_set():
-                    return None, "cancelled"
-                df_prev2 = pykrx_stock.get_market_ohlcv_by_ticker(s2, market=m)
+                raw = pykrx_stock.get_market_ohlcv_by_ticker(s_d, market=m)
         except (TimeoutError, socket.timeout, OSError):
-            return None, "timeout_bulk_ohlcv"
+            return {"ok": False, "reason": "timeout_bulk_ohlcv"}
         except Exception:
-            return None, "ohlcv_bulk_failed"
+            return {"ok": False, "reason": "ohlcv_bulk_failed"}
+        if raw is None or getattr(raw, "empty", True):
+            return {"ok": False, "reason": "ohlcv_bulk_empty"}
+        day_frames.append(_prep_day(raw))
 
-        if (
-            df_today is None
-            or getattr(df_today, "empty", True)
-            or df_prev1 is None
-            or getattr(df_prev1, "empty", True)
-            or df_prev2 is None
-            or getattr(df_prev2, "empty", True)
-        ):
-            return None, "ohlcv_bulk_empty"
+    common_idx = day_frames[0].index
+    for fr in day_frames[1:]:
+        common_idx = common_idx.intersection(fr.index)
+    if common_idx.empty:
+        return {"ok": False, "reason": "ohlcv_join_empty"}
 
-        t0 = _prep(df_today, "_t0")
-        t1 = _prep(df_prev1, "_t1")
-        t2 = _prep(df_prev2, "_t2")
+    n_days = len(day_frames)
+    codes = [str(c).zfill(6) for c in common_idx]
+    n_codes = len(codes)
+    vol_m = np.full((n_codes, n_days), np.nan, dtype=float)
+    low_m = np.full((n_codes, n_days), np.nan, dtype=float)
+    close_m = np.full((n_codes, n_days), np.nan, dtype=float)
+    open_m = np.full((n_codes, n_days), np.nan, dtype=float)
 
-        merged_inner = t0.join(t1, how="inner").join(t2, how="inner")
-        if merged_inner.empty:
-            return None, "ohlcv_join_empty"
-        return merged_inner, "ok"
+    for j, fr in enumerate(day_frames):
+        sub = fr.reindex(common_idx)
+        vol_m[:, j] = pd.to_numeric(sub["Volume"], errors="coerce").to_numpy()
+        low_m[:, j] = pd.to_numeric(sub["Low"], errors="coerce").to_numpy()
+        close_m[:, j] = pd.to_numeric(sub["Close"], errors="coerce").to_numpy()
+        open_m[:, j] = pd.to_numeric(sub["Open"], errors="coerce").to_numpy()
 
-    merged, triple_ok = _fetch_merge_triplet(d_today, d_prev1, d_prev2)
-    if merged is None:
-        if triple_ok == "cancelled":
-            return {"ok": False, "reason": "cancelled"}
-        return {"ok": False, "reason": triple_ok}
+    merged = pd.DataFrame(index=codes)
+    merged["vol_ma20_strictly_prior"] = np.nanmean(vol_m[:, 0:20], axis=1)
+    merged["prev_vol"] = vol_m[:, n_days - 2]
+    merged["today_vol"] = vol_m[:, n_days - 1]
+    merged["MA20"] = np.nanmean(close_m[:, n_days - 20 : n_days], axis=1)
+    merged["Low_t0"] = low_m[:, n_days - 1]
+    merged["Close_t0"] = close_m[:, n_days - 1]
+    merged["Open_t0"] = open_m[:, n_days - 1]
 
     s_today = d_today.strftime("%Y%m%d")
     rank_cap_map: dict[str, float] = {}
@@ -646,45 +690,36 @@ def scan_v3_overnight_candidates_bulk(
     merged = merged.drop(columns=["_mcap_sort_tmp", "tmp_code"], errors="ignore")
 
     o = merged.get("Open_t0")
-    h = merged.get("High_t0")
     c = merged.get("Close_t0")
-    v0 = merged.get("Volume_t0")
-    v1 = merged.get("Volume_t1")
-    if o is None or h is None or c is None or v0 is None or v1 is None:
+    if o is None or c is None:
         return {"ok": False, "reason": "ohlcv_columns_missing"}
 
-    vol_growth = np.where(v1 > 0, v0 / v1, 0.0)
-    return_pct = np.where(o > 0, (c - o) / o * 100.0, 0.0)
-    tail_ratio = np.where((h - o) > 0, (h - c) / (h - o), 1.0)
-
-    merged["vol_growth"] = pd.to_numeric(vol_growth, errors="coerce")
+    return_pct = np.where(
+        pd.to_numeric(o, errors="coerce").to_numpy() > 0,
+        (pd.to_numeric(c, errors="coerce") - pd.to_numeric(o, errors="coerce"))
+        / pd.to_numeric(o, errors="coerce")
+        * 100.0,
+        0.0,
+    )
     merged["return_pct"] = pd.to_numeric(return_pct, errors="coerce")
-    merged["tail_ratio"] = pd.to_numeric(tail_ratio, errors="coerce")
 
-    cond1 = merged["vol_growth"] >= 1.5
-    cond2 = merged["return_pct"] >= 4.0
-    cond3 = merged["tail_ratio"] <= 0.2
-    final = merged[cond1 & cond2 & cond3].copy()
-
-    v0z = pd.to_numeric(v0, errors="coerce").fillna(0.0)
-    v0_zero_frac = float((v0z <= 0).mean()) if len(v0z) else 1.0
-    try:
-        mx_vg = float(np.nanmax(merged["vol_growth"].to_numpy(dtype=float)))
-    except (TypeError, ValueError):
-        mx_vg = 0.0
-    try:
-        mx_ret = float(np.nanmax(merged["return_pct"].to_numpy(dtype=float)))
-    except (TypeError, ValueError):
-        mx_ret = 0.0
+    cond_burst = merged["prev_vol"] > (
+        merged["vol_ma20_strictly_prior"] * burst_mult
+    )
+    cond_price = (merged["Low_t0"] < merged["MA20"]) & (
+        merged["Close_t0"] >= merged["MA20"]
+    )
+    cond_volume = merged["today_vol"] <= (merged["prev_vol"] * shrink_lim)
+    final = merged[cond_burst & cond_price & cond_volume].copy()
 
     _stats_diag = {
         "requested_end_date": ainfo.requested_calendar_date.isoformat(),
         "effective_anchor_date": d_today.strftime("%Y-%m-%d"),
         "anchor_policy_reason": ainfo.anchor_policy_reason,
         "universe_limit_applied": int(lim),
-        "volume_t0_zero_frac": round(v0_zero_frac, 4),
-        "max_vol_growth_sample": round(mx_vg, 4),
-        "max_intraday_return_pct_sample": round(mx_ret, 4),
+        "volume_burst_multiple": burst_mult,
+        "vol_shrink_limit": shrink_lim,
+        "history_bdays": int(n_days),
     }
 
     if final.empty:
@@ -693,9 +728,10 @@ def scan_v3_overnight_candidates_bulk(
             "rows": [],
             "stats": {
                 "total_loaded": int(len(merged)),
-                "pass_vol": int(cond1.sum()),
-                "pass_ret": int((cond1 & cond2).sum()),
-                "pass_tail": 0,
+                "pass_burst": int(cond_burst.sum()),
+                "pass_price": int((cond_burst & cond_price).sum()),
+                "pass_volume": 0,
+                "pass_all": 0,
                 "prev_1": ainfo.prev_1.isoformat(),
                 "prev_2": ainfo.prev_2.isoformat(),
                 **_stats_diag,
@@ -704,7 +740,10 @@ def scan_v3_overnight_candidates_bulk(
 
     idx_order = sorted(
         final.index,
-        key=lambda c: (-float(pd.to_numeric(final.loc[c, "return_pct"], errors="coerce")), str(c).zfill(6)),
+        key=lambda c: (
+            -float(pd.to_numeric(final.loc[c, "return_pct"], errors="coerce")),
+            str(c).zfill(6),
+        ),
     )
     out_rows: list[tuple[str, float, float | None, float | None]] = []
     for code in idx_order:
@@ -712,8 +751,8 @@ def scan_v3_overnight_candidates_bulk(
         code6 = str(code).zfill(6)
         rise = float(row["return_pct"])
         proxy_amt = None
-        if pd.notna(row.get("Close_t0")) and pd.notna(row.get("Volume_t0")):
-            proxy_amt = float(row["Close_t0"]) * float(row["Volume_t0"])
+        if pd.notna(row.get("Close_t0")) and pd.notna(row.get("today_vol")):
+            proxy_amt = float(row["Close_t0"]) * float(row["today_vol"])
         mar_krw: float | None = rank_cap_map.get(code6)
         trd_krw: float | None = rank_cap_trade.get(code6)
         if trd_krw is None:
@@ -725,14 +764,35 @@ def scan_v3_overnight_candidates_bulk(
         "rows": out_rows,
         "stats": {
             "total_loaded": int(len(merged)),
-            "pass_vol": int(cond1.sum()),
-            "pass_ret": int((cond1 & cond2).sum()),
-            "pass_tail": int(len(final)),
+            "pass_burst": int(cond_burst.sum()),
+            "pass_price": int((cond_burst & cond_price).sum()),
+            "pass_volume": int((cond_burst & cond_price & cond_volume).sum()),
+            "pass_all": int(len(final)),
             "prev_1": ainfo.prev_1.isoformat(),
             "prev_2": ainfo.prev_2.isoformat(),
             **_stats_diag,
         },
     }
+
+
+def scan_v3_overnight_candidates_bulk(
+    end_date: str,
+    *,
+    market: str = "KOSPI",
+    cancel_event: threading.Event | None = None,
+    universe_limit: int | None = None,
+    volume_burst_multiple: float = 3.0,
+    vol_shrink_limit: float = 0.5,
+) -> dict[str, object]:
+    """레거시 이름 — v3.30 `scan_leader_pullback_candidates_bulk` 로 위임."""
+    return scan_leader_pullback_candidates_bulk(
+        end_date,
+        market=market,
+        cancel_event=cancel_event,
+        universe_limit=universe_limit,
+        volume_burst_multiple=volume_burst_multiple,
+        vol_shrink_limit=vol_shrink_limit,
+    )
 
 
 def load_v3_0_overnight_scalper_data(

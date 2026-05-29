@@ -45,7 +45,7 @@ def run_overnight_parity_check(
 
     from src.data_loader import (
         load_v3_0_overnight_scalper_data,
-        scan_v3_overnight_candidates_bulk,
+        scan_leader_pullback_candidates_bulk,
     )
     from src.utils.date_helper import resolve_overnight_scan_anchor
     from src.v3_signal_generator import generate_v3_overnight_signals
@@ -60,11 +60,23 @@ def run_overnight_parity_check(
         f"policy={info.anchor_policy_reason}"
     )
 
-    bulk = scan_v3_overnight_candidates_bulk(
+    v3_cfg = {}
+    try:
+        from src.data_loader import load_config
+
+        v3_cfg = load_config().get("v3_0") or {}
+    except Exception:
+        pass
+    burst = float(v3_cfg.get("volume_burst_multiple", 3.0))
+    shrink = float(v3_cfg.get("vol_shrink_limit", 0.5))
+
+    bulk = scan_leader_pullback_candidates_bulk(
         end_eff,
         market=market,
         universe_limit=lim,
         cancel_event=None,
+        volume_burst_multiple=burst,
+        vol_shrink_limit=shrink,
     )
     if not bulk.get("ok"):
         lines.append(f"[bulk] FAILED: {bulk.get('reason')}")

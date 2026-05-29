@@ -73,3 +73,5 @@ portfolio:
 # v3.0 Overnight Scalper (CLI: python main.py --mode cli --config config/settings.yaml)
 v3_0:
   universe_limit: 100
+  volume_burst_multiple: 3.0
+  vol_shrink_limit: 0.5

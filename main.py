@@ -20,7 +20,7 @@ from src.data_loader import (
     fetch_filtered_universe,
     load_config,
     load_v3_0_overnight_scalper_data,
-    scan_v3_overnight_candidates_bulk,
+    scan_leader_pullback_candidates_bulk,
 )
 from src.metrics import run_backtest_detailed
 from src.slope_ablation_batch import run_slope_ablation_batch
@@ -575,12 +575,15 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
 
     run_v3_analytics(traded_frames)
 
-    parity = scan_v3_overnight_candidates_bulk(
+    v3_cfg = cfg.get("v3_0") or {}
+    parity = scan_leader_pullback_candidates_bulk(
         end_d,
         market=market,
         universe_limit=limit,
+        volume_burst_multiple=float(v3_cfg.get("volume_burst_multiple", 3.0)),
+        vol_shrink_limit=float(v3_cfg.get("vol_shrink_limit", 0.5)),
     )
-    print("\n" + "=" * 52 + "\nv3.1 Overnight scanner (CLI/GUI parity list)\n" + "=" * 52)
+    print("\n" + "=" * 52 + "\nv3.30 주도주 눌림목 스캐너 (CLI/GUI parity)\n" + "=" * 52)
     if parity.get("ok"):
         prow = parity.get("rows") or []
         if not prow:

@@ -43,8 +43,14 @@
 - [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
 - [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
 - [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
+- [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.30** 주도주 눌림목 스캐너)
+- **`data_loader.py`:** `scan_leader_pullback_candidates_bulk` — 22영업일 OHLCV·`vol_ma20_strictly_prior`(t-2~t-21)·`volume_burst_multiple`·`vol_shrink_limit` · `qualifies_leader_pullback_from_ohlcv` 폴백
+- **`gui.py`:** 「🔥 주도주 눌림목 리스트」·「🔵 주도주 눌림목 스캔」·좌하단 파라미터 2종 · `LeaderPullbackScanWorker`
+- **`config/settings.yaml`:** `v3_0.volume_burst_multiple`·`vol_shrink_limit`
 
 ### 2026-05-29 (**v3.16** 차트 X축·패널 구분·휠 줌)
 - **`backtest_chart.py`:** `_apply_chart_xaxis_price_panel_dates`(가격 패널 하단만 MM.DD·거래량 무 라벨·패널 간격 확대) · `_draw_price_volume_panel_divider` · `slice_chart_viewport` · `FIG_ATTR_PRICE_PANEL_XDATE`

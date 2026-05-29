@@ -41,7 +41,8 @@ from src.data_loader import (
     load_ohlcv_for_chart,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
-    scan_v3_overnight_candidates_bulk,
+    qualifies_leader_pullback_from_ohlcv,
+    scan_leader_pullback_candidates_bulk,
 )
 from src.gui_helpers import (
     HoverTooltip,
@@ -84,8 +85,6 @@ from src.stock_screener import (
     execute_pipelined_screening,
     pipeline_screener_pick_sort_tuple,
 )
-from src.v3_signal_generator import generate_v3_overnight_signals
-
 
 def _format_round_eok_krw(value_krw: float | None) -> str:
     """원화 금액을 억 단위 반올림 후 `12,345억` 형식(거래대금 등)."""
@@ -278,8 +277,8 @@ MAIN_WINDOW_MIN_W = 1280
 MAIN_WINDOW_MIN_H = 720
 
 
-class OvernightScanWorker(threading.Thread):
-    """v3.12: 스캐너 연산 전용 백그라운드 워커(Tk 메인 루프와 완전 분리)."""
+class LeaderPullbackScanWorker(threading.Thread):
+    """v3.30: 주도주 눌림목 스캐너 백그라운드 워커(Tk 메인 루프와 완전 분리)."""
 
     def __init__(
         self,
@@ -299,7 +298,7 @@ class OvernightScanWorker(threading.Thread):
 
     def run(self) -> None:
         try:
-            rows = self.owner._run_v3_overnight_scan(self.market, self.end_date)
+            rows = self.owner._run_leader_pullback_scan(self.market, self.end_date)
             if self.cancel_event.is_set():
                 self.owner.after(0, self.owner._finalize_v31_scan_cancelled)
                 return
@@ -316,7 +315,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.15 Overnight Scanner")
+        self.title("BackTesterKRX v3.30 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -324,7 +323,7 @@ class BacktestGUI(ctk.CTk):
         self._last_batch_picks: list[object] = []
         self._busy = False
         self._scan_cancel_event = threading.Event()
-        self._scan_thread: OvernightScanWorker | None = None
+        self._scan_thread: LeaderPullbackScanWorker | None = None
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
@@ -363,6 +362,8 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
+        self.var_volume_burst_multiple = ctk.StringVar(value="3.0")
+        self.var_vol_shrink_limit = ctk.StringVar(value="0.5")
         self.var_cash = ctk.StringVar(value="5000000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
         self.var_pf_buy_rules = ctk.BooleanVar(value=False)
@@ -427,7 +428,7 @@ class BacktestGUI(ctk.CTk):
         row_mode.pack(fill="x", padx=14, pady=(4, 6))
         ctk.CTkLabel(
             row_mode,
-            text="🎯 주도주 리스트",
+            text="🔥 주도주 눌림목 리스트",
             font=gui_body_font(),
         ).pack(anchor="w", pady=(0, 2))
 
@@ -522,6 +523,29 @@ class BacktestGUI(ctk.CTk):
         self.entry_sell_fee.pack(fill="x", pady=(2, 0))
         self.entry_sell_fee.configure(state="disabled")
 
+        row_pullback = ctk.CTkFrame(left, fg_color="transparent")
+        row_pullback.pack(fill="x", padx=14, pady=(0, 6))
+        row_pullback.grid_columnconfigure(0, weight=1)
+        row_pullback.grid_columnconfigure(1, weight=1)
+        f_burst = ctk.CTkFrame(row_pullback, fg_color="transparent")
+        f_burst.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        f_shrink = ctk.CTkFrame(row_pullback, fg_color="transparent")
+        f_shrink.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ctk.CTkLabel(f_burst, text="세력 개입 배수", font=gui_body_font()).pack(anchor="w")
+        ctk.CTkEntry(
+            f_burst,
+            textvariable=self.var_volume_burst_multiple,
+            height=28,
+            font=gui_body_font(),
+        ).pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(f_shrink, text="눌림 거래량 비율", font=gui_body_font()).pack(anchor="w")
+        ctk.CTkEntry(
+            f_shrink,
+            textvariable=self.var_vol_shrink_limit,
+            height=28,
+            font=gui_body_font(),
+        ).pack(fill="x", pady=(2, 0))
+
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
         hist_block.pack(fill="x", padx=14, pady=(4, 6))
 
@@ -567,7 +591,7 @@ class BacktestGUI(ctk.CTk):
         row_run.grid_columnconfigure(1, weight=1)
         self.btn_run = ctk.CTkButton(
             row_run,
-            text="오버나이트 주도주 스캔",
+            text="🔵 주도주 눌림목 스캔",
             height=40,
             font=gui_body_font(),
             command=self._on_search,
@@ -1843,7 +1867,7 @@ class BacktestGUI(ctk.CTk):
         canvas_state: dict | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
         self._last_active_stock_code = code
         if canvas_state is not None:
             self._chart_install_canvas_state(canvas_state)
@@ -1854,7 +1878,7 @@ class BacktestGUI(ctk.CTk):
 
     def _finish_chart_only_error(self, msg: str) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
         self._chart_flat_show_message(f"차트 생성 실패: {msg}")
         self.set_status_message(f"차트 생성 실패: {msg}")
 
@@ -2406,7 +2430,7 @@ class BacktestGUI(ctk.CTk):
         except (tk.TclError, AttributeError):
             pass
         try:
-            self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+            self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
         except (tk.TclError, AttributeError):
             pass
         try:
@@ -2424,12 +2448,36 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.update_gui_with_screener_results(picks, announce=True)
 
-    def _run_v3_overnight_scan(
+    def _parse_leader_pullback_scan_params(self) -> tuple[float, float] | None:
+        """세력 개입 배수·눌림 거래량 비율 파싱. 실패 시 None."""
+        try:
+            burst = float(str(self.var_volume_burst_multiple.get()).strip().replace(",", ""))
+            shrink = float(str(self.var_vol_shrink_limit.get()).strip().replace(",", ""))
+        except ValueError:
+            return None
+        if burst <= 0 or shrink <= 0:
+            return None
+        return burst, shrink
+
+    def _run_leader_pullback_scan(
         self, market: str, end_date: str
     ) -> list[tuple[str, str, float, str, str]]:
         """
+        v3.30 주도주 눌림목 스캔.
         반환: (코드, 종목명, 당일 시가대비 상승률%, 시총 표시 문자열, 거래대금 표시 문자열)
         """
+        params = self._parse_leader_pullback_scan_params()
+        if params is None:
+            self.after(
+                0,
+                lambda: messagebox.showerror(
+                    "스캔 파라미터",
+                    "세력 개입 배수·눌림 거래량 비율은 0보다 큰 숫자여야 합니다.",
+                ),
+            )
+            return []
+        volume_burst_multiple, vol_shrink_limit = params
+
         _prime_krx_env_from_dotenv()
         try:
             name_map = fetch_filtered_universe(market, "")
@@ -2440,10 +2488,13 @@ class BacktestGUI(ctk.CTk):
         if scan_market not in ("KOSPI", "KOSDAQ"):
             scan_market = "KOSPI"
 
-        # 1) 우선 고속 경로: pykrx 벌크 3회 + 벡터화 필터
-        pass_vol = 0
-        pass_ret = 0
-        pass_tail = 0
+        # 1) pykrx 22영업일 벌크 + v3.30 눌림목 벡터 필터
+        pass_burst = 0
+        pass_price = 0
+        pass_volume = 0
+        pass_all = 0
+        diag_burst = ""
+        diag_shrink = ""
         prev_1 = ""
         prev_2 = ""
         requested_scan_date = str(end_date).strip()[:10]
@@ -2455,43 +2506,36 @@ class BacktestGUI(ctk.CTk):
             parity_limit = 100
         parity_limit = max(20, min(300, parity_limit))
         bulk_end_date = requested_scan_date
-        bulk = scan_v3_overnight_candidates_bulk(
+        bulk = scan_leader_pullback_candidates_bulk(
             bulk_end_date,
             market=scan_market,
             cancel_event=self._scan_cancel_event,
             universe_limit=parity_limit,
+            volume_burst_multiple=volume_burst_multiple,
+            vol_shrink_limit=vol_shrink_limit,
         )
 
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
-        diag_vol_zero = ""
         diag_policy = ""
-        diag_mx_vg = ""
-        diag_mx_ret = ""
         effective_anchor = ainfo_pre.anchor_date.strftime("%Y-%m-%d")
         if bool(bulk.get("ok")):
             rows = bulk.get("rows") or []
             st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
             total_loaded = int((st or {}).get("total_loaded", len(rows)))
-            pass_vol = int((st or {}).get("pass_vol", 0))
-            pass_ret = int((st or {}).get("pass_ret", 0))
-            pass_tail = int((st or {}).get("pass_tail", len(rows)))
+            pass_burst = int((st or {}).get("pass_burst", 0))
+            pass_price = int((st or {}).get("pass_price", 0))
+            pass_volume = int((st or {}).get("pass_volume", 0))
+            pass_all = int((st or {}).get("pass_all", len(rows)))
+            diag_burst = str((st or {}).get("volume_burst_multiple", volume_burst_multiple))
+            diag_shrink = str((st or {}).get("vol_shrink_limit", vol_shrink_limit))
             prev_1 = str((st or {}).get("prev_1", ""))
             prev_2 = str((st or {}).get("prev_2", ""))
             eff_raw = str((st or {}).get("effective_anchor_date") or "").strip()
             if eff_raw:
                 effective_anchor = eff_raw[:10]
-            vz = (st or {}).get("volume_t0_zero_frac")
-            if vz is not None:
-                diag_vol_zero = str(vz)
             pol = (st or {}).get("anchor_policy_reason")
             if pol is not None:
                 diag_policy = str(pol)
-            mxvg = (st or {}).get("max_vol_growth_sample")
-            if mxvg is not None:
-                diag_mx_vg = str(mxvg)
-            mxrt = (st or {}).get("max_intraday_return_pct_sample")
-            if mxrt is not None:
-                diag_mx_ret = str(mxrt)
             for code, rise_pct, mar_krw, trd_krw in rows:
                 c6 = str(code).zfill(6)
                 name = str(name_map.get(c6, "")).strip() or c6
@@ -2534,8 +2578,8 @@ class BacktestGUI(ctk.CTk):
             effective_anchor = anchor_fb
             prev_1 = ainfo_fb.prev_1.strftime("%Y-%m-%d")
             prev_2 = ainfo_fb.prev_2.strftime("%Y-%m-%d")
-            # 2) 폴백 경로: 기존 per-ticker 로직(안정성 보존)
-            warm_start = (pd.Timestamp(anchor_fb) - BDay(15)).strftime("%Y-%m-%d")
+            # 2) 폴백: 종목별 일봉 + v3.30 눌림목 3중 조건
+            warm_start = (pd.Timestamp(anchor_fb) - BDay(35)).strftime("%Y-%m-%d")
             universe = load_v3_0_overnight_scalper_data(
                 start_date=warm_start,
                 end_date=anchor_fb,
@@ -2549,49 +2593,19 @@ class BacktestGUI(ctk.CTk):
                     return []
                 if df is None or df.empty:
                     continue
-                sig = generate_v3_overnight_signals(df)
-                if sig.empty or "buy_signal" not in sig.columns:
-                    continue
-                last = sig.iloc[-1]
-                prev_v = (
-                    float(sig["Volume"].shift(1).iloc[-1])
-                    if pd.notna(sig["Volume"].shift(1).iloc[-1])
-                    else 0.0
+                ok_pb, rise_pct = qualifies_leader_pullback_from_ohlcv(
+                    df,
+                    volume_burst_multiple=volume_burst_multiple,
+                    vol_shrink_limit=vol_shrink_limit,
                 )
-                today_v = (
-                    float(sig["Volume"].iloc[-1])
-                    if pd.notna(sig["Volume"].iloc[-1])
-                    else 0.0
-                )
-                vol_growth = (today_v / prev_v) if prev_v > 0 else 0.0
-                if int(last.get("buy_signal", 0) or 0) != 1:
-                    o_chk = float(last.get("Open", 0.0) or 0.0)
-                    c_chk = float(last.get("Close", 0.0) or 0.0)
-                    h_chk = float(last.get("High", 0.0) or 0.0)
-                    return_chk = (
-                        ((c_chk - o_chk) / o_chk * 100.0) if o_chk > 0 else 0.0
-                    )
-                    tail_chk = (
-                        ((h_chk - c_chk) / (h_chk - o_chk))
-                        if (h_chk - o_chk) > 0
-                        else 1.0
-                    )
-                    if vol_growth >= 1.5:
-                        pass_vol += 1
-                        if return_chk >= 4.0:
-                            pass_ret += 1
-                            if tail_chk <= 0.2:
-                                pass_tail += 1
+                if not ok_pb:
                     continue
-                o = float(last.get("Open", 0.0) or 0.0)
-                c = float(last.get("Close", 0.0) or 0.0)
-                vl = float(last.get("Volume", 0.0) or 0.0)
-                if o <= 0:
-                    continue
-                pass_vol += 1
-                pass_ret += 1
-                pass_tail += 1
-                rise_pct = (c - o) / o * 100.0
+                pass_burst += 1
+                pass_price += 1
+                pass_volume += 1
+                pass_all += 1
+                c = float(pd.to_numeric(df["Close"], errors="coerce").iloc[-1])
+                vl = float(pd.to_numeric(df["Volume"], errors="coerce").iloc[-1])
                 proxy_amt = (c * vl) if vl >= 0 else None
                 name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
                 qualifiers.append((str(code).zfill(6), name, rise_pct, None, proxy_amt))
@@ -2632,40 +2646,40 @@ class BacktestGUI(ctk.CTk):
 
         debug_lines = [
             "=====================================================",
-            "⚙️ [DEBUG] v3.1 SCANNER INTERNAL PARAMETERS & LOG",
+            "⚙️ [DEBUG] v3.30 주도주 눌림목 스캐너",
             "=====================================================",
             f" - Requested End Date : {requested_scan_date}",
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
             f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
-            f" - Anchor policy (v3.13)       : {diag_policy or '-'}",
-            f" - Volume t0 zero frac (diag) : {diag_vol_zero or '-'}",
-            f" - Max vol_growth (diag)       : {diag_mx_vg or '-'}",
-            f" - Max intraday return % (diag): {diag_mx_ret or '-'}",
+            f" - Anchor policy : {diag_policy or '-'}",
+            f" - 세력 개입 배수 : {diag_burst or volume_burst_multiple}",
+            f" - 눌림 거래량 비율 : {diag_shrink or vol_shrink_limit}",
             "-----------------------------------------------------",
-            " [Applied Rules]",
-            "  1) Vol Growth  >= 1.50 (150%)",
-            "  2) Return Pct  >= 4.00%",
-            "  3) Tail Ratio  <= 0.20 (20%)",
+            " [Applied Rules — 타임라인 격리]",
+            "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult",
+            "  2) t low < MA20(close) & t close >= MA20",
+            "  3) t vol <= t-1 vol × shrink_limit",
             "-----------------------------------------------------",
             " [Pipeline Filtering Pass Count]",
-            f"  ▶ Total {market} Tickers Loaded   : {total_loaded}개",
-            f"  ▶ Pass 1 (Vol Growth >= 150%) : {pass_vol}개 종목 생존",
-            f"  ▶ Pass 2 (Return Pct >= 4%)   : {pass_ret}개 종목 생존",
-            f"  ▶ Pass 3 (Tail Ratio <= 20%)  : {pass_tail}개 종목 생존 (최종)",
+            f"  ▶ Total {market} Tickers Loaded : {total_loaded}개",
+            f"  ▶ Pass 1 (세력 개입) : {pass_burst}개",
+            f"  ▶ Pass 2 (+ 가격/MA20) : {pass_price}개",
+            f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
+            f"  ▶ 최종 : {pass_all}개",
             "=====================================================",
         ]
         debug_text = "\n".join(debug_lines)
         print(debug_text)
         try:
             os.makedirs("output", exist_ok=True)
-            with open("output/v31_scanner_debug_log.txt", "w", encoding="utf-8") as f:
+            with open("output/v330_leader_pullback_scan_debug.txt", "w", encoding="utf-8") as f:
                 f.write(debug_text + "\n")
         except OSError:
             pass
         return out
 
     def _on_search(self) -> None:
-        """v3.1 오버나이트 스캐너 실행: 리스트는 코드|종목명|당일 상승률|시총|거래대금."""
+        """v3.30 주도주 눌림목 스캔: 코드|종목명|당일 상승률|시총|거래대금."""
         if self._busy:
             self.set_status_message(
                 "이미 다른 작업이 진행 중입니다. 잠시만 기다려주세요."
@@ -2682,8 +2696,8 @@ class BacktestGUI(ctk.CTk):
         self._busy = True
         self._scan_cancel_event.clear()
         self._begin_search_loading_state()
-        self.set_status_message("v3.1 오버나이트 스캐너 실행 중…")
-        self._scan_thread = OvernightScanWorker(
+        self.set_status_message("주도주 눌림목 스캔 실행 중…")
+        self._scan_thread = LeaderPullbackScanWorker(
             owner=self,
             market=market,
             end_date=end_date,
@@ -2721,10 +2735,10 @@ class BacktestGUI(ctk.CTk):
         if rows:
             self.list_codes.selection_set(0)
             self.set_status_message(
-                f"🔥 총 {len(rows)}개 주도주 포착 완료 (시총/대금 필드 탑재)"
+                f"🔥 총 {len(rows)}개 주도주 눌림목 포착 (시총/대금)"
             )
         else:
-            self.set_status_message("조건에 맞는 오버나이트 주도주가 없습니다.")
+            self.set_status_message("조건에 맞는 주도주 눌림목이 없습니다.")
 
     def _exec_search_worker(
         self,
@@ -2785,7 +2799,7 @@ class BacktestGUI(ctk.CTk):
         deferred_chart_px: tuple[int, int] | None = None,
     ) -> None:
         self._busy = False
-        self.btn_run.configure(state="normal", text="오버나이트 주도주 스캔")
+        self.btn_run.configure(state="normal", text="🔵 주도주 눌림목 스캔")
         try:
             self.btn_rules_refresh.configure(state="normal")
         except (tk.TclError, AttributeError):
