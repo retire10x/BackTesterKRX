@@ -229,33 +229,66 @@ def format_gui_list_pipeline(
     )
 
 
-# GUI 본문·툴팁 고정 크기 («조회 주기» 줄과 통일). 자동 DPI 확대는 `gui.py`에서 `set_*_scaling(1.0)` 으로 차단.
-# CTkFont 는 import 시점에 만들 수 없음(기본 Tk 루트 없음) — `gui_body_font()` 로 창 생성 후 사용.
+# v3.76: Tk(DateEntry·Listbox)는 양수 pt — CTk `set_*_scaling(None)` 과 OS DPI 연동.
 GUI_FONT_FAMILY = "Malgun Gothic"
-GUI_FONT_SIZE = 13
-GUI_LIST_FONT_SIZE = 10
-GUI_HINT_FONT_SIZE = 9
+GUI_FONT_SIZE_PT = 11
+GUI_LIST_FONT_SIZE_PT = 10
+GUI_HINT_FONT_SIZE_PT = 9
+GUI_NAV_FONT_SIZE_PT = 11
+# 레거시 import 호환
+GUI_FONT_SIZE = GUI_FONT_SIZE_PT
+GUI_LIST_FONT_SIZE = GUI_LIST_FONT_SIZE_PT
+GUI_HINT_FONT_SIZE = GUI_HINT_FONT_SIZE_PT
 GUI_DATE_ENTRY_WIDTH = 11
 LAST_SESSION_JSON = os.path.join("config", "last_session.json")
 VALID_UNIVERSE_LIMITS = frozenset({100, 300, 500})
+# 콤보 표시값(시총 상위 N종) — 필드 제목은 GUI에서 "Top"
+UNIVERSE_LIMIT_OPTIONS = tuple(str(n) for n in sorted(VALID_UNIVERSE_LIMITS))
+# v3.66 이전 세션 JSON 호환
+_LEGACY_UNIVERSE_COMBO_LABELS = {
+    "Top 100": 100,
+    "Top": 300,
+    "Top 500": 500,
+}
 
 _gui_body_font_cached: ctk.CTkFont | None = None
 _gui_action_btn_font_cached: ctk.CTkFont | None = None
 _gui_hint_font_cached: ctk.CTkFont | None = None
 
 
+def gui_tk_font_pt(
+    size_pt: int, *, weight: str = "normal"
+) -> tuple[str, int] | tuple[str, int, str]:
+    """Tk/Canvas/DateEntry/Listbox — 양수 pt(CTk OS 스케일과 연동)."""
+    pt = max(1, int(size_pt))
+    if weight and weight != "normal":
+        return (GUI_FONT_FAMILY, pt, weight)
+    return (GUI_FONT_FAMILY, pt)
+
+
+def gui_ctk_font_pt(size_pt: int, *, weight: str = "normal") -> ctk.CTkFont:
+    """CTk 위젯용 pt 폰트(CTk 기본 OS DPI 스케일과 곱해짐)."""
+    kw: dict = {"family": GUI_FONT_FAMILY, "size": max(1, int(size_pt))}
+    if weight and weight != "normal":
+        kw["weight"] = weight
+    return ctk.CTkFont(**kw)
+
+
 def gui_list_font_tuple() -> tuple[str, int]:
-    """Listbox 등 밀집 데이터 표 — 본문보다 1~2pt 작게."""
-    return (GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE)
+    """Listbox 등 밀집 데이터 표."""
+    return gui_tk_font_pt(GUI_LIST_FONT_SIZE_PT)
+
+
+def gui_nav_font_tuple() -> tuple[str, int]:
+    """차트 내비 버튼 등."""
+    return gui_tk_font_pt(GUI_NAV_FONT_SIZE_PT)
 
 
 def gui_hint_font() -> ctk.CTkFont:
-    """안내·면책 등 보조 텍스트(9pt)."""
+    """안내·면책 등 보조 텍스트."""
     global _gui_hint_font_cached
     if _gui_hint_font_cached is None:
-        _gui_hint_font_cached = ctk.CTkFont(
-            family=GUI_FONT_FAMILY, size=GUI_HINT_FONT_SIZE
-        )
+        _gui_hint_font_cached = gui_ctk_font_pt(GUI_HINT_FONT_SIZE_PT)
     return _gui_hint_font_cached
 
 
@@ -263,25 +296,24 @@ def gui_body_font() -> ctk.CTkFont:
     """메인 CTk 창 `super().__init__()` 이후에만 호출. 싱글턴 캐시."""
     global _gui_body_font_cached
     if _gui_body_font_cached is None:
-        _gui_body_font_cached = ctk.CTkFont(
-            family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE
-        )
+        _gui_body_font_cached = gui_ctk_font_pt(GUI_FONT_SIZE_PT)
     return _gui_body_font_cached
 
 
 def gui_action_btn_font() -> ctk.CTkFont:
-    """스캔·백테스트 등 타이머 표기가 들어가는 액션 버튼용(약간 작게)."""
+    """스캔·백테스트 등 타이머 표기가 들어가는 액션 버튼용."""
     global _gui_action_btn_font_cached
     if _gui_action_btn_font_cached is None:
-        _gui_action_btn_font_cached = ctk.CTkFont(
-            family=GUI_FONT_FAMILY, size=GUI_LIST_FONT_SIZE
-        )
+        _gui_action_btn_font_cached = gui_ctk_font_pt(GUI_LIST_FONT_SIZE_PT)
     return _gui_action_btn_font_cached
 
 
-def normalize_universe_limit_choice(raw: object, *, default: int = 300) -> int:
+def normalize_universe_limit_choice(raw: object, *, default: int) -> int:
+    s = str(raw).strip()
+    if s in _LEGACY_UNIVERSE_COMBO_LABELS:
+        return int(_LEGACY_UNIVERSE_COMBO_LABELS[s])
     try:
-        n = int(str(raw).strip())
+        n = int(s)
     except (TypeError, ValueError):
         n = default
     if n not in VALID_UNIVERSE_LIMITS:
@@ -289,50 +321,43 @@ def normalize_universe_limit_choice(raw: object, *, default: int = 300) -> int:
     return n
 
 
-def dump_last_gui_session(ui: "BacktestGUI") -> None:
-    """v3.60: 종료 시 스캔 파라미터 6종을 config/last_session.json 에 저장."""
-    try:
-        start_s = ui._date_start.get_date().strftime("%Y-%m-%d")
-        end_s = ui._date_end.get_date().strftime("%Y-%m-%d")
-    except (ValueError, tk.TclError, AttributeError):
-        start_s, end_s = "", ""
-    payload = {
-        "version": 1,
-        "market": str(ui.var_market.get()).strip().upper() or "KOSPI",
-        "universe_limit": normalize_universe_limit_choice(
-            ui.combo_universe.get() if hasattr(ui, "combo_universe") else 300
-        ),
-        "start_date": start_s,
-        "end_date": end_s,
-        "volume_burst_multiple": str(ui.var_volume_burst_multiple.get()).strip(),
-        "vol_shrink_limit": str(ui.var_vol_shrink_limit.get()).strip(),
-    }
-    os.makedirs(os.path.dirname(LAST_SESSION_JSON) or ".", exist_ok=True)
-    with open(LAST_SESSION_JSON, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+def universe_limit_combo_value(n: int, *, default: int = 300) -> str:
+    """콤보에 표시·설정할 문자열(100/300/500)."""
+    v = int(n)
+    if v in VALID_UNIVERSE_LIMITS:
+        return str(v)
+    return str(default)
 
 
-def load_last_gui_session(ui: "BacktestGUI") -> bool:
-    """마지막 세션이 있으면 UI에 복원. 성공 시 True."""
-    if not os.path.isfile(LAST_SESSION_JSON):
-        return False
-    try:
-        with open(LAST_SESSION_JSON, encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError, TypeError):
-        return False
-    if not isinstance(data, dict):
+def apply_pullback_scan_params_to_ui(
+    ui: "BacktestGUI", params: "PullbackScanParams"
+) -> None:
+    """SSOT에서 확정된 스캔 파라미터를 좌측 입력 위젯에 주입."""
+    from src.v3_scan_config import PullbackScanParams
+
+    if not isinstance(params, PullbackScanParams):
+        return
+    ui.var_volume_burst_multiple.set(f"{params.volume_burst_multiple:g}")
+    ui.var_vol_shrink_limit.set(f"{params.vol_shrink_limit:g}")
+    ui.var_use_momentum_filter.set(bool(params.use_momentum_filter))
+    if hasattr(ui, "combo_universe"):
+        try:
+            ui.combo_universe.set(universe_limit_combo_value(params.universe_limit))
+        except (tk.TclError, AttributeError):
+            pass
+
+
+def apply_last_session_chrome_to_ui(ui: "BacktestGUI") -> bool:
+    """last_session.json 의 시장·기간만 UI에 반영(스캔 수치는 resolve 쪽에서 처리)."""
+    from src.v3_scan_config import read_last_session_mapping
+
+    data = read_last_session_mapping()
+    if not data:
         return False
 
     mk = str(data.get("market") or "").strip().upper()
     if mk in ("KOSPI", "KOSDAQ", "ETF"):
         ui.var_market.set(mk)
-
-    ul = normalize_universe_limit_choice(data.get("universe_limit"))
-    try:
-        ui.combo_universe.set(str(ul))
-    except (tk.TclError, AttributeError):
-        pass
 
     for key, setter in (
         ("start_date", ui._date_start),
@@ -345,12 +370,60 @@ def load_last_gui_session(ui: "BacktestGUI") -> bool:
             setter.set_date(datetime.strptime(raw, "%Y-%m-%d").date())
         except (ValueError, tk.TclError, AttributeError):
             pass
+    return True
 
-    from src.v3_scan_config import pullback_scan_params_from_mapping
 
-    merged = pullback_scan_params_from_mapping(data)
-    ui.var_volume_burst_multiple.set(f"{merged.volume_burst_multiple:g}")
-    ui.var_vol_shrink_limit.set(f"{merged.vol_shrink_limit:g}")
+def bootstrap_gui_pullback_scan_ssot(ui: "BacktestGUI") -> None:
+    """
+    v3.70: YAML 마스터 → last_session.json 오버레이 → StringVar/콤보 주입.
+    기간·시장은 세션 파일이 있으면 추가 반영.
+    """
+    from src.v3_scan_config import resolve_effective_pullback_scan_params
+
+    params = resolve_effective_pullback_scan_params()
+    apply_pullback_scan_params_to_ui(ui, params)
+    apply_last_session_chrome_to_ui(ui)
+
+
+def dump_last_gui_session(ui: "BacktestGUI") -> None:
+    """v3.70: 종료 시 스캔 파라미터·시장·기간을 last_session.json 에 저장."""
+    from src.v3_scan_config import default_pullback_scan_params
+
+    ssot_default = default_pullback_scan_params().universe_limit
+    try:
+        start_s = ui._date_start.get_date().strftime("%Y-%m-%d")
+        end_s = ui._date_end.get_date().strftime("%Y-%m-%d")
+    except (ValueError, tk.TclError, AttributeError):
+        start_s, end_s = "", ""
+    raw_univ = (
+        ui.combo_universe.get()
+        if hasattr(ui, "combo_universe")
+        else ssot_default
+    )
+    payload = {
+        "version": 1,
+        "market": str(ui.var_market.get()).strip().upper() or "KOSPI",
+        "universe_limit": normalize_universe_limit_choice(
+            raw_univ, default=ssot_default
+        ),
+        "start_date": start_s,
+        "end_date": end_s,
+        "volume_burst_multiple": str(ui.var_volume_burst_multiple.get()).strip(),
+        "vol_shrink_limit": str(ui.var_vol_shrink_limit.get()).strip(),
+        "use_momentum_filter": bool(ui.var_use_momentum_filter.get()),
+    }
+    os.makedirs(os.path.dirname(LAST_SESSION_JSON) or ".", exist_ok=True)
+    with open(LAST_SESSION_JSON, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def load_last_gui_session(ui: "BacktestGUI") -> bool:
+    """레거시 호환 — v3.70 `bootstrap_gui_pullback_scan_ssot` 사용 권장."""
+    from src.v3_scan_config import read_last_session_mapping
+
+    if read_last_session_mapping() is None:
+        return False
+    bootstrap_gui_pullback_scan_ssot(ui)
     return True
 
 TooltipTextFn = str | Callable[[], str]
@@ -424,7 +497,7 @@ class HoverTooltip:
         tmp_lbl = tk.Label(
             self._widget,
             text=body,
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            font=gui_tk_font_pt(GUI_FONT_SIZE_PT),
             justify="left",
             wraplength=350,
         )
@@ -497,7 +570,7 @@ class HoverTooltip:
             (y1 + y2) / 2,
             text=body,
             fill="#f8fafc",  # 흰색 글씨
-            font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+            font=gui_tk_font_pt(GUI_FONT_SIZE_PT),
             justify="left",
             width=350,
             anchor="center",

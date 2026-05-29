@@ -2,7 +2,7 @@
 데스크톱 GUI (CustomTkinter).
 차트: `output/backtest_report.png` → **tk.Canvas**/`PhotoImage`. CTk 라벨·CTkImage는 둥근 마스크로 비트맵이 잘리므로 차트 패널에 사용하지 않음.
 YAML·설정 dict·툴팁: `gui_helpers`. 엔진: `src.metrics.run_backtest_detailed`.
-본문·툴팁 폰트는 `gui_helpers.gui_body_font()`(13pt)로 통일, `set_widget_scaling`/`set_window_scaling` 1.0 고정.
+본문·툴팁 폰트는 `gui_helpers` pt(11/10/9)로 통일, CTk `set_*_scaling(None)` 으로 OS DPI 자동 연동.
 메인 레이아웃은 grid weight 기반 반응형; 우측 패널은 `grid_propagate(False)`. **v4.10** 백테스트는 `defer_chart_render` 후 차트 후처리(**v3.1 GUI:** `materialize_backtest_chart_png_bytes` 로 메모리 PNG만 생성·디스크 미기록 / CLI·레거시는 `materialize_backtest_chart_png`). **v4.11** 차트 캔버스는 같은 image item 에 `PhotoImage` 를 `itemconfig` 로 원자 교체하여 선삭제 깜빡임 방지하며, PNG 생성 대기 동안 차트 줄 Braille 로딩 표시만 갱신한다. **v4.14** 검색은 `execute_pipelined_screening`(시총 Top·매수규칙·김직선 1봉 순차 AND) 단일 파이프라인이다. **v4.14_Fix** 파이프라인 시총 하한·표시 행 상한 보정·골든 OFF 바이패스는 `stock_screener` 에서 처리한다. **v4.15** 검색 2단계는 골든 OFF 여도 진입 필터를 종봉 AND 적용. **v4.16_Patch** 김직선 3단계: 기준봉 거래량 300%/TOP3·고가돌파 허용 `τ∈[T-3,T]`·경과일·정렬. 매매 패널 키는 `merge_live_trade_panel_into_strategy`/`extract_live_strategy_config`.
 """
 from __future__ import annotations
@@ -25,8 +25,8 @@ from pandas.tseries.offsets import BDay
 
 ctk.set_appearance_mode("system")
 ctk.set_default_color_theme("blue")
-ctk.set_widget_scaling(1.0)
-ctk.set_window_scaling(1.0)
+# v3.76: set_widget_scaling / set_window_scaling 호출하지 않음 → CTk 기본값(1.0×OS DPI)으로
+# Per-monitor DPI 자동 추적(ScalingTracker.deactivate_automatic_dpi_awareness=False). None 은 API 미지원.
 
 from PIL import Image, ImageTk
 from tkcalendar import DateEntry
@@ -60,16 +60,20 @@ from src.gui_helpers import (
     parse_gui_list_row_code,
     trading_rules_static_text,
     try_build_config,
-    GUI_FONT_FAMILY,
-    GUI_FONT_SIZE,
     GUI_DATE_ENTRY_WIDTH,
-    GUI_LIST_FONT_SIZE,
+    GUI_FONT_SIZE_PT,
+    GUI_LIST_FONT_SIZE_PT,
+    gui_ctk_font_pt,
     gui_hint_font,
     gui_list_font_tuple,
+    gui_nav_font_tuple,
+    gui_tk_font_pt,
     gui_action_btn_font,
     dump_last_gui_session,
-    load_last_gui_session,
+    bootstrap_gui_pullback_scan_ssot,
     normalize_universe_limit_choice,
+    universe_limit_combo_value,
+    UNIVERSE_LIMIT_OPTIONS,
 )
 from src.backtest_constants import (
     CHART_MA_TOGGLE_PERIODS,
@@ -284,8 +288,7 @@ CHART_IMG_MIN_FH = 200
 BACKTEST_HISTORY_MAX = 30
 BACKTEST_HISTORY_FILE = os.path.join("output", "backtest_history.json")
 
-# v3.60: 가변 유니버스·컴팩트 버튼·동작 타이머
-UNIVERSE_LIMIT_OPTIONS = ("100", "300", "500")
+# v3.60: Top N(100/300/500) · 컴팩트 버튼·동작 타이머
 GUI_MAIN_BTN_HEIGHT = 24
 GUI_HIST_DEL_BTN_HEIGHT = 19
 GUI_CANCEL_BTN_FG = ("#E57373", "#B45353")
@@ -340,7 +343,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.65 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v3.76 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -395,13 +398,10 @@ class BacktestGUI(ctk.CTk):
         self.var_show_volume = ctk.BooleanVar(value=True)
         self.var_buy_fee_pct = ctk.StringVar(value="0.015")
         self.var_sell_fee_pct = ctk.StringVar(value="0.20")
-        _scan_defaults = default_pullback_scan_params()
-        self.var_volume_burst_multiple = ctk.StringVar(
-            value=f"{_scan_defaults.volume_burst_multiple:g}"
-        )
-        self.var_vol_shrink_limit = ctk.StringVar(
-            value=f"{_scan_defaults.vol_shrink_limit:g}"
-        )
+        # v3.70: SSOT 부트스트랩 전까지 빈 값 — bootstrap_gui_pullback_scan_ssot 에서 주입
+        self.var_volume_burst_multiple = ctk.StringVar(value="")
+        self.var_vol_shrink_limit = ctk.StringVar(value="")
+        self.var_use_momentum_filter = ctk.BooleanVar(value=False)
         self.var_keyword = ctk.StringVar(value="")
         self.var_cash = ctk.StringVar(value="5,000,000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
@@ -448,7 +448,7 @@ class BacktestGUI(ctk.CTk):
             d0,
             width=GUI_DATE_ENTRY_WIDTH,
             date_pattern="yyyy-mm-dd",
-            font=(GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE),
+            font=gui_tk_font_pt(GUI_LIST_FONT_SIZE_PT),
             **date_entry_theme_kw(),
         )
         _ds, _de = default_backtest_period_range()
@@ -470,7 +470,7 @@ class BacktestGUI(ctk.CTk):
             d1,
             width=GUI_DATE_ENTRY_WIDTH,
             date_pattern="yyyy-mm-dd",
-            font=(GUI_FONT_FAMILY, GUI_LIST_FONT_SIZE),
+            font=gui_tk_font_pt(GUI_LIST_FONT_SIZE_PT),
             **date_entry_theme_kw(),
         )
         self._date_end.set_date(_de)
@@ -495,7 +495,7 @@ class BacktestGUI(ctk.CTk):
 
         sf_univ = ctk.CTkFrame(row_params_row2, fg_color="transparent")
         sf_univ.pack(side="left", padx=(0, 3))
-        ctk.CTkLabel(sf_univ, text="유니버스", font=gui_body_font()).pack(
+        ctk.CTkLabel(sf_univ, text="Top", font=gui_body_font()).pack(
             anchor="w", pady=(0, 1)
         )
         self.combo_universe = ctk.CTkComboBox(
@@ -505,7 +505,6 @@ class BacktestGUI(ctk.CTk):
             height=26,
             font=gui_body_font(),
         )
-        self.combo_universe.set("300")
         self.combo_universe.pack(anchor="w")
 
         f_burst = ctk.CTkFrame(row_params_row2, fg_color="transparent")
@@ -529,6 +528,14 @@ class BacktestGUI(ctk.CTk):
             height=26,
             font=gui_body_font(),
         ).pack(anchor="w")
+        ctk.CTkCheckBox(
+            row_params_row2,
+            text="MA5 >= MA10",
+            variable=self.var_use_momentum_filter,
+            checkbox_width=16,
+            checkbox_height=16,
+            font=gui_body_font(),
+        ).pack(side="left", padx=(8, 0), anchor="s")
 
         row_mode = ctk.CTkFrame(left, fg_color="transparent")
         row_mode.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(2, 2))
@@ -595,7 +602,7 @@ class BacktestGUI(ctk.CTk):
             text="🗑️ 이력 삭제",
             width=88,
             height=GUI_HIST_DEL_BTN_HEIGHT,
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 1),
+            font=gui_ctk_font_pt(GUI_FONT_SIZE_PT - 1),
             command=self._on_history_delete,
         )
         self.btn_history_del.pack(side="right", anchor="ne")
@@ -689,7 +696,7 @@ class BacktestGUI(ctk.CTk):
         self.txt_backtest_report = ctk.CTkTextbox(
             backtest_panel,
             height=110,
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_LIST_FONT_SIZE),
+            font=gui_ctk_font_pt(GUI_LIST_FONT_SIZE_PT),
             wrap="word",
             border_width=1,
         )
@@ -740,7 +747,7 @@ class BacktestGUI(ctk.CTk):
         self.lbl_selected_stock = ctk.CTkLabel(
             top_selected,
             text="현재 선택 종목 : -",
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE, weight="bold"),
+            font=gui_ctk_font_pt(GUI_FONT_SIZE_PT, weight="bold"),
             anchor="w",
         )
         self.lbl_selected_stock.pack(side="left")
@@ -771,7 +778,7 @@ class BacktestGUI(ctk.CTk):
             fg_color=("gray95", "gray25"),
             hover_color=("gray85", "gray35"),
             text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 14),
+            font=gui_nav_font_tuple(),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(-7),
         )
@@ -789,7 +796,7 @@ class BacktestGUI(ctk.CTk):
             fg_color=("gray95", "gray25"),
             hover_color=("gray85", "gray35"),
             text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 14),
+            font=gui_nav_font_tuple(),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(-1),
         )
@@ -807,7 +814,7 @@ class BacktestGUI(ctk.CTk):
             fg_color=("gray95", "gray25"),
             hover_color=("gray85", "gray35"),
             text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 14),
+            font=gui_nav_font_tuple(),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(1),
         )
@@ -825,7 +832,7 @@ class BacktestGUI(ctk.CTk):
             fg_color=("gray95", "gray25"),
             hover_color=("gray85", "gray35"),
             text_color=("black", "white"),
-            font=(GUI_FONT_FAMILY, 14),
+            font=gui_nav_font_tuple(),
             cursor="hand2",
             command=lambda: self._on_chart_pan_bdays(7),
         )
@@ -845,7 +852,7 @@ class BacktestGUI(ctk.CTk):
             inner_btns,
             text="",
             width=18,
-            font=ctk.CTkFont(family=GUI_FONT_FAMILY, size=GUI_FONT_SIZE - 2),
+            font=gui_ctk_font_pt(GUI_FONT_SIZE_PT - 2),
             text_color=("gray40", "gray60"),
         )
         self.lbl_chart_loading.pack(side="left", padx=(4, 0))
@@ -911,6 +918,7 @@ class BacktestGUI(ctk.CTk):
         self.chart_frame.bind("<Configure>", self._on_chart_frame_configure)
 
         apply_yaml_to_widgets(self)
+        bootstrap_gui_pullback_scan_ssot(self)
         self._refresh_trading_rules_display()
         self.var_golden_buy.trace_add("write", lambda *_: self._refresh_trading_rules_display())
         self.var_dead_sell.trace_add("write", lambda *_: self._refresh_trading_rules_display())
@@ -969,7 +977,6 @@ class BacktestGUI(ctk.CTk):
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
-        load_last_gui_session(self)
         self._chart_flat_show_message(CHART_IDLE_GUIDE_TEXT)
         self.var_sell_fee_pct.set("0.2")
         self.protocol("WM_DELETE_WINDOW", self._on_user_close)
@@ -1057,7 +1064,7 @@ class BacktestGUI(ctk.CTk):
                 cx,
                 cy,
                 text=str(message),
-                font=(GUI_FONT_FAMILY, GUI_FONT_SIZE),
+                font=gui_tk_font_pt(GUI_FONT_SIZE_PT),
                 fill=fill,
                 justify="center",
                 anchor="center",
@@ -2413,12 +2420,13 @@ class BacktestGUI(ctk.CTk):
             pass
 
     def _selected_universe_limit(self) -> int:
-        """v3.60: 상단 유니버스 콤보 → 스캔 슬라이싱 상한."""
+        """상단 Top 콤보(100/300/500) → 스캔 시총 상위 N종."""
+        ssot_ul = default_pullback_scan_params().universe_limit
         try:
             raw = self.combo_universe.get()
         except (tk.TclError, AttributeError):
-            raw = "300"
-        return normalize_universe_limit_choice(raw)
+            raw = universe_limit_combo_value(ssot_ul)
+        return normalize_universe_limit_choice(raw, default=ssot_ul)
 
     def _format_operation_elapsed(self, seconds: float) -> str:
         mins = int(seconds // 60)
@@ -2744,7 +2752,7 @@ class BacktestGUI(ctk.CTk):
                 "세력 개입 배수·눌림 거래량 비율은 0보다 큰 숫자여야 합니다.",
             )
             return
-        burst, shrink = params
+        burst, shrink, use_momentum_filter = params
         try:
             start_s = self._date_start.get_date().strftime("%Y-%m-%d")
             end_s = self._date_end.get_date().strftime("%Y-%m-%d")
@@ -2792,6 +2800,7 @@ class BacktestGUI(ctk.CTk):
                     initial_cash=float(cash),
                     volume_burst_multiple=burst,
                     vol_shrink_limit=shrink,
+                    use_momentum_filter=use_momentum_filter,
                     sell_timing_minutes=sell_min,
                     code=code,
                     name=name,
@@ -2870,7 +2879,7 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.update_gui_with_screener_results(picks, announce=True)
 
-    def _parse_leader_pullback_scan_params(self) -> tuple[float, float] | None:
+    def _parse_leader_pullback_scan_params(self) -> tuple[float, float, bool] | None:
         """세력 개입 배수·눌림 거래량 비율 파싱. 실패 시 None."""
         try:
             burst = float(str(self.var_volume_burst_multiple.get()).strip().replace(",", ""))
@@ -2879,7 +2888,7 @@ class BacktestGUI(ctk.CTk):
             return None
         if burst <= 0 or shrink <= 0:
             return None
-        return burst, shrink
+        return burst, shrink, bool(self.var_use_momentum_filter.get())
 
     def _run_leader_pullback_scan(
         self, market: str, end_date: str
@@ -2898,7 +2907,7 @@ class BacktestGUI(ctk.CTk):
                 ),
             )
             return []
-        volume_burst_multiple, vol_shrink_limit = params
+        volume_burst_multiple, vol_shrink_limit, use_momentum_filter = params
 
         _prime_krx_env_from_dotenv()
         try:
@@ -2932,6 +2941,7 @@ class BacktestGUI(ctk.CTk):
             universe_limit=parity_limit,
             volume_burst_multiple=volume_burst_multiple,
             vol_shrink_limit=vol_shrink_limit,
+            use_momentum_filter=use_momentum_filter,
         )
 
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
@@ -3014,6 +3024,7 @@ class BacktestGUI(ctk.CTk):
                     df,
                     volume_burst_multiple=volume_burst_multiple,
                     vol_shrink_limit=vol_shrink_limit,
+                    use_momentum_filter=use_momentum_filter,
                 )
                 if not ok_pb:
                     continue
@@ -3069,6 +3080,7 @@ class BacktestGUI(ctk.CTk):
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
             f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
             f" - Anchor policy : {diag_policy or '-'}",
+            f" - Top : {parity_limit}",
             f" - 세력 개입 배수 : {diag_burst or volume_burst_multiple}",
             f" - 눌림 거래량 비율 : {diag_shrink or vol_shrink_limit}",
             "-----------------------------------------------------",
@@ -3077,15 +3089,23 @@ class BacktestGUI(ctk.CTk):
             "  2) t low < MA20(close) & t close >= MA20",
             "  3) t vol <= t-1 vol × shrink_limit",
             "  4) v3.50 종가 > MA120 (장기 정배열)",
-            "  5) v3.50 MA5 >= MA10 (단기 모멘텀)",
+            (
+                "  5) v3.50 MA5 >= MA10 (단기 모멘텀)"
+                if use_momentum_filter
+                else "  5) v3.50 MA5 >= MA10 (단기 모멘텀) [사용자 설정으로 스킵]"
+            ),
             "-----------------------------------------------------",
             " [Pipeline Filtering Pass Count]",
-            f"  ▶ Total {market} Tickers Loaded : {total_loaded}개",
+            f"  ▶ Total Top Tickers Loaded : {total_loaded}개",
             f"  ▶ Pass 1 (세력 개입) : {pass_burst}개",
             f"  ▶ Pass 2 (+ 가격/MA20) : {pass_price}개",
             f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
             f"  ▶ Pass 4 (+ 종가>MA120) : {pass_kim_long}개",
-            f"  ▶ Pass 5 (+ MA5≥MA10) : {pass_kim_short}개",
+            (
+                f"  ▶ Pass 5 (+ MA5≥MA10) : {pass_kim_short}개"
+                if use_momentum_filter
+                else "  ▶ Pass 5 (+ MA5≥MA10) : [사용자 설정에 의해 스킵됨]"
+            ),
             f"  ▶ 최종 : {pass_all}개",
             "=====================================================",
         ]

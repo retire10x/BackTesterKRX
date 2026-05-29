@@ -540,6 +540,7 @@ def qualifies_leader_pullback_from_ohlcv(
     *,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
+    use_momentum_filter: bool,
 ) -> tuple[bool, float]:
     """
     단일 종목 일봉에서 v3.30 주도주 눌림목 3중 조건 + v3.50 김직선 정배열 추세 필터.
@@ -581,8 +582,10 @@ def qualifies_leader_pullback_from_ohlcv(
     if not (cond_burst and cond_price and cond_vol):
         return False, 0.0
 
-    kim_ok, _, _ = kim_straight_trend_pass(close)
-    if not kim_ok:
+    kim_ok, long_ok, short_ok = kim_straight_trend_pass(close)
+    if not long_ok:
+        return False, 0.0
+    if use_momentum_filter and not short_ok:
         return False, 0.0
 
     rise_pct = ((close_t - open_t) / open_t * 100.0) if open_t > 0 else 0.0
@@ -596,6 +599,7 @@ def scan_leader_pullback_candidates_bulk(
     universe_limit: int,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
+    use_momentum_filter: bool,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """
@@ -761,7 +765,11 @@ def scan_leader_pullback_candidates_bulk(
     pass_pullback = cond_burst & cond_price & cond_volume
     cond_kim_long = merged["Close_t0"] > merged["MA120"]
     cond_kim_short = merged["MA5"] >= merged["MA10"]
-    final = merged[pass_pullback & cond_kim_long & cond_kim_short].copy()
+    if use_momentum_filter:
+        final_mask = pass_pullback & cond_kim_long & cond_kim_short
+    else:
+        final_mask = pass_pullback & cond_kim_long
+    final = merged[final_mask].copy()
 
     _stats_diag = {
         "requested_end_date": ainfo.requested_calendar_date.isoformat(),
@@ -770,6 +778,7 @@ def scan_leader_pullback_candidates_bulk(
         "universe_limit_applied": int(lim),
         "volume_burst_multiple": burst_mult,
         "vol_shrink_limit": shrink_lim,
+        "use_momentum_filter": bool(use_momentum_filter),
         "history_bdays": int(n_days),
     }
 
@@ -837,6 +846,7 @@ def scan_v3_overnight_candidates_bulk(
     universe_limit: int,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
+    use_momentum_filter: bool,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """레거시 이름 — v3.30 `scan_leader_pullback_candidates_bulk` 로 위임."""
@@ -846,6 +856,7 @@ def scan_v3_overnight_candidates_bulk(
         universe_limit=universe_limit,
         volume_burst_multiple=volume_burst_multiple,
         vol_shrink_limit=vol_shrink_limit,
+        use_momentum_filter=use_momentum_filter,
         cancel_event=cancel_event,
     )
 

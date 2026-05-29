@@ -34,6 +34,7 @@ def pullback_signal_at_index(
     *,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
+    use_momentum_filter: bool,
 ) -> bool:
     """봉 인덱스 i 를 신호일(t)로 v3.30 3중 조건 판정."""
     if i < 21:
@@ -65,8 +66,10 @@ def pullback_signal_at_index(
         return False
     if today_vol > prev_vol * shrink:
         return False
-    kim_ok, _, _ = kim_straight_trend_pass(close, at_index=i)
-    if not kim_ok:
+    kim_ok, long_ok, short_ok = kim_straight_trend_pass(close, at_index=i)
+    if not long_ok:
+        return False
+    if use_momentum_filter and not short_ok:
         return False
     return True
 
@@ -85,6 +88,7 @@ def run_pullback_timeline_backtest(
     initial_cash: float,
     volume_burst_multiple: float,
     vol_shrink_limit: float,
+    use_momentum_filter: bool,
     sell_timing_minutes: int = 0,
     code: str = "",
     name: str = "",
@@ -133,6 +137,7 @@ def run_pullback_timeline_backtest(
             i,
             volume_burst_multiple=volume_burst_multiple,
             vol_shrink_limit=vol_shrink_limit,
+            use_momentum_filter=use_momentum_filter,
         ):
             continue
         buy_px = float(close.iloc[i])
@@ -151,7 +156,11 @@ def run_pullback_timeline_backtest(
         f"■ {hdr}",
         f"■ 기간: {work.index[0].strftime('%Y-%m-%d')} ~ {work.index[-1].strftime('%Y-%m-%d')}",
         f"■ 세력 개입 배수: {volume_burst_multiple:g} | 눌림 거래량 비율: {vol_shrink_limit:g}",
-        "■ v3.50 김직선 추세: 종가>MA120 · MA5≥MA10",
+        (
+            "■ v3.50 김직선 추세: 종가>MA120 · MA5≥MA10"
+            if use_momentum_filter
+            else "■ v3.50 김직선 추세: 종가>MA120 (MA5≥MA10 스킵)"
+        ),
         f"■ 매수 수수료: {PULLBACK_BUY_COST * 100:.3f}% | 매도(세금 포함): {PULLBACK_SELL_COST * 100:.2f}%",
         f"■ 매도 시점: 0분(익일 시가)",
         "",

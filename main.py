@@ -38,6 +38,13 @@ WATCH_DEBOUNCE_SEC = 0.5
 # 자식 GUI 종료·재기동 루프 폴링 간격(초) — 낮을수록 재시작 반응이 빠름
 CHILD_POLL_SEC = 0.05
 
+
+def _launch_gui_main() -> None:
+    from src.gui import main as gui_main
+
+    gui_main()
+
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -479,9 +486,7 @@ def main() -> None:
                 config_path = str(raw[i + 1]).strip()
     if mode in ("gui", "cli"):
         if mode == "gui":
-            from src.gui import main as gui_main
-
-            gui_main()
+            _launch_gui_main()
             return
         # mode == "cli"
         base_cfg = load_config(config_path)
@@ -490,9 +495,7 @@ def main() -> None:
         return
 
     if not rest:
-        from src.gui import main as gui_main
-
-        gui_main()
+        _launch_gui_main()
         return
     sys.argv = [sys.argv[0]] + rest
     cli_main()
@@ -540,8 +543,13 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
     if market not in ("KOSPI", "KOSDAQ"):
         market = "KOSPI"
 
-    v3_cfg = cfg.get("v3_0") or {}
-    limit = int(v3_cfg.get("universe_limit", 300))
+    v3_cfg = cfg.get("v3_0")
+    if not isinstance(v3_cfg, dict):
+        raise SystemExit(
+            "[v3.0 cli] config/settings.yaml 에 v3_0 섹션이 필요합니다."
+        )
+    scan_p = pullback_scan_params_from_mapping(v3_cfg, cfg=cfg)
+    limit = scan_p.universe_limit
 
     anchor_info = resolve_overnight_scan_anchor(end_d)
     end_load = anchor_info.anchor_date.strftime("%Y-%m-%d")
@@ -576,13 +584,13 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
 
     run_v3_analytics(traded_frames)
 
-    scan_p = pullback_scan_params_from_mapping(v3_cfg)
     parity = scan_leader_pullback_candidates_bulk(
         end_d,
         market=market,
         universe_limit=limit,
         volume_burst_multiple=scan_p.volume_burst_multiple,
         vol_shrink_limit=scan_p.vol_shrink_limit,
+        use_momentum_filter=scan_p.use_momentum_filter,
     )
     print("\n" + "=" * 52 + "\nv3.30 주도주 눌림목 스캐너 (CLI/GUI parity)\n" + "=" * 52)
     if parity.get("ok"):

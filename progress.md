@@ -43,7 +43,9 @@
 - [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
 - [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
 - [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
-- [x] **v3.70** 스캔 파라미터 SSOT(`src/v3_scan_config.py`·`settings.yaml` v3_0만 fallback)·엔진 함수 기본값 제거·GUI→엔진 DI·`last_session.json` 종료 저장/시작 복원
+- [x] **v3.70** 스캔 파라미터 SSOT: `v3_scan_config` 엄격 YAML(`KeyError`)·`resolve_effective_pullback_scan_params`(세션 오버레이)·엔진 기본 인자 없음·GUI `bootstrap_gui_pullback_scan_ssot` 초기화 순서
+- [x] **v3.75** 해상도별 폰트 가변 차단 (v3.76에서 철회·아래 참고)
+- [x] **v3.76** OS DPI System-Aware: CTk `set_*_scaling(None)` · Qt/DPI 강제 차단 제거 · Tk 폰트 양수 pt(11/10/9)
 - [x] **v3.70** pykrx 일별 전종목 벌크 OHLCV 로컬 캐시(`data/cache/ohlcv_by_ticker/*.pkl`)·앵커일만 재조회·폴백 스캔도 캐시 조립
 - [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
 - [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
@@ -51,8 +53,36 @@
 - [x] **v3.50** 김직선 정배열 추세 필터: 종가>MA120 · MA5≥MA10 — 역배열·우하향 종목 스캔·백테스트 전면 제외
 - [x] **v3.60** 유니버스 콤보(100/300/500)·`last_session.json` 세션 복원·스캔/백테스트 밀리초 타이머·버튼 컴팩트·연한 레드 중단색
 - [x] **v3.65** 좌측 패널 200px 슬림화·파라미터 2단 행·원금|매도 1행·안내 1줄 압축
+- [x] **v3.66** 모멘텀 필터(MA5≥MA10) GUI 토글·YAML `use_momentum_filter`·스캔/백테스트/parity 동기화 · 유니버스 콤보 `Top 100` / `Top` / `Top 500` 라벨
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-29 (**v3.76** OS 배율 System-Aware·pt 폰트)
+- **`main.py`:** Qt 환경 변수·`gui_display` 호출 제거
+- **`src/gui_display.py`:** 삭제(v3.75 DPI 강제 차단 폐기)
+- **`src/gui.py`:** `set_*_scaling` 호출 제거(CTk 기본 OS DPI 연동; `None` 은 API 오류) · 창 제목 v3.76
+- **`src/gui_helpers.py`:** `gui_tk_font_pt`/`gui_ctk_font_pt` — Tk 양수 pt 11/10/9(음수 px 제거)
+
+### 2026-05-29 (**v3.75** DPI·폰트 절대 px 고정) [v3.76에서 철회]
+- **`main.py`:** `QT_AUTO_SCREEN_SCALE_FACTOR`·`QT_ENABLE_HIGHDPI_SCALING` 등 0/1 강제 · `_launch_gui_main()` · watch 자식 프로세스 동일 정책
+- **`src/gui_display.py`:** `apply_gui_display_policy`·`lock_tk_scaling_to_one` · Windows Per-monitor DPI aware
+- **`src/gui_helpers.py`:** `GUI_*_PX`(12/10/9/12) · `gui_tk_font_px`(음수=픽셀) · `gui_ctk_font_px`
+- **`src/gui.py`:** DateEntry·Canvas·내비 버튼 px 튜플 · CTkFont px 통일 · 창 제목 v3.75
+
+### 2026-05-29 (**v3.70** SSOT 마이그레이션 — 하드코딩 폴백 박멸)
+- **`src/v3_scan_config.py`:** `pullback_scan_params_from_yaml_section`·`resolve_effective_pullback_scan_params` — `v3_0` 필수 키 누락 시 `KeyError` · `.get(..., 1.5/0.8/300)` 제거
+- **`main.py`·`scripts/compare_overnight_cli_gui.py`·`tests/test_overnight_parity.py`:** `pullback_scan_params_from_mapping` / `default_pullback_scan_params` 경유
+- **`src/gui_helpers.py`:** `bootstrap_gui_pullback_scan_ssot` — YAML → `last_session.json` → StringVar/콤보 · `apply_yaml_to_widgets`에서 v3 중복 제거
+- **`src/gui.py`:** 초기 StringVar 빈 값 · 부트스트랩 후 주입 · `load_last_gui_session` 단일 호출 제거
+
+### 2026-05-29 (**v3.66** 모멘텀 필터 선택·유니버스 라벨)
+- **`config/settings.yaml`:** `v3_0.use_momentum_filter` — false 시 Pass5(MA5≥MA10) 스킵·Pass4(종가>MA120)까지만 적용
+- **`src/v3_scan_config.py`:** `PullbackScanParams.use_momentum_filter` · 세션 JSON 복원
+- **`src/data_loader.py`:** 벌크·단일 `qualifies_leader_pullback_from_ohlcv` — `kim_straight_trend_pass` 장기/단기 분리
+- **`src/pullback_backtest.py`:** 타임라인 백테스트 동일 분기
+- **`src/gui.py`:** `MA5 >= MA10` 체크박스 · 디버그 로그 Pass5 스킵 문구 · 유니버스 `Top 100` / `Top` / `Top 500`
+- **`src/gui_helpers.py`:** 유니버스 라벨↔값 매핑 · `last_session.json`·`apply_yaml_to_widgets` 연동
+- **`main.py`·`overnight_parity.py`:** parity·CLI에 `use_momentum_filter` 전달
 
 ### 2026-05-29 (**v3.65** 좌측 패널 가로 압축)
 - **`gui.py`:** `FIXED_LEFT_W` 200 · 파라미터 2행(일자/유니버스·세력·눌림) · 라벨 축소 · 마진 2px · 백테스트 1행 필드 · 하단 안내 1줄

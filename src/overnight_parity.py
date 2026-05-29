@@ -69,6 +69,7 @@ def run_overnight_parity_check(
         universe_limit=lim,
         volume_burst_multiple=scan_p.volume_burst_multiple,
         vol_shrink_limit=scan_p.vol_shrink_limit,
+        use_momentum_filter=scan_p.use_momentum_filter,
         cancel_event=None,
     )
     if not bulk.get("ok"):
