@@ -57,8 +57,16 @@
 - [x] **v3.60** 유니버스 콤보(100/300/500)·`last_session.json` 세션 복원·스캔/백테스트 밀리초 타이머·버튼 컴팩트·연한 레드 중단색
 - [x] **v3.65** 좌측 패널 200px 슬림화·파라미터 2단 행·원금|매도 1행·안내 1줄 압축
 - [x] **v3.66** 모멘텀 필터(MA5≥MA10) GUI 토글·YAML `use_momentum_filter`·스캔/백테스트/parity 동기화 · 유니버스 콤보 `Top 100` / `Top` / `Top 500` 라벨
+- [x] **v3.88** 차트 단일 렌더러 `render_stock_chart`·`update_chart_canvas`·`ticker_to_name` SSOT — 더블클릭·⏪◀▶⏩ 내비·이평 토글 공통 경로·상단 종목명 동기화 (`gui.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-30 (**v3.88** 차트 렌더러 단일화·종목명 동기화)
+- **`src/gui.py`:** `ticker_to_name` SSOT·`render_stock_chart`/`update_chart_canvas` 단일 렌더 경로 — `_run_chart_only`·`_pending_display_name` 폐기
+- **진입점 통일:** 리스트·이력 더블클릭·기간 내비(⏪◀▶⏩)·이평 토글 Refresh → `render_stock_chart`
+- **라벨:** `현재 선택 종목 : {티커} | {한글명}` · 차트 타이틀 **종목명만** · 창 제목 v3.88
+- **핫픽스:** `update_chart_canvas` 내부 `work()` 에서 `chart_title` 재할당 → `title_resolved` 로 분리(UnboundLocalError)
+- **핫픽스:** GUI·`backtest_chart` 이중 `(매매기준 MA{N})` 접미사 제거 → 타이틀 종목명 단독
 
 ### 2026-05-29 (**v3.86** 듀얼 시장 ALL 통합 풀)
 - **`src/filters.py`:** `pullback_bulk_markets_for_scan` — ALL(0) 시 KOSPI+KOSDAQ

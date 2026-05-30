@@ -344,7 +344,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.86 주도주 눌림목 스캐너 (Dual-Market Fix)")
+        self.title("BackTesterKRX v3.88 주도주 눌림목 스캐너")
 
         self._apply_initial_window_geometry()
 
@@ -362,6 +362,8 @@ class BacktestGUI(ctk.CTk):
         self._op_timer_base = ""
         # 마지막으로 성공한 단일/배치 차트 종목 코드 — 차트 기간 패닝 시 YAML·리스트 무관하게 유지
         self._last_active_stock_code = ""
+        # v3.88: 티커→한글 종목명 SSOT — 더블클릭·기간 내비 모두 동일 경로에서 조회
+        self.ticker_to_name: dict[str, str] = {}
         # v4.8: 패닝·Refresh 시 GUI 시장 드롭다운과 달라도 성공 실행 당시 상장 시장으로 try_build 고정
         self._last_run_listing_market: str | None = None
         self._chart_ohlcv_cache_df = None  # 타입: pd.DataFrame | None
@@ -1810,6 +1812,8 @@ class BacktestGUI(ctk.CTk):
 
         for sk, _it, ln, *_rest in truncated:
             self.list_codes.insert(tk.END, ln)
+        for _sk, _it, _ln, code, name, _sc, _mc in truncated:
+            self._register_ticker_name(code, name)
         if truncated:
             try:
                 self.list_codes.selection_set(0)
@@ -1870,13 +1874,102 @@ class BacktestGUI(ctk.CTk):
         cc = str(getattr(self, "_chart_ohlcv_cache_code", "") or "").strip().zfill(6)
         return cc if cc and cc != "000000" else ""
 
+    def _register_ticker_name(self, ticker: str, name: str) -> None:
+        """스캔·이력·리스트에서 수집한 종목명을 ticker_to_name 에 등록."""
+        t = str(ticker or "").strip().zfill(6)
+        n = str(name or "").strip()
+        if t and t != "000000" and n:
+            self.ticker_to_name[t] = n
+
+    def _resolve_stock_name(self, ticker: str) -> str:
+        """티커→한글명. 등록 dict·후보·이력 순으로 조회."""
+        t = str(ticker or "").strip().zfill(6)
+        if not t or t == "000000":
+            return t
+        hit = self.ticker_to_name.get(t)
+        if hit:
+            return hit
+        for code, name, _mc in self._candidates:
+            if str(code).strip().zfill(6) == t and str(name or "").strip():
+                self.ticker_to_name[t] = str(name).strip()
+                return self.ticker_to_name[t]
+        for tup in self._history_deque:
+            c, nm, _mc, _lm = history_row_normalize(tup)
+            if c == t and str(nm or "").strip():
+                self.ticker_to_name[t] = str(nm).strip()
+                return self.ticker_to_name[t]
+        return t
+
+    def _sync_selected_stock_label(self, ticker: str, stock_name: str) -> None:
+        t = str(ticker or "").strip().zfill(6)
+        nm = str(stock_name or "").strip() or t
+        try:
+            self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {t} | {nm}")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def get_selected_list_ticker(self) -> str:
+        """검색 리스트 선택 → 티커. 없으면 빈 문자열."""
+        try:
+            sel = self.list_codes.curselection()
+        except tk.TclError:
+            return ""
+        if not sel:
+            return ""
+        try:
+            raw = self.list_codes.get(sel[0])
+        except (tk.TclError, IndexError):
+            return ""
+        cd, _nm = self._split_codes_list_line(str(raw))
+        return cd.strip().zfill(6) if cd else ""
+
+    def render_stock_chart(
+        self,
+        ticker: str | None,
+        *,
+        period_nav: bool = False,
+        listing_market_override: str | None = None,
+        silent_try_build: bool = False,
+    ) -> None:
+        """더블클릭·기간 내비에 구애받지 않는 유일한 차트 렌더링 컨트롤러."""
+        if not ticker:
+            return
+        t = str(ticker).strip().zfill(6)
+        if not t or t == "000000":
+            return
+        if self._busy and not period_nav:
+            return
+
+        stock_name = self._resolve_stock_name(t)
+        chart_title = stock_name
+        self._sync_selected_stock_label(t, stock_name)
+
+        cfg = try_build_config(
+            self,
+            silent=silent_try_build,
+            selected_code_override=t,
+            market_override=listing_market_override,
+            period_nav=period_nav,
+        )
+        if cfg is None:
+            if period_nav:
+                self.lbl_status.configure(
+                    text="기간 이동: 먼저 리스트에서 종목을 선택해 차트를 연 뒤 패닝하세요.",
+                )
+            else:
+                self.set_status_message(
+                    "설정을 만들 수 없습니다. 기간·수수료·가상 원금 입력을 확인하세요."
+                )
+            return
+
+        self.update_chart_canvas(t, chart_title, cfg)
+
     def _on_rules_refresh_chart(self) -> None:
         """현재 선택 종목의 기간 차트만 다시 렌더링(v3.1: 비백테스트)."""
         if self._busy:
             self.set_status_message("다른 작업이 진행 중입니다. 완료 후 다시 시도하세요.")
             return
         code = self.current_code
-        code = code.strip().zfill(6) if code else ""
         if not code or code == "000000":
             messagebox.showinfo(
                 "차트 새로고침",
@@ -1886,20 +1979,7 @@ class BacktestGUI(ctk.CTk):
                 "활성 종목이 없습니다. 검색 결과·이력에서 종목을 선택하세요."
             )
             return
-
-        cfg = try_build_config(
-            self,
-            silent=True,
-            selected_code_override=code,
-            period_nav=True,
-        )
-        if cfg is None:
-            self.set_status_message(
-                "설정을 만들 수 없습니다. 기간·수수료·가상 원금 입력을 확인하세요."
-            )
-            return
-
-        self._run_chart_only(cfg)
+        self.render_stock_chart(code, period_nav=True)
 
     def _schedule_auto_run_after_shift(self) -> None:
         if self._shift_auto_run_after_id is not None:
@@ -1914,31 +1994,26 @@ class BacktestGUI(ctk.CTk):
             )
             return
         nav = self.current_code
-        nav_ov = nav if nav else None
-        cfg = try_build_config(
-            self,
-            silent=True,
-            selected_code_override=nav_ov,
-            period_nav=True,
-        )
-        if cfg is None:
+        if not nav or nav == "000000":
             self.lbl_status.configure(
                 text="기간 이동: 먼저 리스트에서 종목을 선택해 차트를 연 뒤 패닝하세요.",
             )
             return
-        self._run_chart_only(cfg)
+        self.render_stock_chart(nav, period_nav=True)
 
     def _on_chart_pan_bdays(self, delta_bdays: int) -> None:
         """차트 좌·우 오버레이: 영업일 기준으로 기간 이동 후 자동 재실행."""
         self._shift_period_trading_days(delta_bdays)
         self._schedule_auto_run_after_shift()
 
-    def _run_chart_only(self, cfg: dict | None) -> None:
-        """v3.1: 백테스트 없이 선택 종목의 기간별 차트만 생성/표시."""
+    def update_chart_canvas(
+        self, ticker: str, chart_title: str, cfg: dict | None
+    ) -> None:
+        """5중 이평·거래량 캔버스 갱신 코어(v3.88 단일 렌더러 내부)."""
         if cfg is None or self._busy:
             return
 
-        code = str((cfg.get("universe") or {}).get("selected_code") or "").strip().zfill(6)
+        code = str(ticker or "").strip().zfill(6)
         if not code or code == "000000":
             self.set_status_message("차트 표시 대상 종목 코드가 없습니다.")
             return
@@ -1951,10 +2026,6 @@ class BacktestGUI(ctk.CTk):
             return
 
         self._pending_run_code = code
-        uni_u = cfg.get("universe") or {}
-        self._pending_display_name = str(
-            uni_u.get("selected_display_name") or ""
-        ).strip()
         self._busy = True
         self._update_period_label()
         self.btn_run.configure(state="disabled", text="차트 로딩 중…")
@@ -1967,6 +2038,8 @@ class BacktestGUI(ctk.CTk):
         trend_visible: dict[int, bool] = {}
         for p in CHART_MA_TOGGLE_PERIODS:
             trend_visible[p] = bool(self._trend_vars[p].get())
+
+        title_resolved = str(chart_title or "").strip() or code
 
         def work() -> None:
             try:
@@ -2001,14 +2074,10 @@ class BacktestGUI(ctk.CTk):
                     save_dpi = dpi
                     layout_preset = "gui_target"
 
-                chart_title = (
-                    str(getattr(self, "_pending_display_name", "") or "").strip()
-                    or code
-                )
                 canvas_state = {
                     "sim": sim,
                     "trades": [],
-                    "name": chart_title,
+                    "name": title_resolved,
                     "bar_label": "일봉",
                     "ma_n": ma_n,
                     "ret_series": ret_series,
@@ -2023,7 +2092,7 @@ class BacktestGUI(ctk.CTk):
                 png_bytes = render_backtest_chart_png_bytes(
                     sim=sim,
                     trades=[],
-                    name=chart_title,
+                    name=title_resolved,
                     bar_label="일봉",
                     ma_n=ma_n,
                     ret_series=ret_series,
@@ -2038,7 +2107,7 @@ class BacktestGUI(ctk.CTk):
 
                 self.after(
                     0,
-                    lambda b=png_bytes, ct=chart_title, cs=canvas_state: self._finish_chart_only(
+                    lambda b=png_bytes, ct=title_resolved, cs=canvas_state: self._finish_chart_only(
                         code, b, ct, cs
                     ),
                 )
@@ -2061,8 +2130,8 @@ class BacktestGUI(ctk.CTk):
             self._chart_install_canvas_state(canvas_state)
         self._update_chart_image_from_png_bytes(png_bytes)
         self.set_status_message("완료")
-        nm = str(display_name or "").strip() or code
-        self.lbl_selected_stock.configure(text=f"현재 선택 종목 : {nm}")
+        nm = str(display_name or "").strip() or self._resolve_stock_name(code)
+        self._sync_selected_stock_label(code, nm)
 
     def _finish_chart_only_error(self, msg: str) -> None:
         self._busy = False
@@ -2201,24 +2270,22 @@ class BacktestGUI(ctk.CTk):
     ) -> None:
         """
         검색 결과 더블클릭·「백테스트 실행」·이력 라우팅 공통 진입점.
-        v4.8: 이력 실행 시 상장 시장을 인자로 넘겨 목록 검증·시총표를 GUI 드롭다운과 분리한다.
+        v3.88: render_stock_chart 단일 렌더러로 위임.
         """
         cdf = str(code or "").strip().zfill(6)
         if not cdf or cdf == "000000":
             return
-        cfg = try_build_config(
-            self,
-            silent=silent_try_build,
-            selected_code_override=cdf,
-            market_override=listing_market_override,
-            search_keyword_override=search_keyword_override,
-        )
-        if cfg is None:
-            return
         nm = str(selected_display_name or "").strip()
         if nm:
-            cfg.setdefault("universe", {})["selected_display_name"] = nm
-        self._run_chart_only(cfg)
+            self._register_ticker_name(cdf, nm)
+        if search_keyword_override is not None:
+            self.var_keyword.set(str(search_keyword_override))
+        self.render_stock_chart(
+            cdf,
+            period_nav=False,
+            listing_market_override=listing_market_override,
+            silent_try_build=silent_try_build,
+        )
 
     def _run_single_from_run_button(self) -> None:
         """버튼: 검색 결과 선택 우선, 없으면 이력에서 선택된 한 종목만 실행."""
@@ -2367,6 +2434,7 @@ class BacktestGUI(ctk.CTk):
                 mc_s = str(el[5] or "").strip()
                 amt_s = str(el[6] or "").strip()
             pairs.append((c_norm, nm, mc_val, lm, rise_s, mc_s, amt_s))
+            self._register_ticker_name(c_norm, nm)
             if len(pairs) >= BACKTEST_HISTORY_MAX:
                 break
         if not pairs:
@@ -2516,6 +2584,7 @@ class BacktestGUI(ctk.CTk):
         )
         nd.extend(rest_parts[: BACKTEST_HISTORY_MAX - 1])
         self._history_deque = deque(nd, maxlen=BACKTEST_HISTORY_MAX)
+        self._register_ticker_name(cd, nm)
         self._sync_history_listbox()
 
     def _on_history_delete(self) -> None:
@@ -2554,6 +2623,7 @@ class BacktestGUI(ctk.CTk):
         amt_s = parts[4].replace("대금", "", 1).strip() if len(parts) >= 5 else ""
         if not cd:
             return
+        self._register_ticker_name(cd, nm)
         self._push_history(
             cd,
             nm,
@@ -2564,10 +2634,7 @@ class BacktestGUI(ctk.CTk):
             trade_amount_text=amt_s,
             skip_if_exists=True,
         )
-        self._run_single_with_code(
-            cd,
-            selected_display_name=nm,
-        )
+        self.render_stock_chart(cd)
         self.set_status_message(f"차트 표시 · 이력 추가: {nm} ({cd})")
 
     def _on_history_list_dbl_click(self, _evt: tk.Event | None = None) -> None:
@@ -2583,16 +2650,14 @@ class BacktestGUI(ctk.CTk):
         cd, nm_hist, _mc, mk = history_row_normalize(list(self._history_deque)[idx_h])
         if not cd:
             return
-        # UI 동기화: 이력에 기록된 상장 시장·종목명을 메인 폼에 반영
         k_h = mk
         mv = normalize_krx_listing_market(mk)
         self.var_market.set(mv if mv is not None else k_h)
-        self._run_single_with_code(
+        self._register_ticker_name(cd, nm_hist)
+        self.render_stock_chart(
             cd,
             listing_market_override=k_h,
             silent_try_build=True,
-            search_keyword_override="",
-            selected_display_name=nm_hist,
         )
 
     def _search_screen_universe_params(self) -> dict[str, object] | None:
@@ -2687,6 +2752,8 @@ class BacktestGUI(ctk.CTk):
         text = str(self.lbl_selected_stock.cget("text") or "")
         if ":" in text:
             tail = text.split(":", 1)[1].strip()
+            if "|" in tail:
+                return tail.split("|", 1)[1].strip()
             parts = tail.split(None, 1)
             if len(parts) >= 2:
                 return parts[1].strip()
@@ -3184,6 +3251,7 @@ class BacktestGUI(ctk.CTk):
             )
             self.list_codes.insert(tk.END, line)
             self._candidates.append((code, name, None))
+            self._register_ticker_name(code, name)
         if rows:
             self.list_codes.selection_set(0)
             self.set_status_message(
@@ -3275,15 +3343,6 @@ class BacktestGUI(ctk.CTk):
         self._set_summary("")
 
         code_hist = str(getattr(self, "_pending_run_code", "") or "").zfill(6)
-        if code_hist and code_hist != "000000":
-            self._last_active_stock_code = code_hist
-            try:
-                shown_name = disp_name or code_hist
-                self.lbl_selected_stock.configure(
-                    text=f"현재 선택 종목 : {code_hist} {shown_name}"
-                )
-            except (tk.TclError, AttributeError):
-                pass
         disp_name = ""
         for row in res.summary_rows:
             if row[0] == "종목":
@@ -3293,6 +3352,13 @@ class BacktestGUI(ctk.CTk):
                 if lp >= 0 and rp > lp:
                     disp_name = cell[:lp].strip()
                 break
+        if code_hist and code_hist != "000000":
+            self._last_active_stock_code = code_hist
+            try:
+                shown_name = disp_name or self._resolve_stock_name(code_hist)
+                self._sync_selected_stock_label(code_hist, shown_name)
+            except (tk.TclError, AttributeError):
+                pass
         mk_done = self._last_run_listing_market
         mc_hist = self._listing_cap_snapshot(code_hist, mk_done)
         self._push_history(

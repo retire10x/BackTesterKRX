@@ -751,7 +751,7 @@ def make_backtest_figure(
 
     # v4.5: 추세 이평은 가격 패널 ax.legend — 세로 라벨(Price 등) 대신 패널 뱃지로 패널 구분.
 
-    title = f"{name} (매매기준 MA{ma_n})"
+    title = str(name or "").strip()
 
     plot_type = "candle" if show_candle else "line"
 
