@@ -36,16 +36,12 @@ from src.data_loader import (
     months_before,
     fetch_filtered_universe,
     fetch_listing_market_cap_krw_by_code,
-    fetch_pykrx_marcap_trade_krw_by_code,
-    load_v3_0_overnight_scalper_data,
     load_config,
     load_ohlcv,
     load_ohlcv_for_chart,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
     PULLBACK_MIN_OHLCV_BARS,
-    PULLBACK_SCAN_HISTORY_BDAY,
-    qualifies_leader_pullback_from_ohlcv,
     scan_leader_pullback_candidates_bulk,
 )
 from src.gui_helpers import (
@@ -137,6 +133,38 @@ def _format_marcap_display_krw(value_krw: float | None) -> str:
     if eok >= 1_000_000:
         return f"{int(round(eok / 1000)):,d}천억"
     return f"{eok:,d}억"
+
+
+def _leader_pullback_bulk_fail_message(reason: str) -> str:
+    """벌크 스캔 실패 사유 → 사용자 메시지 (폴백 없이 중단)."""
+    r = str(reason or "").strip() or "unknown"
+    if r == "cancelled":
+        return "스캔이 사용자에 의해 중단되었습니다."
+    if r.startswith("timeout_"):
+        return (
+            f"벌크 스캔 타임아웃 ({r}).\n"
+            "종목별 폴백 스캔은 사용하지 않습니다. 잠시 후 다시 시도하세요."
+        )
+    known = {
+        "krx_auth_missing": (
+            "KRX 로그인 정보(KRX_ID/KRX_PW)가 없어 벌크 스캔을 수행할 수 없습니다.\n"
+            "프로젝트 루트 .env 파일을 확인한 뒤 다시 시도하세요."
+        ),
+        "pykrx_import_failed": "pykrx 모듈을 불러오지 못했습니다.",
+        "ohlcv_bulk_failed": (
+            "pykrx 벌크 OHLCV 조회에 실패했습니다.\n"
+            "네트워크·KRX 서비스 상태를 확인하세요."
+        ),
+        "ohlcv_history_short": "스캔에 필요한 영업일 이력이 부족합니다.",
+        "ohlcv_join_empty": "벌크 OHLCV 종목 교집합이 비어 있습니다.",
+        "ohlcv_columns_missing": "벌크 OHLCV 필수 컬럼이 누락되었습니다.",
+    }
+    if r in known:
+        return known[r]
+    return (
+        f"벌크 스캔 실패 (reason={r}).\n"
+        "종목별 폴백 스캔은 사용하지 않습니다."
+    )
 
 
 def _prime_krx_env_from_dotenv() -> None:
@@ -282,6 +310,7 @@ LEFT_PANEL_PAD_Y = 2
 DATE_GRID_MIN_W = 88
 DATE_MONTH_NAV_BTN_W = 22
 DATE_MONTH_NAV_BTN_H = 22
+DATE_TODAY_BTN_W = 38
 
 # 차트 패널: 영업일 기준(±7, ±1) 기간 평행 이동 시 라벨·자동 재실행과 연계
 # 차트 이미지 위 좌·우 클릭 영역 (px, place)
@@ -532,6 +561,23 @@ class BacktestGUI(ctk.CTk):
         )
         self.btn_date_next_month.pack(side="left")
         HoverTooltip(self.btn_date_next_month, "1개월 후로 이동")
+        self.btn_date_today = ctk.CTkButton(
+            date_month_nav,
+            text="오늘",
+            width=DATE_TODAY_BTN_W,
+            height=DATE_MONTH_NAV_BTN_H,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=gui_body_font(),
+            cursor="hand2",
+            command=self._on_date_reset_to_today,
+        )
+        self.btn_date_today.pack(side="left", padx=(4, 0))
+        HoverTooltip(self.btn_date_today, "7개월 전 ~ 오늘 기간으로 설정")
 
         row_params_row2 = ctk.CTkFrame(scan_params_block, fg_color="transparent")
         row_params_row2.pack(fill="x")
@@ -1953,6 +1999,18 @@ class BacktestGUI(ctk.CTk):
         self._shift_period_months(delta_months)
         self._schedule_auto_run_after_shift()
 
+    def _set_period_default_six_months_to_today(self) -> None:
+        """시작=7개월 전, 종료=오늘 (`default_backtest_period_range` SSOT)."""
+        s_d, e_d = default_backtest_period_range()
+        self._date_start.set_date(s_d)
+        self._date_end.set_date(e_d)
+        self._update_period_label()
+
+    def _on_date_reset_to_today(self) -> None:
+        """입력 패널 '오늘': 7개월 전~오늘 기간 설정 후 차트 자동 갱신."""
+        self._set_period_default_six_months_to_today()
+        self._schedule_auto_run_after_shift()
+
     def _stash_chart_daily_cache(self, df: pd.DataFrame, code: str) -> None:
         """차트 패널 패닝용 일봉 전량 버퍼(메인 스레드 저장)."""
         self._chart_ohlcv_cache_df = df
@@ -3080,10 +3138,7 @@ class BacktestGUI(ctk.CTk):
         v3.30 주도주 눌림목 스캔.
         반환: (리스트 행, code→ScanEvidenceSnapshot) — 조회 시점 스냅샷.
         """
-        from src.engine.exporter import (
-            ScanEvidenceSnapshot,
-            build_scan_evidence_from_ohlcv,
-        )
+        from src.engine.exporter import ScanEvidenceSnapshot
 
         empty: tuple[list, dict] = ([], {})
         params = self._parse_leader_pullback_scan_params()
@@ -3196,123 +3251,10 @@ class BacktestGUI(ctk.CTk):
                     )
                 )
         else:
-            reason = str(bulk.get("reason", ""))
-            fallback_limit = self._selected_universe_limit()
-            if reason.startswith("timeout_"):
-                self.after(
-                    0,
-                    lambda: messagebox.showwarning(
-                        "안전 모드 전환",
-                        (
-                            "서버 응답 지연으로 인해 안전 모드(폴백)로 전환합니다.\n"
-                            f"GUI 폴백은 상위 {fallback_limit}개 종목만 스캔합니다."
-                        ),
-                    ),
-                )
-            elif reason in ("krx_auth_missing", "ohlcv_bulk_failed", "ohlcv_bulk_empty"):
-                self.after(
-                    0,
-                    lambda: messagebox.showwarning(
-                        "벌크 스캔 실패",
-                        (
-                            f"벌크 스캔 사유: {reason}\n"
-                            f"GUI 폴백은 상위 {fallback_limit}개 종목만 스캔합니다."
-                        ),
-                    ),
-                )
+            reason = str(bulk.get("reason", "")).strip() or "unknown"
             if reason == "cancelled":
                 return empty
-            ainfo_fb = resolve_overnight_scan_anchor(requested_scan_date)
-            anchor_fb = ainfo_fb.anchor_date.strftime("%Y-%m-%d")
-            effective_anchor = anchor_fb
-            prev_1 = ainfo_fb.prev_1.strftime("%Y-%m-%d")
-            prev_2 = ainfo_fb.prev_2.strftime("%Y-%m-%d")
-            # 2) 폴백: 종목별 일봉 + v3.30 눌림목 3중 조건
-            warm_start = (
-                pd.Timestamp(anchor_fb) - BDay(PULLBACK_SCAN_HISTORY_BDAY + 15)
-            ).strftime("%Y-%m-%d")
-            fallback_markets = pullback_bulk_markets_for_scan(
-                scan_market, fallback_limit
-            )
-            universe_pairs: list[tuple[str, object, str]] = []
-            for fb_mk in fallback_markets:
-                part = load_v3_0_overnight_scalper_data(
-                    start_date=warm_start,
-                    end_date=anchor_fb,
-                    market=fb_mk,
-                    universe_limit=fallback_limit,
-                )
-                for code, df in part:
-                    universe_pairs.append((str(code).zfill(6), df, fb_mk))
-            total_loaded = len(universe_pairs)
-            diag_policy = diag_policy or ainfo_fb.anchor_policy_reason
-            for c6, df, fb_mk in universe_pairs:
-                if self._scan_cancel_event.is_set():
-                    return empty
-                if df is None or getattr(df, "empty", True):
-                    continue
-                krx_map_fb = fetch_pykrx_marcap_trade_krw_by_code(
-                    anchor_fb, market=fb_mk
-                )
-                mar_krw: float | None = None
-                trd_krw: float | None = None
-                tp = krx_map_fb.get(c6)
-                if tp:
-                    mar_krw, trd_krw = tp
-                c_px = float(pd.to_numeric(df["Close"], errors="coerce").iloc[-1])
-                vl = float(pd.to_numeric(df["Volume"], errors="coerce").iloc[-1])
-                if trd_krw is None and vl >= 0:
-                    trd_krw = c_px * vl
-                from src.filters import pass_liquidity_gate
-
-                if pass_liquidity_gate(
-                    mar_krw,
-                    trd_krw,
-                    min_market_cap_krw=min_liq_cap,
-                    min_trade_amount_krw=min_liq_trd,
-                    volume_t0=vl,
-                ):
-                    pass_liquidity += 1
-                else:
-                    continue
-                ok_pb, rise_pct = qualifies_leader_pullback_from_ohlcv(
-                    df,
-                    volume_burst_multiple=volume_burst_multiple,
-                    vol_shrink_limit=vol_shrink_limit,
-                    use_momentum_filter=use_momentum_filter,
-                    min_liquidity_market_cap_krw=min_liq_cap,
-                    min_liquidity_trade_amount_krw=min_liq_trd,
-                    market_cap_krw=mar_krw,
-                    trade_amount_krw=trd_krw,
-                )
-                if not ok_pb:
-                    continue
-                pass_burst += 1
-                pass_price += 1
-                pass_volume += 1
-                pass_all += 1
-                name = str(name_map.get(c6, "")).strip() or c6
-                qualifiers.append(
-                    (c6, name, rise_pct, mar_krw, trd_krw, fb_mk)
-                )
-                ev_fb = build_scan_evidence_from_ohlcv(
-                    df,  # type: ignore[arg-type]
-                    code=c6,
-                    name=name,
-                    anchor_date=effective_anchor,
-                    listing_market=fb_mk,
-                    market_cap_krw=mar_krw,
-                    trade_amount_krw=trd_krw,
-                    min_liquidity_market_cap_krw=min_liq_cap,
-                    min_liquidity_trade_amount_krw=min_liq_trd,
-                    volume_burst_multiple=volume_burst_multiple,
-                    vol_shrink_limit=vol_shrink_limit,
-                )
-                if ev_fb is not None:
-                    evidence_by_code[c6] = ev_fb
-
-            total_universe = len(universe_pairs)
-            total_loaded = pass_liquidity
+            raise RuntimeError(_leader_pullback_bulk_fail_message(reason))
 
         qualifiers.sort(key=lambda z: (-float(z[2]), str(z[0]).zfill(6)))
 
@@ -3588,8 +3530,8 @@ class BacktestGUI(ctk.CTk):
         """검색 워커 예외 처리(메인 스레드 전용)."""
         self._busy = False
         self._end_search_loading_state()
-        self.set_status_message(f"검색 실패: {msg}")
-        messagebox.showerror("검색 실패", msg)
+        self.set_status_message(f"스캔 실패: {msg.splitlines()[0]}")
+        messagebox.showerror("스캔 실패", msg)
 
     def _on_run(self):
         self._on_search()

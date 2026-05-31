@@ -74,10 +74,14 @@ def months_before(d: date, months: int) -> date:
     return date(y, m, min(d.day, last))
 
 
+# GUI·YAML·CLI 기본 조회 구간: 오늘 기준 N개월 전 ~ 오늘 (MA120·120영업일 워밍업 여유)
+DEFAULT_PERIOD_MONTHS = 7
+
+
 def default_backtest_period_range() -> tuple[date, date]:
-    """시작=오늘 기준 6개월 전, 종료=오늘."""
+    """시작=오늘 기준 7개월 전, 종료=오늘."""
     today = date.today()
-    return months_before(today, 6), today
+    return months_before(today, DEFAULT_PERIOD_MONTHS), today
 
 
 # 일봉: 사용자 시작일 이전 최소 이 거래일만큼 OHLCV 를 당겨와 MA120·v4.0 기울기 필터 워밍업
@@ -102,7 +106,7 @@ def ohlcv_warm_start_date(user_start: str, *, interval: str) -> str:
 
 
 def load_config(path: str | None = None) -> dict:
-    """config/settings.yaml 로드. 기간이 비어 있으면 6개월 전~오늘로 채움."""
+    """config/settings.yaml 로드. 기간이 비어 있으면 7개월 전~오늘로 채움."""
     cfg_path = path or os.path.join("config", "settings.yaml")
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)

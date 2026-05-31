@@ -3,7 +3,7 @@
 차트 Figure·PNG 는 `backtest_chart` 모듈 (GUI/Tkinter 비의존).
 
 v4.0: 매수 진입 필터(120선 회귀 기울기·돌파 강도·시간 버퍼);
-v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 6개월~오늘;
+v4.1: 사용자 시작일 이전 거래일 130봉분 일봉 OHLCV 선행 로드(주봉은 캘린더 버퍼)·YAML 빈 기간 시 실행 시점 7개월~오늘;
 v4.4: 수익률 구간별 가변 고점 대비 낙폭 매도(`simulator.simulate_single` trailing_stop)·차트 타점 색 구분;
 v4.9: GUI 선택 시 `chart_render_px` 로 mpl `figsize`/저장 DPI 동기 — `backtest_chart` 의 `gui_target` 레이아웃 프리셋;
 v4.10: `defer_chart_render` 로 시뮬·지표와 PNG 분리(GUI 고속)·FDR 호출 빈도는 `data_loader` 캐시와 병행;
