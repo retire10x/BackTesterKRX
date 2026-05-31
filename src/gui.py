@@ -407,6 +407,7 @@ class BacktestGUI(ctk.CTk):
         self._scan_thread: LeaderPullbackScanWorker | None = None
         self._backtest_busy = False
         self._backtest_cancel_event = threading.Event()
+        self._backtest_evidence_snapshot: dict[str, object] | None = None
         self._cash_format_guard = False
         self._op_timer_after_id: str | None = None
         self._op_timer_start: float | None = None
@@ -754,6 +755,7 @@ class BacktestGUI(ctk.CTk):
         row_bt_btns.pack(fill="x", padx=2, pady=(0, 3))
         row_bt_btns.grid_columnconfigure(0, weight=1)
         row_bt_btns.grid_columnconfigure(1, weight=1)
+        row_bt_btns.grid_columnconfigure(2, weight=1)
         self.btn_pullback_backtest = ctk.CTkButton(
             row_bt_btns,
             text="🚀 백테스트",
@@ -762,6 +764,21 @@ class BacktestGUI(ctk.CTk):
             command=self._on_pullback_backtest,
         )
         self.btn_pullback_backtest.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        self.btn_export_backtest_evidence = ctk.CTkButton(
+            row_bt_btns,
+            text="📥 근거",
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
+            fg_color=("gray70", "gray35"),
+            hover_color=("gray60", "gray45"),
+            command=self._on_export_backtest_evidence,
+            state="disabled",
+        )
+        self.btn_export_backtest_evidence.grid(row=0, column=1, sticky="ew", padx=(3, 3))
+        HoverTooltip(
+            self.btn_export_backtest_evidence,
+            "백테스트 완료 후 매매 체결 내역·성과 지표 Excel 저장\n(outputs/backtests/)",
+        )
         self.btn_backtest_cancel = ctk.CTkButton(
             row_bt_btns,
             text="⏹️ 테스트 중단",
@@ -772,7 +789,7 @@ class BacktestGUI(ctk.CTk):
             command=self._on_backtest_cancel,
             state="disabled",
         )
-        self.btn_backtest_cancel.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.btn_backtest_cancel.grid(row=0, column=2, sticky="ew", padx=(3, 0))
 
         row_bt_fields = ctk.CTkFrame(backtest_panel, fg_color="transparent")
         row_bt_fields.pack(fill="x", padx=2, pady=(0, 2))
@@ -3009,6 +3026,11 @@ class BacktestGUI(ctk.CTk):
 
         self._backtest_busy = True
         self._backtest_cancel_event.clear()
+        self._backtest_evidence_snapshot = None
+        try:
+            self.btn_export_backtest_evidence.configure(state="disabled")
+        except (tk.TclError, AttributeError):
+            pass
         self._begin_backtest_loading_state()
         self.set_status_message(f"눌림목 백테스트 계산 중… ({code})")
 
@@ -3076,13 +3098,71 @@ class BacktestGUI(ctk.CTk):
         self._backtest_busy = False
         self._end_backtest_loading_state()
         if not res.ok:
+            self._backtest_evidence_snapshot = None
+            try:
+                self.btn_export_backtest_evidence.configure(state="disabled")
+            except (tk.TclError, AttributeError):
+                pass
             self._set_backtest_report_text(res.error or "알 수 없는 오류")
             self.set_status_message("백테스트 오류")
             return
+        self._backtest_evidence_snapshot = {
+            "ticker_code": res.ticker_code or self.current_code,
+            "ticker_name": res.ticker_name or self._active_stock_label_name() or res.ticker_code,
+            "start_date": res.period_start,
+            "end_date": res.period_end,
+            "metrics_dict": dict(res.metrics_dict or {}),
+            "trade_history": [dict(tr) for tr in (res.trade_history or [])],
+        }
+        try:
+            self.btn_export_backtest_evidence.configure(state="normal")
+        except (tk.TclError, AttributeError):
+            pass
         self._set_backtest_report_text(res.report_text)
         self.set_status_message(
             f"백테스트 완료 · 진입 {res.n_entries}회 · 최종 {res.final_equity:,.0f}원"
         )
+
+    def _on_export_backtest_evidence(self) -> None:
+        """v4.60: 백테스트 매매 체결·성과 지표 Excel 저장."""
+        from src.engine.backtest_exporter import export_backtest_evidence
+
+        snap = self._backtest_evidence_snapshot
+        if not snap:
+            messagebox.showinfo(
+                "근거 내보내기",
+                "먼저 [🚀 백테스트]를 실행해 결과를 확보하세요.",
+            )
+            return
+
+        try:
+            path = export_backtest_evidence(
+                ticker_code=str(snap.get("ticker_code", "")),
+                ticker_name=str(snap.get("ticker_name", "")),
+                start_date=str(snap.get("start_date", "")),
+                end_date=str(snap.get("end_date", "")),
+                metrics_dict=dict(snap.get("metrics_dict") or {}),
+                trade_history=list(snap.get("trade_history") or []),
+            )
+        except ModuleNotFoundError as ex:
+            if ex.name == "openpyxl":
+                messagebox.showerror(
+                    "근거 내보내기 실패",
+                    "openpyxl 패키지가 없습니다.\n\n"
+                    "프로젝트 venv에서 실행:\n"
+                    "  pip install openpyxl\n\n"
+                    "또는:\n"
+                    "  pip install -r requirements.txt",
+                )
+            else:
+                messagebox.showerror("근거 내보내기 실패", str(ex))
+            return
+        except Exception as ex:
+            messagebox.showerror("근거 내보내기 실패", str(ex))
+            return
+
+        self.set_status_message(f"백테스트 근거 Excel 저장 · {path}")
+        messagebox.showinfo("근거 내보내기", f"저장 완료:\n{path}")
 
     def _begin_search_loading_state(self) -> None:
         """검색 워커 시작 시 버튼 비활성화·마우스 대기 커서(창 단위)."""

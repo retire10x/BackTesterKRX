@@ -4,7 +4,8 @@ v3.40: 단일 종목 주도주 눌림목 타임라인 백테스트.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,12 @@ class PullbackTimelineResult:
     n_entries: int
     final_equity: float
     initial_cash: float
+    ticker_code: str = ""
+    ticker_name: str = ""
+    period_start: str = ""
+    period_end: str = ""
+    trade_history: list[dict[str, Any]] = field(default_factory=list)
+    metrics_dict: dict[str, float] = field(default_factory=dict)
 
 
 def pullback_signal_at_index(
@@ -110,6 +117,32 @@ def _leg_return(buy_px: float, sell_px: float) -> float:
     return float(net)
 
 
+def _compute_backtest_metrics(
+    trade_history: list[dict[str, Any]],
+) -> dict[str, float]:
+    """v4.60: 승률·손익비(PF) — 하단 매매 로그와 상단 요약 대칭."""
+    n = len(trade_history)
+    if n == 0:
+        return {"total_trades": 0.0, "win_rate": 0.0, "profit_factor": 0.0}
+    pnls = [float(t.get("pnl_ratio", 0.0) or 0.0) for t in trade_history]
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    win_rate = len(wins) / n * 100.0
+    gross_win = sum(wins)
+    gross_loss = abs(sum(losses))
+    if gross_loss > 0:
+        pf = gross_win / gross_loss
+    elif gross_win > 0:
+        pf = float("inf")
+    else:
+        pf = 0.0
+    return {
+        "total_trades": float(n),
+        "win_rate": float(win_rate),
+        "profit_factor": float(pf),
+    }
+
+
 def run_pullback_timeline_backtest(
     df: pd.DataFrame,
     *,
@@ -136,6 +169,10 @@ def run_pullback_timeline_backtest(
             0,
             float(initial_cash),
             float(initial_cash),
+            ticker_code=code,
+            ticker_name=name,
+            period_start=str(period_start or "")[:10],
+            period_end=str(period_end or "")[:10],
         )
 
     if df is None or df.empty:
@@ -170,7 +207,7 @@ def run_pullback_timeline_backtest(
     )
 
     equity = float(initial_cash)
-    entries: list[tuple[str, float, float, float]] = []
+    trade_history: list[dict[str, Any]] = []
 
     for i in range(119, len(work) - 1):
         bar_ts = work.index[i].normalize()
@@ -194,10 +231,21 @@ def run_pullback_timeline_backtest(
             continue
         leg_r = _leg_return(buy_px, sell_px)
         equity *= 1.0 + leg_r
-        dt = work.index[i].strftime("%Y-%m-%d")
-        entries.append((dt, buy_px, sell_px, leg_r * 100.0))
+        entry_dt = work.index[i].strftime("%Y-%m-%d")
+        exit_dt = work.index[i + 1].strftime("%Y-%m-%d")
+        pnl_pct = leg_r * 100.0
+        trade_history.append(
+            {
+                "entry_date": entry_dt,
+                "entry_price": buy_px,
+                "exit_date": exit_dt,
+                "exit_price": sell_px,
+                "pnl_ratio": pnl_pct,
+            }
+        )
 
-    n = len(entries)
+    n = len(trade_history)
+    metrics_dict = _compute_backtest_metrics(trade_history)
     total_ret = (equity / float(initial_cash) - 1.0) * 100.0 if initial_cash > 0 else 0.0
     hdr = f"{name} ({code})".strip() if code or name else "선택 종목"
     lines = [
@@ -219,13 +267,14 @@ def run_pullback_timeline_backtest(
         f"• 기간 누적 수익률: {total_ret:+.2f} %",
         "",
     ]
-    if entries:
+    if trade_history:
         lines.append("— 진입 내역 (신호일 종가 매수 → 익일 시가 매도) —")
         if n > 40:
             lines.append(f"  (최근 40건만 표시 / 전체 {n}건)")
-        for dt, bp, sp, lr in entries[-40:]:
+        for tr in trade_history[-40:]:
             lines.append(
-                f"  {dt}  매수 {bp:,.0f} → 매도 {sp:,.0f}  ({lr:+.2f}%)"
+                f"  {tr['entry_date']}  매수 {tr['entry_price']:,.0f} → "
+                f"매도 {tr['exit_price']:,.0f}  ({tr['pnl_ratio']:+.2f}%)"
             )
     else:
         lines.append("• 해당 기간에 눌림목 조건을 만족한 진입일이 없습니다.")
@@ -237,4 +286,10 @@ def run_pullback_timeline_backtest(
         n,
         float(equity),
         float(initial_cash),
+        ticker_code=str(code or "").zfill(6),
+        ticker_name=str(name or "").strip(),
+        period_start=ts0.strftime("%Y-%m-%d"),
+        period_end=ts1.strftime("%Y-%m-%d"),
+        trade_history=trade_history,
+        metrics_dict=metrics_dict,
     )
