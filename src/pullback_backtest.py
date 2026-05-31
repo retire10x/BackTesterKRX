@@ -130,7 +130,7 @@ def run_pullback_timeline_backtest(
     if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return PullbackTimelineResult(
             False,
-            f"봉 수가 부족합니다(장기 대세 MA60 검증에 최소 {PULLBACK_MIN_OHLCV_BARS}봉 필요).",
+            f"봉 수가 부족합니다(장기 대세 MA60·MA120 검증에 최소 {PULLBACK_MIN_OHLCV_BARS}봉 필요).",
             "",
             0,
             float(initial_cash),
@@ -177,9 +177,9 @@ def run_pullback_timeline_backtest(
         f"■ 세력 개입 배수: {volume_burst_multiple:g} | 눌림 거래량 비율: {vol_shrink_limit:g}",
         "■ v3.80: t-1 양봉 · t 종가>=전일 중심선",
         (
-            "■ v3.85 추세: 종가>MA60 · MA5≥MA10"
+            "■ v3.95 추세: 종가>MA60·MA120·MA60>MA120 · MA5≥MA10"
             if use_momentum_filter
-            else "■ v3.85 추세: 종가>MA60 (MA5≥MA10 스킵)"
+            else "■ v3.95 추세: Perfect Trend (MA5≥MA10 스킵)"
         ),
         f"■ 매수 수수료: {PULLBACK_BUY_COST * 100:.3f}% | 매도(세금 포함): {PULLBACK_SELL_COST * 100:.2f}%",
         f"■ 매도 시점: 0분(익일 시가)",

@@ -58,8 +58,33 @@
 - [x] **v3.65** 좌측 패널 200px 슬림화·파라미터 2단 행·원금|매도 1행·안내 1줄 압축
 - [x] **v3.66** 모멘텀 필터(MA5≥MA10) GUI 토글·YAML `use_momentum_filter`·스캔/백테스트/parity 동기화 · 유니버스 콤보 `Top 100` / `Top` / `Top 500` 라벨
 - [x] **v3.88** 차트 단일 렌더러 `render_stock_chart`·`update_chart_canvas`·`ticker_to_name` SSOT — 더블클릭·⏪◀▶⏩ 내비·이평 토글 공통 경로·상단 종목명 동기화 (`gui.py`)
+- [x] **v3.89** 입력 패널 날짜 행 1개월 단위 기간 이동(◀▶)·종목 선택 시 차트 자동 갱신 (`gui.py`, `data_loader.months_before`)
+- [x] **v3.90** OHLCV pykrx 단일화(벌크 캐시·by_date)·Pass4 MA60·MA120 듀얼 AND·MA5≥MA10 부트스트랩 기본 ON (`filters.py`, `data_loader.py`, `gui.py`, `gui_helpers.py`)
+- [x] **v3.95** Pass4 Perfect Trend Lock: 종가>MA60·MA120 AND **MA60>MA120** 배열성 (`filters.py`, `data_loader.py`, `gui.py`)
+- [x] **v4.00** Pass0 유동성: 시총·당일 거래대금 하한 SSOT(`settings.yaml` v3_0) · 벌크·폴백·단일 판정 (`filters.py`, `v3_scan_config.py`, `data_loader.py`, `gui.py`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-30 (**v4.00** Liquidity Filter — Pass 0)
+- **`src/filters.py`:** `pass_liquidity_gate` — 시총·거래대금 AND
+- **`config/settings.yaml`·`v3_scan_config.py`:** `min_liquidity_market_cap_krw`(500억)·`min_liquidity_trade_amount_krw`(10억) SSOT
+- **`src/data_loader.py`:** 벌크 Top-N 직후 Pass0 · `qualifies_leader_pullback_from_ohlcv` 유동성 선행 검사
+- **`src/gui.py`:** Pass0 디버그·창 제목 v4.00 · 폴백 스캔 동일 게이트
+
+### 2026-05-30 (**v3.95** Perfect Trend Lock — MA60>MA120 배열성)
+- **`src/filters.py`:** `pass_dual_long_trend_ma60_and_ma120` — 종가·이평 위치 + **MA60>MA120** AND
+- **`src/data_loader.py`:** 벌크 `cond_kim_long` 동일 3중 AND
+- **`src/gui.py`·`pullback_backtest.py`:** Pass4 디버그·보고 문구 · 창 제목 v3.95
+- **인수:** 052300(2026-03-20) 역배열 수렴 슈팅주 Pass4·최종 0건 컷오프
+
+### 2026-05-30 (**v3.90** Data Sync & Filter Lock)
+- **`src/data_loader.py`:** `load_ohlcv`/`load_ohlcv_for_chart` → pykrx 전용(벌크 pkl stitch 우선·`get_market_ohlcv_by_date` 폴백) · FDR OHLCV 폐기 · 벌크 스캔 `MA120`·`cond_kim_long` 듀얼 AND
+- **`src/filters.py`:** `pass_dual_long_trend_ma60_and_ma120` · `PULLBACK_VERY_LONG_MA_DAYS=120` · 스캔 히스토리 120영업일
+- **`src/gui.py`·`gui_helpers.py`:** `use_momentum_filter` 부트스트랩 강제 ON · Pass4 디버그 문구 · 창 제목 v3.90
+- **인수:** 002030(2026-04-30) FDR/pykrx 기준 Pass4·최종 후보 탈락 · 차트·필터 MA60/MA120 수치 일치
+
+### 2026-05-30 (**v3.89** 입력 패널 날짜 1개월 이동)
+- **`src/gui.py`:** 시작·종료일 행 우측에 ◀▶ 버튼(22×22)·`_shift_period_months`/`_on_date_shift_months` — `months_before`로 기간 평행 이동·종료일 오늘 클램프 · 종목 선택 시 `_schedule_auto_run_after_shift` 차트 갱신 · 창 제목 v3.89
 
 ### 2026-05-30 (**v3.88** 차트 렌더러 단일화·종목명 동기화)
 - **`src/gui.py`:** `ticker_to_name` SSOT·`render_stock_chart`/`update_chart_canvas` 단일 렌더 경로 — `_run_chart_only`·`_pending_display_name` 폐기

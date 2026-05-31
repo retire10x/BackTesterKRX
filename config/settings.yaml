@@ -75,7 +75,10 @@ v3_0:
   universe_limit: 300
   volume_burst_multiple: 1.5
   vol_shrink_limit: 0.8
-  # v3.85 장기 대세(종가>MA60 · MA5≥MA10) — 스캔·백테스트 공통
+  # v3.90 장기 대세(종가>MA60·MA120 듀얼 AND · MA5≥MA10) — 스캔·백테스트 공통
   kim_trend_filter: true
-  # true: Pass5(MA5>=MA10) / false: Pass4(종가>MA60)까지만
+  # true: Pass5(MA5>=MA10, 기본 ON) / false: Pass4(듀얼 정배열)까지만
   use_momentum_filter: true
+  # v4.00 유동성 안전장치 (원화 SSOT) — Pass 0
+  min_liquidity_market_cap_krw: 50000000000    # 500억
+  min_liquidity_trade_amount_krw: 1000000000     # 10억

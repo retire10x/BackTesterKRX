@@ -70,6 +70,8 @@ def run_overnight_parity_check(
         volume_burst_multiple=scan_p.volume_burst_multiple,
         vol_shrink_limit=scan_p.vol_shrink_limit,
         use_momentum_filter=scan_p.use_momentum_filter,
+        min_liquidity_market_cap_krw=scan_p.min_liquidity_market_cap_krw,
+        min_liquidity_trade_amount_krw=scan_p.min_liquidity_trade_amount_krw,
         cancel_event=None,
     )
     if not bulk.get("ok"):

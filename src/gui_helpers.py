@@ -394,6 +394,7 @@ def bootstrap_gui_pullback_scan_ssot(ui: "BacktestGUI") -> None:
 
     params = resolve_effective_pullback_scan_params()
     apply_pullback_scan_params_to_ui(ui, params)
+    ui.var_use_momentum_filter.set(True)  # v3.90: 단기 모멘텀 기본 강제 ON
     apply_last_session_chrome_to_ui(ui)
 
 

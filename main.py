@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from pathlib import Path
 
 from tabulate import tabulate
@@ -32,6 +33,9 @@ from src.v3_scan_config import pullback_scan_params_from_mapping
 from src.v3_execution_engine import execute_v3_overnight_backtest
 from src.v3_metrics import run_v3_analytics
 from src.v3_signal_generator import generate_v3_overnight_signals
+
+# pykrx 내부 판다스 다운캐스팅 경고 문구 전면 차단
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 # `--watch` 모드: 같은 저장으로 여러 이벤트가 연달아 올 때 디바운스(초)
 WATCH_DEBOUNCE_SEC = 0.5
@@ -591,6 +595,8 @@ def run_v3_0_overnight_cli(cfg: dict) -> None:
         volume_burst_multiple=scan_p.volume_burst_multiple,
         vol_shrink_limit=scan_p.vol_shrink_limit,
         use_momentum_filter=scan_p.use_momentum_filter,
+        min_liquidity_market_cap_krw=scan_p.min_liquidity_market_cap_krw,
+        min_liquidity_trade_amount_krw=scan_p.min_liquidity_trade_amount_krw,
     )
     print("\n" + "=" * 52 + "\nv3.30 주도주 눌림목 스캐너 (CLI/GUI parity)\n" + "=" * 52)
     if parity.get("ok"):

@@ -33,6 +33,7 @@ from tkcalendar import DateEntry
 
 from src.data_loader import (
     default_backtest_period_range,
+    months_before,
     fetch_filtered_universe,
     fetch_listing_market_cap_krw_by_code,
     fetch_pykrx_marcap_trade_krw_by_code,
@@ -42,6 +43,7 @@ from src.data_loader import (
     load_ohlcv_for_chart,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
+    PULLBACK_MIN_OHLCV_BARS,
     PULLBACK_SCAN_HISTORY_BDAY,
     qualifies_leader_pullback_from_ohlcv,
     scan_leader_pullback_candidates_bulk,
@@ -273,6 +275,8 @@ LEFT_PANEL_PAD_Y = 2
 
 # 날짜(DateEntry) 열 목표 픽셀 폭
 DATE_GRID_MIN_W = 88
+DATE_MONTH_NAV_BTN_W = 22
+DATE_MONTH_NAV_BTN_H = 22
 
 # 차트 패널: 영업일 기준(±7, ±1) 기간 평행 이동 시 라벨·자동 재실행과 연계
 # 차트 이미지 위 좌·우 클릭 영역 (px, place)
@@ -344,7 +348,7 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v3.88 주도주 눌림목 스캐너")
+        self.title("BackTesterKRX v4.00 주도주 눌림목 스캐너 (Liquidity Filter)")
 
         self._apply_initial_window_geometry()
 
@@ -404,7 +408,7 @@ class BacktestGUI(ctk.CTk):
         # v3.70: SSOT 부트스트랩 전까지 빈 값 — bootstrap_gui_pullback_scan_ssot 에서 주입
         self.var_volume_burst_multiple = ctk.StringVar(value="")
         self.var_vol_shrink_limit = ctk.StringVar(value="")
-        self.var_use_momentum_filter = ctk.BooleanVar(value=False)
+        self.var_use_momentum_filter = ctk.BooleanVar(value=True)
         self.var_keyword = ctk.StringVar(value="")
         self.var_cash = ctk.StringVar(value="5,000,000")
         self.var_pf_mcap_top100 = ctk.BooleanVar(value=False)
@@ -479,6 +483,37 @@ class BacktestGUI(ctk.CTk):
         self._date_end.set_date(_de)
         # DateEntry 세로 중앙 정렬 강제
         self._date_end.pack(side="left", expand=True, anchor="center")
+
+        date_month_nav = ctk.CTkFrame(row_params_dates, fg_color="transparent")
+        date_month_nav.pack(side="right", padx=(6, 0))
+        _date_nav_btn_kw = dict(
+            width=DATE_MONTH_NAV_BTN_W,
+            height=DATE_MONTH_NAV_BTN_H,
+            corner_radius=4,
+            border_width=1,
+            border_color=("gray75", "gray35"),
+            fg_color=("gray95", "gray25"),
+            hover_color=("gray85", "gray35"),
+            text_color=("black", "white"),
+            font=gui_body_font(),
+            cursor="hand2",
+        )
+        self.btn_date_prev_month = ctk.CTkButton(
+            date_month_nav,
+            text="\u25C0",
+            command=lambda: self._on_date_shift_months(1),
+            **_date_nav_btn_kw,
+        )
+        self.btn_date_prev_month.pack(side="left", padx=(0, 2))
+        HoverTooltip(self.btn_date_prev_month, "1개월 전으로 이동")
+        self.btn_date_next_month = ctk.CTkButton(
+            date_month_nav,
+            text="\u25B6",
+            command=lambda: self._on_date_shift_months(-1),
+            **_date_nav_btn_kw,
+        )
+        self.btn_date_next_month.pack(side="left")
+        HoverTooltip(self.btn_date_next_month, "1개월 후로 이동")
 
         row_params_row2 = ctk.CTkFrame(scan_params_block, fg_color="transparent")
         row_params_row2.pack(fill="x")
@@ -1860,6 +1895,37 @@ class BacktestGUI(ctk.CTk):
         self._date_end.set_date(ne)
         self._update_period_label()
 
+    def _shift_period_months(self, delta_months: int) -> None:
+        """시작·종료를 같은 달 수만큼 평행 이동(캘린더 월; 말일 클램프)."""
+        try:
+            sd = self._date_start.get_date()
+            ed = self._date_end.get_date()
+        except (ValueError, tk.TclError):
+            return
+        span = max(0, (ed - sd).days)
+        today = date.today()
+        try:
+            ns = months_before(sd, delta_months)
+            ne = months_before(ed, delta_months)
+        except (ValueError, OSError):
+            return
+        if ne > today:
+            ne = today
+            ns = ne - timedelta(days=span)
+        if ns < DATE_CLAMP_MIN:
+            ns = DATE_CLAMP_MIN
+            ne = min(ns + timedelta(days=span), today)
+        if ns > ne:
+            ns = ne
+        self._date_start.set_date(ns)
+        self._date_end.set_date(ne)
+        self._update_period_label()
+
+    def _on_date_shift_months(self, delta_months: int) -> None:
+        """입력 패널 날짜 행: 1개월 단위 기간 이동 후 차트 자동 갱신(종목 선택 시)."""
+        self._shift_period_months(delta_months)
+        self._schedule_auto_run_after_shift()
+
     def _stash_chart_daily_cache(self, df: pd.DataFrame, code: str) -> None:
         """차트 패널 패닝용 일봉 전량 버퍼(메인 스레드 저장)."""
         self._chart_ohlcv_cache_df = df
@@ -2041,10 +2107,18 @@ class BacktestGUI(ctk.CTk):
 
         title_resolved = str(chart_title or "").strip() or code
 
+        _chart_mkt_raw = (cfg.get("universe") or {}).get("market")
+        if not _chart_mkt_raw and hasattr(self, "var_market"):
+            _chart_mkt_raw = self.var_market.get()
+        chart_mkt = str(_chart_mkt_raw or "KOSPI").strip().upper()
+        chart_market = chart_mkt if chart_mkt in ("KOSPI", "KOSDAQ") else None
+
         def work() -> None:
             try:
                 _prime_krx_env_from_dotenv()
-                ohlcv = load_ohlcv_for_chart(code, start_s, end_s)
+                ohlcv = load_ohlcv_for_chart(
+                    code, start_s, end_s, market=chart_market
+                )
                 if ohlcv is None or ohlcv.empty:
                     raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
 
@@ -2858,7 +2932,7 @@ class BacktestGUI(ctk.CTk):
                     raise RuntimeError("기간 필터 후 데이터가 없습니다.")
                 if len(df) < 60:
                     raise RuntimeError(
-                        "봉 수가 부족합니다(장기 대세 MA60 검증에 최소 60봉 필요)."
+                        f"봉 수가 부족합니다(장기 대세 MA60·MA120 검증에 최소 {PULLBACK_MIN_OHLCV_BARS}봉 필요)."
                     )
                 if self._backtest_cancel_event.is_set():
                     self.after(0, self._finalize_pullback_backtest_cancelled)
@@ -2976,6 +3050,11 @@ class BacktestGUI(ctk.CTk):
             )
             return []
         volume_burst_multiple, vol_shrink_limit, use_momentum_filter = params
+        from src.v3_scan_config import resolve_effective_pullback_scan_params
+
+        scan_ssot = resolve_effective_pullback_scan_params()
+        min_liq_cap = float(scan_ssot.min_liquidity_market_cap_krw)
+        min_liq_trd = float(scan_ssot.min_liquidity_trade_amount_krw)
 
         _prime_krx_env_from_dotenv()
         try:
@@ -2994,6 +3073,8 @@ class BacktestGUI(ctk.CTk):
         pass_kim_long = 0
         pass_kim_short = 0
         pass_all = 0
+        pass_liquidity = 0
+        total_universe = 0
         diag_burst = ""
         diag_shrink = ""
         prev_1 = ""
@@ -3010,6 +3091,8 @@ class BacktestGUI(ctk.CTk):
             volume_burst_multiple=volume_burst_multiple,
             vol_shrink_limit=vol_shrink_limit,
             use_momentum_filter=use_momentum_filter,
+            min_liquidity_market_cap_krw=min_liq_cap,
+            min_liquidity_trade_amount_krw=min_liq_trd,
         )
 
         qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
@@ -3020,6 +3103,10 @@ class BacktestGUI(ctk.CTk):
             rows = bulk.get("rows") or []
             st = bulk.get("stats") if isinstance(bulk.get("stats"), dict) else {}
             total_loaded = int((st or {}).get("total_loaded", len(rows)))
+            total_universe = int((st or {}).get("total_universe", total_loaded))
+            pass_liquidity = int(
+                (st or {}).get("pass_liquidity", total_loaded)
+            )
             pass_burst = int((st or {}).get("pass_burst", 0))
             pass_price = int((st or {}).get("pass_price", 0))
             pass_volume = int((st or {}).get("pass_volume", 0))
@@ -3083,17 +3170,45 @@ class BacktestGUI(ctk.CTk):
                 universe_limit=fallback_limit,
             )
             total_loaded = len(name_map) if name_map else len(universe)
+            krx_map_fb = fetch_pykrx_marcap_trade_krw_by_code(
+                anchor_fb, market=scan_market
+            )
             diag_policy = diag_policy or ainfo_fb.anchor_policy_reason
             for code, df in universe:
                 if self._scan_cancel_event.is_set():
                     return []
                 if df is None or df.empty:
                     continue
+                c6 = str(code).zfill(6)
+                mar_krw: float | None = None
+                trd_krw: float | None = None
+                tp = krx_map_fb.get(c6)
+                if tp:
+                    mar_krw, trd_krw = tp
+                c_px = float(pd.to_numeric(df["Close"], errors="coerce").iloc[-1])
+                vl = float(pd.to_numeric(df["Volume"], errors="coerce").iloc[-1])
+                if trd_krw is None and vl >= 0:
+                    trd_krw = c_px * vl
+                from src.filters import pass_liquidity_gate
+
+                if pass_liquidity_gate(
+                    mar_krw,
+                    trd_krw,
+                    min_market_cap_krw=min_liq_cap,
+                    min_trade_amount_krw=min_liq_trd,
+                ):
+                    pass_liquidity += 1
+                else:
+                    continue
                 ok_pb, rise_pct = qualifies_leader_pullback_from_ohlcv(
                     df,
                     volume_burst_multiple=volume_burst_multiple,
                     vol_shrink_limit=vol_shrink_limit,
                     use_momentum_filter=use_momentum_filter,
+                    min_liquidity_market_cap_krw=min_liq_cap,
+                    min_liquidity_trade_amount_krw=min_liq_trd,
+                    market_cap_krw=mar_krw,
+                    trade_amount_krw=trd_krw,
                 )
                 if not ok_pb:
                     continue
@@ -3105,7 +3220,10 @@ class BacktestGUI(ctk.CTk):
                 vl = float(pd.to_numeric(df["Volume"], errors="coerce").iloc[-1])
                 proxy_amt = (c * vl) if vl >= 0 else None
                 name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
-                qualifiers.append((str(code).zfill(6), name, rise_pct, None, proxy_amt))
+                qualifiers.append((str(code).zfill(6), name, rise_pct, mar_krw, trd_krw))
+
+            total_universe = len(universe)
+            total_loaded = pass_liquidity
 
         qualifiers.sort(key=lambda z: (-float(z[2]), str(z[0]).zfill(6)))
 
@@ -3141,9 +3259,12 @@ class BacktestGUI(ctk.CTk):
             amt_s = _format_round_eok_krw(trd_krw)
             out.append((code, name, rise_pct, mc_s, amt_s))
 
+        if not total_universe:
+            total_universe = total_loaded
+
         debug_lines = [
             "=====================================================",
-            "⚙️ [DEBUG] v3.86 주도주 눌림목 스캐너 (Dual-Market)",
+            "⚙️ [DEBUG] v4.00 주도주 눌림목 스캐너 (Liquidity Filter)",
             "=====================================================",
             f" - Requested End Date : {requested_scan_date}",
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
@@ -3153,12 +3274,15 @@ class BacktestGUI(ctk.CTk):
             f" - Markets pipeline : {st.get('markets_pipeline', scan_market)}",
             f" - 세력 개입 배수 : {diag_burst or volume_burst_multiple}",
             f" - 눌림 거래량 비율 : {diag_shrink or vol_shrink_limit}",
+            f" - 유동성 시총 하한 : {_format_round_eok_krw(min_liq_cap)} 이상",
+            f" - 유동성 거래대금 하한 : {_format_round_eok_krw(min_liq_trd)} 이상",
             "-----------------------------------------------------",
             " [Applied Rules — 타임라인 격리]",
+            "  0) v4.00 시총·당일 거래대금 유동성 (Pass 0)",
             "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult & t-1 양봉(종가>시가)",
             "  2) t low < MA20 & t close >= MA20 & t close >= (t-1 고저)/2",
             "  3) t vol <= t-1 vol × shrink_limit",
-            "  4) v3.85 종가 > MA60 (장기 대세)",
+            "  4) v3.95 종가>MA60·MA120 AND MA60>MA120 (Perfect Trend Lock)",
             (
                 "  5) v3.50 MA5 >= MA10 (단기 모멘텀)"
                 if use_momentum_filter
@@ -3167,7 +3291,7 @@ class BacktestGUI(ctk.CTk):
             "-----------------------------------------------------",
             " [Pipeline Filtering Pass Count]",
             (
-                f"  ▶ Total Top Tickers Loaded : {total_loaded}개"
+                f"  ▶ Total Top Tickers Loaded : {total_universe}개"
                 + (
                     " (KOSPI+KOSDAQ 통합)"
                     if str((st or {}).get("markets_pipeline", "")).upper()
@@ -3175,10 +3299,11 @@ class BacktestGUI(ctk.CTk):
                     else ""
                 )
             ),
+            f"  ▶ Pass 0 (+ 유동성) : {pass_liquidity}개 (스캔 유니버스 {total_loaded}개)",
             f"  ▶ Pass 1 (세력+전일양봉) : {pass_burst}개",
             f"  ▶ Pass 2 (+ MA20·중심선) : {pass_price}개",
             f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
-            f"  ▶ Pass 4 (+ 종가>MA60) : {pass_kim_long}개",
+            f"  ▶ Pass 4 (+ Perfect Trend) : {pass_kim_long}개",
             (
                 f"  ▶ Pass 5 (+ MA5≥MA10) : {pass_kim_short}개"
                 if use_momentum_filter
