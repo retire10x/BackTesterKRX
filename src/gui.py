@@ -88,7 +88,7 @@ from src.backtest_constants import (
     CHART_ZOOM_WHEEL_FACTOR,
 )
 from src.backtest_chart import render_backtest_chart_png_bytes, slice_chart_viewport
-from src.chart_renderer import ohlc_row_at_anchor
+from src.chart_renderer import ohlc_overlay_for_chart
 from src.metrics import (
     BacktestResult,
     materialize_backtest_chart_png_bytes,
@@ -359,7 +359,7 @@ class BacktestGUI(ctk.CTk):
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
         self.title(
-            "BackTesterKRX v4.30 주도주 눌림목 스캐너 (Minimal OHLC Chart)"
+            "BackTesterKRX v4.45 주도주 눌림목 스캐너 (Timeline Time-Warp Preprocessing)"
         )
 
         self._apply_initial_window_geometry()
@@ -2175,13 +2175,9 @@ class BacktestGUI(ctk.CTk):
                     save_dpi = dpi
                     layout_preset = "gui_target"
 
-                anchor_row = ohlc_row_at_anchor(sim, end_s) or {}
-                ohlc_overlay = {
-                    "code": code,
-                    "name": title_resolved,
-                    "t0_date": end_s,
-                    **anchor_row,
-                }
+                ohlc_overlay = ohlc_overlay_for_chart(
+                    sim, code, title_resolved, end_s
+                )
                 canvas_state = {
                     "sim": sim,
                     "trades": [],
@@ -3274,6 +3270,7 @@ class BacktestGUI(ctk.CTk):
                     trd_krw,
                     min_market_cap_krw=min_liq_cap,
                     min_trade_amount_krw=min_liq_trd,
+                    volume_t0=vl,
                 ):
                     pass_liquidity += 1
                 else:
@@ -3361,7 +3358,7 @@ class BacktestGUI(ctk.CTk):
             f" - 유동성 거래대금 하한 : {_format_round_eok_krw(min_liq_trd)} 이상",
             "-----------------------------------------------------",
             " [Applied Rules — 타임라인 격리]",
-            "  0) v4.00 시총·당일 거래대금 유동성 (Pass 0)",
+            "  0) v4.40 시총·거래대금 유동성 + 거래정지(Volume=0) 제거 (Pass 0)",
             "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult & t-1 양봉(종가>시가)",
             "  2) v4.15 MA20 OR 중심선 + v4.25 이격도5≤105%·20≤110%",
             "  3) t vol <= t-1 vol × shrink_limit",

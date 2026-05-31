@@ -12,6 +12,7 @@ import pandas as pd
 from src.data_loader import (
     ensure_datetime_index,
     leader_pullback_prev_day_yang,
+    preprocess_clean_timeline,
 )
 from src.filters import (
     PULLBACK_MIN_OHLCV_BARS,
@@ -137,7 +138,7 @@ def run_pullback_timeline_backtest(
     if df is None or df.empty:
         return PullbackTimelineResult(False, "차트 데이터가 없습니다.", "", 0, 0.0, initial_cash)
 
-    work = ensure_datetime_index(df.copy()).sort_index()
+    work = preprocess_clean_timeline(df.copy())
     if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return PullbackTimelineResult(
             False,

@@ -33,6 +33,7 @@ from src.filters import (
     leader_pullback_center_defense,
     leader_pullback_pass2_ma20_or_center,
     pass_disparity_lock,
+    apply_pass0_liquidity_filter,
     pass_liquidity_gate,
     pullback_bulk_markets_for_scan,
     pullback_scan_is_dual_market,
@@ -201,6 +202,29 @@ def ensure_datetime_index(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_index()
 
 
+def preprocess_clean_timeline(
+    df_stock: pd.DataFrame,
+    *,
+    volume_col: str = "Volume",
+) -> pd.DataFrame:
+    """
+    v4.45 타임라인 타임워프: 개별 종목 Volume=0(거래정지·액면분할 락업) 로우 삭제.
+
+    시장 전체 휴장일은 보통 행 자체가 없으므로, Volume=0인 개별 정지일만 압축 제거한다.
+    이후 MA·Pass3 거래량 연산은 쪼개진 타임라인(활성 거래일만) 위에서 수행된다.
+    """
+    if df_stock is None or df_stock.empty:
+        return df_stock
+    work = ensure_datetime_index(df_stock.copy())
+    if volume_col not in work.columns:
+        return work
+    vol = pd.to_numeric(work[volume_col], errors="coerce")
+    active = vol.notna() & (vol > 0)
+    if not bool(active.all()):
+        work = work.loc[active].copy()
+    return work
+
+
 def resample_weekly_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
     """
     일봉 → 주봉. 한국 주식 관례에 가깝게 **금요일 말** 기준 주간 봉.
@@ -320,6 +344,10 @@ def load_ohlcv(
     df = _stitch_ticker_ohlcv_from_bulk_cache(cdf, start, end, market=market)
     if df is None or df.empty:
         df = _load_ohlcv_pykrx_by_date(cdf, start, end)
+    if df is None or df.empty:
+        return None
+
+    df = preprocess_clean_timeline(df)
     if df is None or df.empty:
         return None
 
@@ -678,6 +706,100 @@ def _fetch_bulk_ohlcv_day_frames(
     )
 
 
+def _bulk_scan_timewarp_merged_columns(
+    vol_m: np.ndarray,
+    low_m: np.ndarray,
+    high_m: np.ndarray,
+    close_m: np.ndarray,
+    open_m: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """v4.45: 종목별 Volume>0 봉만 이어 붙인 뒤 말미 OHLC·MA·거래량 지표 산출."""
+    n_codes = int(vol_m.shape[0])
+    nan_col = np.full(n_codes, np.nan, dtype=float)
+    out: dict[str, np.ndarray] = {
+        "vol_ma20_strictly_prior": nan_col.copy(),
+        "prev_vol": nan_col.copy(),
+        "today_vol": nan_col.copy(),
+        "MA20": nan_col.copy(),
+        "MA60": nan_col.copy(),
+        "MA120": nan_col.copy(),
+        "MA5": nan_col.copy(),
+        "MA10": nan_col.copy(),
+        "Low_t0": nan_col.copy(),
+        "High_t0": nan_col.copy(),
+        "Close_t0": nan_col.copy(),
+        "Open_t0": nan_col.copy(),
+        "Prev_open": nan_col.copy(),
+        "Prev_close": nan_col.copy(),
+        "Prev_high": nan_col.copy(),
+        "Prev_low": nan_col.copy(),
+    }
+    for i in range(n_codes):
+        active = np.flatnonzero((vol_m[i] > 0) & np.isfinite(vol_m[i]))
+        if active.size < 2:
+            continue
+        j0 = int(active[-1])
+        j1 = int(active[-2])
+        tc = close_m[i, active]
+        tv = vol_m[i, active]
+        out["today_vol"][i] = vol_m[i, j0]
+        out["prev_vol"][i] = vol_m[i, j1]
+        out["Low_t0"][i] = low_m[i, j0]
+        out["High_t0"][i] = high_m[i, j0]
+        out["Close_t0"][i] = close_m[i, j0]
+        out["Open_t0"][i] = open_m[i, j0]
+        out["Prev_open"][i] = open_m[i, j1]
+        out["Prev_close"][i] = close_m[i, j1]
+        out["Prev_high"][i] = high_m[i, j1]
+        out["Prev_low"][i] = low_m[i, j1]
+        if tv.size > 1:
+            out["vol_ma20_strictly_prior"][i] = float(np.nanmean(tv[:-1][-20:]))
+        if tc.size >= 5:
+            out["MA5"][i] = float(np.nanmean(tc[-5:]))
+        if tc.size >= 10:
+            out["MA10"][i] = float(np.nanmean(tc[-10:]))
+        if tc.size >= 20:
+            out["MA20"][i] = float(np.nanmean(tc[-20:]))
+        if tc.size >= PULLBACK_LONG_MA_DAYS:
+            out["MA60"][i] = float(np.nanmean(tc[-PULLBACK_LONG_MA_DAYS:]))
+        if tc.size >= PULLBACK_VERY_LONG_MA_DAYS:
+            out["MA120"][i] = float(np.nanmean(tc[-PULLBACK_VERY_LONG_MA_DAYS:]))
+    return out
+
+
+def fetch_halted_ticker_codes_from_bulk_t0(
+    day_frames: list[pd.DataFrame],
+) -> frozenset[str]:
+    """
+    pykrx 당일(t0) 전종목 OHLCV 스냅샷 — 거래량 또는 거래대금 0 → 거래정지·락업 후보.
+    스캔 유니버스에서 차집합 처리용.
+    """
+    if not day_frames:
+        return frozenset()
+    t0 = day_frames[-1]
+    if t0 is None or t0.empty:
+        return frozenset()
+    vol = pd.to_numeric(t0.get("Volume"), errors="coerce")
+    amt = pd.to_numeric(t0.get("Amount"), errors="coerce")
+    close = pd.to_numeric(t0.get("Close"), errors="coerce")
+    halted: set[str] = set()
+    for code in t0.index:
+        c6 = str(code).zfill(6)
+        v = float(vol.get(code, float("nan"))) if code in vol.index else float("nan")
+        a = (
+            float(amt.get(code, float("nan")))
+            if amt is not None and code in amt.index
+            else float("nan")
+        )
+        if not (np.isfinite(a) and a > 0) and np.isfinite(v) and v > 0:
+            px = float(close.get(code, float("nan"))) if code in close.index else float("nan")
+            if np.isfinite(px):
+                a = px * v
+        if not (np.isfinite(v) and v > 0) or not (np.isfinite(a) and a > 0):
+            halted.add(c6)
+    return frozenset(halted)
+
+
 def _merge_multi_market_bulk_day_frames(
     per_market_frames: list[list[pd.DataFrame]],
 ) -> list[pd.DataFrame] | None:
@@ -714,7 +836,7 @@ def qualifies_leader_pullback_from_ohlcv(
     """
     if df is None or df.empty:
         return False, 0.0
-    work = ensure_datetime_index(df.copy()).sort_index()
+    work = preprocess_clean_timeline(df.copy())
     if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return False, 0.0
 
@@ -738,6 +860,7 @@ def qualifies_leader_pullback_from_ohlcv(
         trd_eff,
         min_market_cap_krw=min_liquidity_market_cap_krw,
         min_trade_amount_krw=min_liquidity_trade_amount_krw,
+        volume_t0=today_vol,
     ):
         return False, 0.0
 
@@ -807,7 +930,7 @@ def scan_leader_pullback_candidates_bulk(
     """
     v3.30 주도주 눌림목 벌크 스캐너.
 
-    - v4.00 Pass 0: 시총·당일 거래대금 유동성 (Top-N 슬라이스 직후)
+    - v4.45: Volume=0 거래정지일 타임워프(로우 삭제 후 MA·거래량 재연산)
     - pykrx 일별 전종목 OHLCV 스냅샷 22영업일(t-21~t0) — 당일(t) 거래량이 MA20에 섞이지 않음
     - cond_prev_burst: t-1 거래량 > mean(t-2..t-21) × volume_burst_multiple
     - v3.80 cond_prev_yang: t-1 종가 > t-1 시가 (전일 양봉)
@@ -898,27 +1021,11 @@ def scan_leader_pullback_candidates_bulk(
         open_m[:, j] = pd.to_numeric(sub["Open"], errors="coerce").to_numpy()
 
     merged = pd.DataFrame(index=codes)
-    merged["vol_ma20_strictly_prior"] = np.nanmean(vol_m[:, n_days - 22 : n_days - 2], axis=1)
-    merged["prev_vol"] = vol_m[:, n_days - 2]
-    merged["today_vol"] = vol_m[:, n_days - 1]
-    merged["MA20"] = np.nanmean(close_m[:, n_days - 20 : n_days], axis=1)
-    merged["MA60"] = np.nanmean(
-        close_m[:, n_days - PULLBACK_LONG_MA_DAYS : n_days], axis=1
+    tw = _bulk_scan_timewarp_merged_columns(
+        vol_m, low_m, high_m, close_m, open_m
     )
-    merged["MA120"] = np.nanmean(
-        close_m[:, n_days - PULLBACK_VERY_LONG_MA_DAYS : n_days], axis=1
-    )
-    merged["MA5"] = np.nanmean(close_m[:, n_days - 5 : n_days], axis=1)
-    merged["MA10"] = np.nanmean(close_m[:, n_days - 10 : n_days], axis=1)
-    merged["Low_t0"] = low_m[:, n_days - 1]
-    merged["High_t0"] = high_m[:, n_days - 1]
-    merged["Close_t0"] = close_m[:, n_days - 1]
-    merged["Open_t0"] = open_m[:, n_days - 1]
-    # v3.80: t-1 봉 — Top-N 슬라이스 전에 붙여 merged 와 동일 인덱스 유지
-    merged["Prev_open"] = open_m[:, n_days - 2]
-    merged["Prev_close"] = close_m[:, n_days - 2]
-    merged["Prev_high"] = high_m[:, n_days - 2]
-    merged["Prev_low"] = low_m[:, n_days - 2]
+    for col, arr in tw.items():
+        merged[col] = arr
 
     s_today = d_today.strftime("%Y%m%d")
     rank_cap_map: dict[str, float] = {}
@@ -961,18 +1068,16 @@ def scan_leader_pullback_candidates_bulk(
     )
     min_cap = float(min_liquidity_market_cap_krw)
     min_trd = float(min_liquidity_trade_amount_krw)
-    cond_liquidity = pd.Series(True, index=merged.index)
-    if min_cap > 0:
-        cond_liquidity &= merged["_mcap_krw"].notna() & (
-            merged["_mcap_krw"] >= min_cap
-        )
-    if min_trd > 0:
-        cond_liquidity &= merged["_trade_krw"].notna() & (
-            merged["_trade_krw"] >= min_trd
-        )
     total_universe = int(len(merged))
-    pass_liquidity = int(cond_liquidity.sum())
-    merged = merged.loc[cond_liquidity].copy()
+    halted_codes = fetch_halted_ticker_codes_from_bulk_t0(day_frames)
+    merged = apply_pass0_liquidity_filter(
+        merged,
+        min_market_cap_krw=min_cap,
+        min_trading_value_krw=min_trd,
+        halted_codes=halted_codes,
+        log_halt_drop=True,
+    )
+    pass_liquidity = int(len(merged))
 
     o = merged.get("Open_t0")
     c = merged.get("Close_t0")

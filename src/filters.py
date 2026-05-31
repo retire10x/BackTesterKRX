@@ -5,6 +5,7 @@ Pass 4: 종가 > MA60 AND 종가 > MA120 AND MA60 > MA120 (Perfect Trend Lock).
 Pass 5(기본 ON): MA5 >= MA10.
 Pass 2(v4.15): MA20 터치 회복 OR (MA20 위 + t-1 중심선) + v4.25 이격도5≤105%·20≤110%.
 Pass 0(v4.00): 시총·당일 거래대금 유동성 게이트.
+Pass 0(v4.40): 당일 거래량·거래대금 0(거래정지·락업) 원천 제거.
 """
 from __future__ import annotations
 
@@ -197,14 +198,95 @@ def kim_straight_trend_pass(
     return bool(long_ok and short_ok), bool(long_ok), bool(short_ok)
 
 
+def pass_active_trading_gate(
+    volume_t0: float | None,
+    trade_amount_krw: float | None,
+) -> bool:
+    """v4.40: 당일 거래량·거래대금 모두 0 초과(거래정지·액면분할 락업 등 제외)."""
+    for v in (volume_t0, trade_amount_krw):
+        if v is None:
+            return False
+        fv = float(v)
+        if not (np.isfinite(fv) and fv > 0):
+            return False
+    return True
+
+
+def log_pass0_v440_halt_drop(dropped_halt_count: int) -> None:
+    print(
+        f"[DEBUG] v4.40 유동성 스캔: 거래정지(Volume=0) 종목 {int(dropped_halt_count)}개 "
+        "감지 및 즉시 제거 완료."
+    )
+
+
+def pass0_active_trading_mask(
+    df_universe: pd.DataFrame,
+    *,
+    volume_col: str = "today_vol",
+    trade_col: str = "_trade_krw",
+) -> pd.Series:
+    """벌크 유니버스 — 당일 거래량·거래대금 양수."""
+    vol = pd.to_numeric(df_universe[volume_col], errors="coerce")
+    trd = pd.to_numeric(df_universe[trade_col], errors="coerce")
+    return vol.notna() & (vol > 0) & trd.notna() & (trd > 0)
+
+
+def apply_pass0_liquidity_filter(
+    df_universe: pd.DataFrame,
+    *,
+    min_market_cap_krw: float = 0.0,
+    min_trading_value_krw: float = 0.0,
+    volume_col: str = "today_vol",
+    trade_col: str = "_trade_krw",
+    mcap_col: str = "_mcap_krw",
+    halted_codes: frozenset[str] | None = None,
+    log_halt_drop: bool = True,
+) -> pd.DataFrame:
+    """
+    v4.40 Pass 0: 시총·거래대금 하한 + 거래정지(Volume/Amount=0) + pykrx 정지 목록 차집합.
+    """
+    if df_universe is None or df_universe.empty:
+        return df_universe
+
+    n0 = int(len(df_universe))
+    cond_active = pass0_active_trading_mask(
+        df_universe, volume_col=volume_col, trade_col=trade_col
+    )
+    if log_halt_drop:
+        log_pass0_v440_halt_drop(n0 - int(cond_active.sum()))
+
+    min_cap = float(min_market_cap_krw)
+    min_trd = float(min_trading_value_krw)
+    cond_mcap = pd.Series(True, index=df_universe.index)
+    if min_cap > 0:
+        mc = pd.to_numeric(df_universe[mcap_col], errors="coerce")
+        cond_mcap = mc.notna() & (mc >= min_cap)
+    cond_trd = pd.Series(True, index=df_universe.index)
+    if min_trd > 0:
+        tr = pd.to_numeric(df_universe[trade_col], errors="coerce")
+        cond_trd = tr.notna() & (tr >= min_trd)
+
+    cond_halt = pd.Series(True, index=df_universe.index)
+    if halted_codes:
+        halted = {str(c).zfill(6) for c in halted_codes}
+        code_ser = df_universe.index.astype(str).str.zfill(6)
+        cond_halt = ~code_ser.isin(halted)
+
+    pass0_mask = cond_active & cond_mcap & cond_trd & cond_halt
+    return df_universe.loc[pass0_mask].copy()
+
+
 def pass_liquidity_gate(
     market_cap_krw: float | None,
     trade_amount_krw: float | None,
     *,
     min_market_cap_krw: float,
     min_trade_amount_krw: float,
+    volume_t0: float | None = None,
 ) -> bool:
-    """v4.00 Pass 0: 최소 시총·당일 거래대금(원) 동시 충족."""
+    """v4.00 Pass 0: 최소 시총·당일 거래대금(원) + v4.40 활성 거래(Volume/Amount>0)."""
+    if not pass_active_trading_gate(volume_t0, trade_amount_krw):
+        return False
     min_cap = float(min_market_cap_krw)
     min_trd = float(min_trade_amount_krw)
     if min_cap <= 0 and min_trd <= 0:

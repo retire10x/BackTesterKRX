@@ -384,12 +384,12 @@ def build_scan_evidence_from_ohlcv(
     vol_shrink_limit: float,
 ) -> ScanEvidenceSnapshot | None:
     """폴백 단일 종목 OHLCV — t0 봉 Open/High/Low/Close 원본 그대로."""
-    from src.data_loader import ensure_datetime_index
+    from src.data_loader import preprocess_clean_timeline
     from src.filters import PULLBACK_MIN_OHLCV_BARS
 
     if df is None or df.empty:
         return None
-    work = ensure_datetime_index(df.copy()).sort_index()
+    work = preprocess_clean_timeline(df.copy())
     if len(work) < PULLBACK_MIN_OHLCV_BARS:
         return None
 
