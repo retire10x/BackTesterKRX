@@ -38,7 +38,8 @@ from src.data_loader import (
     fetch_listing_market_cap_krw_by_code,
     load_config,
     load_ohlcv,
-    load_ohlcv_for_chart,
+    load_ohlcv_with_dynamic_buffer,
+    slice_ohlcv_user_period,
     normalize_krx_listing_market,
     ohlcv_warm_start_date,
     PULLBACK_MIN_OHLCV_BARS,
@@ -388,7 +389,7 @@ class BacktestGUI(ctk.CTk):
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
         self.title(
-            "BackTesterKRX v4.45 주도주 눌림목 스캐너 (Timeline Time-Warp Preprocessing)"
+            "BackTesterKRX v4.50 주도주 눌림목 스캐너 (Dynamic Buffer & 6M SSOT)"
         )
 
         self._apply_initial_window_geometry()
@@ -577,7 +578,7 @@ class BacktestGUI(ctk.CTk):
             command=self._on_date_reset_to_today,
         )
         self.btn_date_today.pack(side="left", padx=(4, 0))
-        HoverTooltip(self.btn_date_today, "7개월 전 ~ 오늘 기간으로 설정")
+        HoverTooltip(self.btn_date_today, "6개월 전 ~ 오늘 기간으로 설정")
 
         row_params_row2 = ctk.CTkFrame(scan_params_block, fg_color="transparent")
         row_params_row2.pack(fill="x")
@@ -2000,14 +2001,14 @@ class BacktestGUI(ctk.CTk):
         self._schedule_auto_run_after_shift()
 
     def _set_period_default_six_months_to_today(self) -> None:
-        """시작=7개월 전, 종료=오늘 (`default_backtest_period_range` SSOT)."""
+        """시작=6개월 전, 종료=오늘 (`default_backtest_period_range` SSOT)."""
         s_d, e_d = default_backtest_period_range()
         self._date_start.set_date(s_d)
         self._date_end.set_date(e_d)
         self._update_period_label()
 
     def _on_date_reset_to_today(self) -> None:
-        """입력 패널 '오늘': 7개월 전~오늘 기간 설정 후 차트 자동 갱신."""
+        """입력 패널 '오늘': 6개월 전~오늘 기간 설정 후 차트 자동 갱신."""
         self._set_period_default_six_months_to_today()
         self._schedule_auto_run_after_shift()
 
@@ -2201,13 +2202,15 @@ class BacktestGUI(ctk.CTk):
         def work() -> None:
             try:
                 _prime_krx_env_from_dotenv()
-                ohlcv = load_ohlcv_for_chart(
-                    code, start_s, end_s, market=chart_market
+                pool = load_ohlcv_with_dynamic_buffer(
+                    code, start_s, end_s, market=chart_market, user_slice=False
                 )
-                if ohlcv is None or ohlcv.empty:
+                if pool is None or pool.empty:
                     raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
 
-                sim = ohlcv.copy()
+                sim = slice_ohlcv_user_period(pool, start_s, end_s)
+                if sim is None or sim.empty:
+                    raise RuntimeError("선택한 기간에 차트 데이터가 없습니다.")
                 for col in ("Open", "High", "Low", "Close"):
                     if col not in sim.columns:
                         raise RuntimeError(f"OHLCV 필수 컬럼 누락: {col}")
@@ -2215,10 +2218,14 @@ class BacktestGUI(ctk.CTk):
                     sim["Volume"] = 0.0
 
                 sim = sim.sort_index()
-                close = pd.to_numeric(sim["Close"], errors="coerce")
+                close_pool = pd.to_numeric(pool["Close"], errors="coerce")
                 ret_series = pd.Series(0.0, index=sim.index)
                 for p in CHART_MA_TOGGLE_PERIODS:
-                    trend_ma[p] = close.rolling(int(p), min_periods=1).mean()
+                    trend_ma[p] = (
+                        close_pool.rolling(int(p), min_periods=1)
+                        .mean()
+                        .reindex(sim.index)
+                    )
 
                 figsize = None
                 save_dpi = 300
@@ -3017,16 +3024,16 @@ class BacktestGUI(ctk.CTk):
                     df = cache.copy()
                 if df is None:
                     _prime_krx_env_from_dotenv()
-                    df = load_ohlcv_for_chart(code, start_s, end_s)
+                    df = load_ohlcv_with_dynamic_buffer(
+                        code, start_s, end_s, user_slice=False
+                    )
                 if df is None or df.empty:
                     raise RuntimeError("선택 기간에 일봉 데이터가 없습니다.")
                 df = df.sort_index()
-                ts0 = pd.Timestamp(start_s).normalize()
-                ts1 = pd.Timestamp(end_s).normalize()
-                df = df.loc[(df.index.normalize() >= ts0) & (df.index.normalize() <= ts1)]
-                if df.empty:
+                sim = slice_ohlcv_user_period(df, start_s, end_s)
+                if sim is None or sim.empty:
                     raise RuntimeError("기간 필터 후 데이터가 없습니다.")
-                if len(df) < 60:
+                if len(sim) < 1:
                     raise RuntimeError(
                         f"봉 수가 부족합니다(장기 대세 MA60·MA120 검증에 최소 {PULLBACK_MIN_OHLCV_BARS}봉 필요)."
                     )
@@ -3042,6 +3049,8 @@ class BacktestGUI(ctk.CTk):
                     sell_timing_minutes=sell_min,
                     code=code,
                     name=name,
+                    period_start=start_s,
+                    period_end=end_s,
                 )
                 self.after(0, lambda r=res: self._finalize_pullback_backtest(r))
             except Exception as ex:

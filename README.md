@@ -54,7 +54,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-(화면: **시장·종목·검색** 및 **v4.14 퀀트 필터 파이프라인**(체크 순서대로 AND: 시총 상위 Top100 · 매수 규칙 터미널 · 김직선 1봉)·검색 결과 행 포맷 `티커 | 종목명 | 시총 | 매수조건 | 캔들패턴 | 이격도%`. 기간 기본 **7개월 전~오늘**. 우측 차트는 창에 맞춰 **가변 확장**(최소 크기 약 **960×540**, 폴백 **1280×840**)·실측 `chart_overlay_host` 기준 PNG 리사이즈. 매매 기준 이평 **5·10·20**, 추세선 **20·120** 기본, 캘린더 선택.)  
+(화면: **시장·종목·검색** 및 **v4.14 퀀트 필터 파이프라인**(체크 순서대로 AND: 시총 상위 Top100 · 매수 규칙 터미널 · 김직선 1봉)·검색 결과 행 포맷 `티커 | 종목명 | 시총 | 매수조건 | 캔들패턴 | 이격도%`. 기간 기본 **6개월 전~오늘**. 우측 차트는 창에 맞춰 **가변 확장**(최소 크기 약 **960×540**, 폴백 **1280×840**)·실측 `chart_overlay_host` 기준 PNG 리사이즈. 매매 기준 이평 **5·10·20**, 추세선 **20·120** 기본, 캘린더 선택.)  
 검색 → 리스트에서 **종목 1개 선택** 또는 **더블클릭 즉시 실행**(동작은 동일)·기간·원금 등 설정 후 **백테스트 실행** 버튼을 누르면 **현재 선택(하이라이트)된 종목 하나만** 단일 실행됩니다.
 
 ### GUI 개발용 — 저장 시 창 자동 재시작 (`watchdog`, Node 불필요)
@@ -105,7 +105,7 @@ python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
 
 ## 설정
 
-`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 7개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 **`false`**; GUI 매매 규칙 패널과 동일하게 시작 시 모두 꺼짐 — 켜면 해당 방향 골든/데크 시그널·데크 신호 매도 활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글(`show_chart_candle`·`show_chart_volume`·**v4.10** `show_return_overlay` 기본 OFF — 켜면 가격 패널 누적 수익률 우측 Y축 포함), 비용, `portfolio.initial_cash`. **v4.10 GUI:** 백테스트 요약은 먼저 표시 후 PNG 차트가 별도 단계에서 생성됩니다(`defer_chart_render`/`materialize_backtest_chart_png`). **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
+`config/settings.yaml` — `period`(시작·종료 둘 다 비우면 GUI·CLI 모두 **실행 시점 기준 6개월 전~오늘**), `universe`, `strategy.interval`, `strategy.ma_period`(매매 5·10·20 권장), **v4.6** `golden_buy_enabled` · `dead_cross_sell_enabled`(기본 **`false`**; GUI 매매 규칙 패널과 동일하게 시작 시 모두 꺼짐 — 켜면 해당 방향 골든/데크 시그널·데크 신호 매도 활성), **`strategy.show_trend_ma5` … `show_trend_ma200`** (차트 추세 오버레이, 기본 예시는 20·120 켜짐), **v4.0 매수 진입 필터**(대세·돌파·시간 버퍼, **골든 후보에 AND 결합**) · **v4.4 가변 낙폭 매도**(데크 신호 매도와 **OR**), 차트 패널 토글(`show_chart_candle`·`show_chart_volume`·**v4.10** `show_return_overlay` 기본 OFF — 켜면 가격 패널 누적 수익률 우측 Y축 포함), 비용, `portfolio.initial_cash`. **v4.10 GUI:** 백테스트 요약은 먼저 표시 후 PNG 차트가 별도 단계에서 생성됩니다(`defer_chart_render`/`materialize_backtest_chart_png`). **v4.1:** GUI에서 기간을 버튼으로 ±30일(달력) 이동·차트 **이미지 위** 좌우 투명 버튼으로 **7영업일**(BDay, 주말 제외) 단위 이동할 수 있으며, 엔진은 차트 구간은 유지한 채 OHLCV만 시작일보다 앞에서 추가 로드해 MA120·기울기 계산이 첫 봉부터 나오게 합니다.
 
 ## 소스 역할 (파일별)
 
@@ -116,7 +116,7 @@ python main.py --slope-ablation-batch --market KOSPI --batch-max-workers 4
 | `src/gui_helpers.py` | YAML→위젯·`try_build_config`·툴팁 |
 | `src/backtest_constants.py` | `TREND_MA_PERIODS` 등 차트·GUI 공유 상수 |
 | `src/backtest_chart.py` | mplfinance 멀티패널·타점·PNG 저장; **v4.9** 선택 `figsize`·`layout_preset`(CLI `report`/GUI `gui_target`) |
-| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 7개월~오늘)·`ohlcv_warm_start_date` · **v4.10** FDR 상장표 TTL·OHLCV LRU |
+| `src/data_loader.py` | 종목 필터·OHLCV·주봉·`load_config`(기간 미설정 시 6개월~오늘)·`ohlcv_warm_start_date` · **v4.10** FDR 상장표 TTL·OHLCV LRU |
 | `src/strategy.py` | 이평 돌파 시그널 |
 | `src/simulator.py` | 익봉 시가 체결 시뮬 · **v4.10** 시뮬 루프 ndarray 최적화 |
 | `src/metrics.py` | 누적·CAGR·MDD, `run_backtest_detailed`(차트는 `backtest_chart` 호출) · **v4.10** `defer_chart_render`·`materialize_backtest_chart_png` |

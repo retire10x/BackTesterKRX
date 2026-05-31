@@ -1,4 +1,6 @@
-# 백테스트 기간 (비우면 로드 시점 기준 7개월 전 ~ 오늘로 자동 설정)
+# 백테스트 기간 (비우면 로드 시점 기준 6개월 전 ~ 오늘로 자동 설정)
+# v4.50: period_months=6 — UI 조회 구간 SSOT (MA120은 data_loader 180일 동적 버퍼)
+period_months: 6
 period:
   start_date: ""
   end_date: ""

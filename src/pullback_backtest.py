@@ -120,9 +120,12 @@ def run_pullback_timeline_backtest(
     sell_timing_minutes: int = 0,
     code: str = "",
     name: str = "",
+    period_start: str | None = None,
+    period_end: str | None = None,
 ) -> PullbackTimelineResult:
     """
     기간 내 매 봉별 눌림목 신호를 전수 탐색해 복리 시뮬레이션.
+    v4.50: period_start/end — 버퍼 풀(df) 위 MA120 워밍업 후 사용자 구간만 진입 집계.
     sell_timing_minutes: 현재 0(익일 시가)만 지원.
     """
     if sell_timing_minutes != 0:
@@ -155,10 +158,24 @@ def run_pullback_timeline_backtest(
     close = pd.to_numeric(work["Close"], errors="coerce")
     opn = pd.to_numeric(work["Open"], errors="coerce")
 
+    ts0 = (
+        pd.Timestamp(period_start).normalize()
+        if period_start
+        else work.index[0].normalize()
+    )
+    ts1 = (
+        pd.Timestamp(period_end).normalize()
+        if period_end
+        else work.index[-1].normalize()
+    )
+
     equity = float(initial_cash)
     entries: list[tuple[str, float, float, float]] = []
 
     for i in range(119, len(work) - 1):
+        bar_ts = work.index[i].normalize()
+        if bar_ts < ts0 or bar_ts > ts1:
+            continue
         if not pullback_signal_at_index(
             vol,
             low,
@@ -185,7 +202,7 @@ def run_pullback_timeline_backtest(
     hdr = f"{name} ({code})".strip() if code or name else "선택 종목"
     lines = [
         f"■ {hdr}",
-        f"■ 기간: {work.index[0].strftime('%Y-%m-%d')} ~ {work.index[-1].strftime('%Y-%m-%d')}",
+        f"■ 기간: {ts0.strftime('%Y-%m-%d')} ~ {ts1.strftime('%Y-%m-%d')}",
         f"■ 세력 개입 배수: {volume_burst_multiple:g} | 눌림 거래량 비율: {vol_shrink_limit:g}",
         "■ v4.15 Pass2: MA20 터치 회복 OR (MA20 위 + t-1 중심선 수호)",
         (

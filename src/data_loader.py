@@ -27,7 +27,6 @@ from src.filters import (
     PULLBACK_DUAL_MARKET_LABEL,
     PULLBACK_LONG_MA_DAYS,
     PULLBACK_MIN_OHLCV_BARS,
-    PULLBACK_SCAN_HISTORY_BDAY,
     PULLBACK_VERY_LONG_MA_DAYS,
     kim_straight_trend_pass,
     leader_pullback_center_defense,
@@ -74,39 +73,71 @@ def months_before(d: date, months: int) -> date:
     return date(y, m, min(d.day, last))
 
 
-# GUI·YAML·CLI 기본 조회 구간: 오늘 기준 N개월 전 ~ 오늘 (MA120·120영업일 워밍업 여유)
-DEFAULT_PERIOD_MONTHS = 7
+# GUI·YAML·CLI 기본 조회 구간: 오늘 기준 N개월 전 ~ 오늘
+DEFAULT_PERIOD_MONTHS = 6
 
-
-def default_backtest_period_range() -> tuple[date, date]:
-    """시작=오늘 기준 7개월 전, 종료=오늘."""
-    today = date.today()
-    return months_before(today, DEFAULT_PERIOD_MONTHS), today
-
-
-# 일봉: 사용자 시작일 이전 최소 이 거래일만큼 OHLCV 를 당겨와 MA120·v4.0 기울기 필터 워밍업
+# v4.50 동적 버퍼: 사용자 start_date 직전 MA120·지표 워밍업(달력 180일)
+OHLCV_DYNAMIC_BUFFER_CALENDAR_DAYS = 180
+# 벌크 타임워프(Volume>0만 연결) 후 MA120 — 영업일 120 + vol=0 여유(~20)
+BULK_SCAN_MA_TIMEWARP_SLACK_BDAY = 20
+# 하위 호환·문서용
 OHLCV_EXTRA_TRADING_BARS_DAILY = 130
 # 주봉: 일봉 원천을 충분히 길게 로드한 뒤 주간 리샘플 (약 130주 + 여유)
 OHLCV_WEEKLY_FETCH_CALENDAR_DAYS = 980
 
 
+def default_backtest_period_range() -> tuple[date, date]:
+    """시작=오늘 기준 6개월 전, 종료=오늘."""
+    today = date.today()
+    return months_before(today, DEFAULT_PERIOD_MONTHS), today
+
+
+def ohlcv_dynamic_buffer_start(user_start: str) -> str:
+    """v4.50: API 수집 시작일 = 사용자 시작일 − 180달력일."""
+    ts = pd.Timestamp(str(user_start).strip()[:10])
+    return (
+        ts - pd.Timedelta(days=OHLCV_DYNAMIC_BUFFER_CALENDAR_DAYS)
+    ).strftime("%Y-%m-%d")
+
+
+def slice_ohlcv_user_period(
+    df: pd.DataFrame,
+    start: str,
+    end: str,
+) -> pd.DataFrame:
+    """버퍼 풀에서 사용자 요청 구간만 절단."""
+    if df is None or df.empty:
+        return df
+    work = ensure_datetime_index(df)
+    s = pd.Timestamp(str(start).strip()[:10]).normalize()
+    e = pd.Timestamp(str(end).strip()[:10]).normalize()
+    return work.loc[(work.index >= s) & (work.index <= e)].copy()
+
+
+def normalize_scan_anchor_business_day(anchor: date | pd.Timestamp) -> pd.Timestamp:
+    """v4.50: 토·일 앵커 → 직전 영업일 (벌크 120영업일 bdate_range 보장)."""
+    d = pd.Timestamp(anchor).normalize()
+    if int(d.dayofweek) >= 5:
+        return (d - BDay(1)).normalize()
+    return d
+
+
 def ohlcv_warm_start_date(user_start: str, *, interval: str) -> str:
     """
     차트·시뮬에 쓰는 사용자 시작일은 그대로 두되, OHLCV 로드 시작일만 더 과거로 당김.
-    일봉: 거래일 기준 OHLCV_EXTRA_TRADING_BARS_DAILY 만큼 이전부터.
+    일봉: v4.50 동적 버퍼 180달력일.
     주봉: 일봉 시계열을 넉넉히 가져온 뒤 주봉으로 집계하므로 캘린더 일 단위로 과거 확장.
     """
     iv = str(interval).strip().lower()
-    ts = pd.Timestamp(str(user_start).strip()[:10])
     if iv == "weekly":
+        ts = pd.Timestamp(str(user_start).strip()[:10])
         warm_ts = ts - pd.Timedelta(days=OHLCV_WEEKLY_FETCH_CALENDAR_DAYS)
-    else:
-        warm_ts = ts - pd.offsets.BDay(OHLCV_EXTRA_TRADING_BARS_DAILY)
-    return warm_ts.strftime("%Y-%m-%d")
+        return warm_ts.strftime("%Y-%m-%d")
+    return ohlcv_dynamic_buffer_start(user_start)
 
 
 def load_config(path: str | None = None) -> dict:
-    """config/settings.yaml 로드. 기간이 비어 있으면 7개월 전~오늘로 채움."""
+    """config/settings.yaml 로드. 기간이 비어 있으면 6개월 전~오늘로 채움."""
     cfg_path = path or os.path.join("config", "settings.yaml")
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -438,6 +469,81 @@ def _merge_intraday_session_bar(
     return ensure_datetime_index(base)
 
 
+def bulk_scan_history_bdays(anchor: date | pd.Timestamp) -> pd.DatetimeIndex:
+    """v4.50: 벌크 스캔 OHLCV — 달력 180일·영업일 140칸 중 더 이른 시작(타임워프 MA120)."""
+    d_today = normalize_scan_anchor_business_day(anchor)
+    cal_start = d_today - pd.Timedelta(days=OHLCV_DYNAMIC_BUFFER_CALENDAR_DAYS)
+    bday_start = d_today - BDay(
+        PULLBACK_VERY_LONG_MA_DAYS - 1 + BULK_SCAN_MA_TIMEWARP_SLACK_BDAY
+    )
+    history_start = min(cal_start, bday_start)
+    return pd.bdate_range(history_start, d_today)
+
+
+def trim_bulk_day_frames_to_active_t0(
+    day_frames: list[pd.DataFrame],
+    bdays: pd.DatetimeIndex,
+    *,
+    min_frames: int = PULLBACK_MIN_OHLCV_BARS,
+) -> tuple[list[pd.DataFrame], pd.DatetimeIndex, pd.Timestamp]:
+    """
+    v4.50: t0 스냅샷 전종목 Volume=0(설·추석 등 휴장)이면 직전 영업일로 앵커 후퇴.
+    """
+    frames = list(day_frames)
+    idx = pd.DatetimeIndex(bdays)
+    while len(frames) > int(min_frames):
+        t0 = frames[-1]
+        if t0 is None or t0.empty:
+            frames.pop()
+            idx = idx[:-1]
+            continue
+        vol = pd.to_numeric(t0.get("Volume"), errors="coerce")
+        if vol.notna().any() and (vol > 0).any():
+            break
+        frames.pop()
+        idx = idx[:-1]
+    if not frames or idx.empty:
+        return [], pd.DatetimeIndex([]), pd.NaT
+    return frames, idx, pd.Timestamp(idx[-1]).normalize()
+
+
+def attach_rolling_ma_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """버퍼 풀 위 MA60·MA120 연산 — 슬라이스 전 NaN 유실 방지 (v4.50)."""
+    out = ensure_datetime_index(df.copy())
+    close = pd.to_numeric(out["Close"], errors="coerce")
+    out["MA60"] = close.rolling(
+        PULLBACK_LONG_MA_DAYS, min_periods=PULLBACK_LONG_MA_DAYS
+    ).mean()
+    out["MA120"] = close.rolling(
+        PULLBACK_VERY_LONG_MA_DAYS, min_periods=PULLBACK_VERY_LONG_MA_DAYS
+    ).mean()
+    return out
+
+
+def load_ohlcv_with_dynamic_buffer(
+    symbol: str,
+    start: str,
+    end: str,
+    *,
+    market: str | None = None,
+    user_slice: bool = True,
+) -> pd.DataFrame | None:
+    """
+    v4.50: 180일 버퍼 풀 수집 → MA60/MA120 연산 → 사용자 start~end 슬라이스.
+
+    Pass 4(종가>MA120) NaN 전멸 버그 원천 차단. 모수 미달 시 빈 DataFrame.
+    user_slice=False 이면 버퍼 포함 전체 풀(+ MA 컬럼) 반환.
+    """
+    api_start = ohlcv_dynamic_buffer_start(start)
+    df_raw = load_ohlcv(symbol, api_start, end, market=market)
+    if df_raw is None or df_raw.empty or len(df_raw) < PULLBACK_MIN_OHLCV_BARS:
+        return pd.DataFrame()
+    df_raw = attach_rolling_ma_columns(df_raw)
+    if user_slice:
+        return slice_ohlcv_user_period(df_raw, start, end)
+    return df_raw
+
+
 def load_ohlcv_for_chart(
     symbol: str,
     start: str,
@@ -445,11 +551,10 @@ def load_ohlcv_for_chart(
     *,
     market: str | None = None,
 ) -> pd.DataFrame | None:
-    """차트 OHLCV — v3.90 pykrx 단일 소스(스캔 벌크 캐시와 동일 경로)."""
-    df = load_ohlcv(symbol, start, end, market=market)
-    if df is None or df.empty:
-        return None
-    return df
+    """차트 OHLCV — v4.50 동적 버퍼 후 사용자 구간 슬라이스."""
+    return load_ohlcv_with_dynamic_buffer(
+        symbol, start, end, market=market, user_slice=True
+    )
 
 
 def clear_ohlcv_cache() -> None:
@@ -934,7 +1039,7 @@ def scan_leader_pullback_candidates_bulk(
     """
     v3.30 주도주 눌림목 벌크 스캐너.
 
-    - v4.45: Volume=0 거래정지일 타임워프(로우 삭제 후 MA·거래량 재연산)
+    - v4.50: 180일 버퍼 벌크 이력 + Volume=0 타임워프 후 MA·거래량 재연산
     - pykrx 일별 전종목 OHLCV 스냅샷 22영업일(t-21~t0) — 당일(t) 거래량이 MA20에 섞이지 않음
     - cond_prev_burst: t-1 거래량 > mean(t-2..t-21) × volume_burst_multiple
     - v3.80 cond_prev_yang: t-1 종가 > t-1 시가 (전일 양봉)
@@ -967,8 +1072,8 @@ def scan_leader_pullback_candidates_bulk(
         return {"ok": False, "reason": "cancelled"}
 
     ainfo = resolve_overnight_scan_anchor(str(end_date).strip()[:10])
-    d_today = pd.Timestamp(ainfo.anchor_date).normalize()
-    bdays = pd.bdate_range(d_today - BDay(PULLBACK_SCAN_HISTORY_BDAY), d_today)
+    d_today = normalize_scan_anchor_business_day(ainfo.anchor_date)
+    bdays = bulk_scan_history_bdays(d_today)
     if len(bdays) < PULLBACK_MIN_OHLCV_BARS:
         return {"ok": False, "reason": "ohlcv_history_short"}
 
@@ -1000,6 +1105,10 @@ def scan_leader_pullback_candidates_bulk(
         if cancel_event is not None and cancel_event.is_set():
             return {"ok": False, "reason": "cancelled"}
         return {"ok": False, "reason": "ohlcv_bulk_failed"}
+
+    day_frames, bdays, d_today = trim_bulk_day_frames_to_active_t0(day_frames, bdays)
+    if len(day_frames) < PULLBACK_MIN_OHLCV_BARS:
+        return {"ok": False, "reason": "ohlcv_history_short"}
 
     common_idx = day_frames[0].index
     for fr in day_frames[1:]:
