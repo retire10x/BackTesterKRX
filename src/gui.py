@@ -54,8 +54,11 @@ from src.gui_helpers import (
     apply_yaml_to_widgets,
     date_entry_theme_kw,
     format_gui_list_hist,
+    format_gui_list_hist_pullback_snapshot,
+    format_gui_list_leader_pullback,
     format_gui_list_pipeline,
     format_gui_list_triple,
+    listing_market_from_gui_badge,
     gui_body_font,
     gui_summary_five_lines,
     history_row_normalize,
@@ -78,12 +81,14 @@ from src.gui_helpers import (
     universe_limit_display_label,
     UNIVERSE_LIMIT_OPTIONS,
 )
+from src.filters import pullback_bulk_markets_for_scan
 from src.backtest_constants import (
     CHART_MA_TOGGLE_PERIODS,
     CHART_ZOOM_MIN_VISIBLE_BARS,
     CHART_ZOOM_WHEEL_FACTOR,
 )
 from src.backtest_chart import render_backtest_chart_png_bytes, slice_chart_viewport
+from src.chart_renderer import ohlc_row_at_anchor
 from src.metrics import (
     BacktestResult,
     materialize_backtest_chart_png_bytes,
@@ -331,11 +336,16 @@ class LeaderPullbackScanWorker(threading.Thread):
 
     def run(self) -> None:
         try:
-            rows = self.owner._run_leader_pullback_scan(self.market, self.end_date)
+            rows, evidence = self.owner._run_leader_pullback_scan(
+                self.market, self.end_date
+            )
             if self.cancel_event.is_set():
                 self.owner.after(0, self.owner._finalize_v31_scan_cancelled)
                 return
-            self.owner.after(0, lambda rr=rows: self.owner._finalize_v31_scan(rr))
+            self.owner.after(
+                0,
+                lambda rr=rows, ev=evidence: self.owner._finalize_v31_scan(rr, ev),
+            )
         except Exception as ex:
             if self.cancel_event.is_set():
                 self.owner.after(0, self.owner._finalize_v31_scan_cancelled)
@@ -348,11 +358,19 @@ class BacktestGUI(ctk.CTk):
         super().__init__()
         gui_body_font()  # CTkFont — Tk 루트 존재 후 캐시(모듈 import 시 생성 불가)
 
-        self.title("BackTesterKRX v4.00 주도주 눌림목 스캐너 (Liquidity Filter)")
+        self.title(
+            "BackTesterKRX v4.30 주도주 눌림목 스캐너 (Minimal OHLC Chart)"
+        )
 
         self._apply_initial_window_geometry()
 
         self._candidates: list[tuple[str, str, float | None]] = []
+        self._scan_result_snapshot: list[
+            tuple[str, str, float, str, str, str]
+        ] = []
+        self._scan_evidence_by_code: dict[str, object] = {}
+        self._scan_evidence_anchor: str = ""
+        self._scan_ticker_market: dict[str, str] = {}
         self._last_batch_picks: list[object] = []
         self._busy = False
         self._scan_cancel_event = threading.Event()
@@ -524,7 +542,7 @@ class BacktestGUI(ctk.CTk):
         self.var_market = ctk.StringVar(value="KOSPI")
         ctk.CTkOptionMenu(
             sf_market,
-            values=["KOSPI", "KOSDAQ", "ETF"],
+            values=["KOSPI", "KOSDAQ", "ALL"],
             variable=self.var_market,
             width=90,
             height=26,
@@ -605,6 +623,7 @@ class BacktestGUI(ctk.CTk):
         row_scan_btns.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(0, 4))
         row_scan_btns.grid_columnconfigure(0, weight=1)
         row_scan_btns.grid_columnconfigure(1, weight=1)
+        row_scan_btns.grid_columnconfigure(2, weight=1)
         self.btn_run = ctk.CTkButton(
             row_scan_btns,
             text="🔵 스캔",
@@ -623,7 +642,19 @@ class BacktestGUI(ctk.CTk):
             command=self._on_scan_cancel,
             state="disabled",
         )
-        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        self.btn_scan_cancel.grid(row=0, column=1, sticky="ew", padx=(3, 3))
+        self.btn_export_evidence = ctk.CTkButton(
+            row_scan_btns,
+            text="📥 근거",
+            height=GUI_MAIN_BTN_HEIGHT,
+            font=gui_action_btn_font(),
+            command=self._on_export_scan_evidence,
+        )
+        self.btn_export_evidence.grid(row=0, column=2, sticky="ew", padx=(3, 0))
+        HoverTooltip(
+            self.btn_export_evidence,
+            "검출 전 종목 근거 Excel 일괄 저장 (outputs/evidences/)",
+        )
 
         hist_block = ctk.CTkFrame(left, fg_color="transparent")
         hist_block.pack(fill="x", padx=LEFT_PANEL_PAD_X, pady=(0, 4))
@@ -1007,11 +1038,6 @@ class BacktestGUI(ctk.CTk):
         # 매수 필터 인터락 등록 (YAML 반영값 유지 — 예전처럼 추세를 True로 강제 덮어쓰지 않음)
         self.var_filter_trend.trace_add("write", self._sync_buy_filters_interlock)
         self._sync_buy_filters_interlock()
-
-        self.var_market.trace_add(
-            "write",
-            lambda *_: self.after_idle(self._sync_history_listbox),
-        )
 
         self._load_backtest_history_from_disk()
         self._sync_history_listbox()
@@ -1680,6 +1706,7 @@ class BacktestGUI(ctk.CTk):
             figsize=st.get("figsize"),
             save_dpi=int(st.get("save_dpi", 100)),
             layout_preset=str(st.get("layout_preset", "gui_target")),
+            ohlc_overlay=st.get("ohlc_overlay"),
         )
         self._update_chart_image_from_png_bytes(png_bytes)
 
@@ -2148,6 +2175,13 @@ class BacktestGUI(ctk.CTk):
                     save_dpi = dpi
                     layout_preset = "gui_target"
 
+                anchor_row = ohlc_row_at_anchor(sim, end_s) or {}
+                ohlc_overlay = {
+                    "code": code,
+                    "name": title_resolved,
+                    "t0_date": end_s,
+                    **anchor_row,
+                }
                 canvas_state = {
                     "sim": sim,
                     "trades": [],
@@ -2162,6 +2196,7 @@ class BacktestGUI(ctk.CTk):
                     "figsize": figsize,
                     "save_dpi": save_dpi,
                     "layout_preset": layout_preset,
+                    "ohlc_overlay": ohlc_overlay,
                 }
                 png_bytes = render_backtest_chart_png_bytes(
                     sim=sim,
@@ -2177,6 +2212,7 @@ class BacktestGUI(ctk.CTk):
                     figsize=figsize,
                     save_dpi=save_dpi,
                     layout_preset=layout_preset,
+                    ohlc_overlay=ohlc_overlay,
                 )
 
                 self.after(
@@ -2456,6 +2492,7 @@ class BacktestGUI(ctk.CTk):
         return x if (x == x and x > 0) else None
 
     def _sync_history_listbox(self) -> None:
+        """v4.10: 저장된 스냅샷만 표시 — 시장 콤보 변경 시 금액 재조회 없음."""
         self.list_history.delete(0, tk.END)
         for tup in self._history_deque:
             c, nm, mc_stored, lm = history_row_normalize(tup)
@@ -2469,12 +2506,11 @@ class BacktestGUI(ctk.CTk):
                 mc_s = str(tup[5] or "").strip()
                 amt_s = str(tup[6] or "").strip()
             if rise_s and mc_s and amt_s:
-                line = f"{c} | {nm} | {rise_s} | {mc_s} | {amt_s}"
+                line = format_gui_list_hist_pullback_snapshot(
+                    c, nm, lm, rise_s, mc_s, amt_s
+                )
             else:
-                mc_disp = mc_stored
-                if mc_disp is None:
-                    mc_disp = self._listing_cap_snapshot(c, lm)
-                line = format_gui_list_hist(c, nm, lm, mc_disp)
+                line = format_gui_list_hist(c, nm, lm, mc_stored)
             self.list_history.insert(tk.END, line)
 
     def _load_backtest_history_from_disk(self) -> None:
@@ -2697,12 +2733,18 @@ class BacktestGUI(ctk.CTk):
         amt_s = parts[4].replace("대금", "", 1).strip() if len(parts) >= 5 else ""
         if not cd:
             return
+        listing_mk = (
+            self._scan_ticker_market.get(cd)
+            or listing_market_from_gui_badge(parts[0])
+            or normalize_krx_listing_market(self.var_market.get())
+            or "KOSPI"
+        )
         self._register_ticker_name(cd, nm)
         self._push_history(
             cd,
             nm,
             market_cap_krw=None,
-            listing_market=self.var_market.get(),
+            listing_market=listing_mk,
             rise_text=rise_s,
             marcap_text=mc_s,
             trade_amount_text=amt_s,
@@ -3034,11 +3076,20 @@ class BacktestGUI(ctk.CTk):
 
     def _run_leader_pullback_scan(
         self, market: str, end_date: str
-    ) -> list[tuple[str, str, float, str, str]]:
+    ) -> tuple[
+        list[tuple[str, str, float, str, str, str]],
+        dict[str, object],
+    ]:
         """
         v3.30 주도주 눌림목 스캔.
-        반환: (코드, 종목명, 당일 시가대비 상승률%, 시총 표시 문자열, 거래대금 표시 문자열)
+        반환: (리스트 행, code→ScanEvidenceSnapshot) — 조회 시점 스냅샷.
         """
+        from src.engine.exporter import (
+            ScanEvidenceSnapshot,
+            build_scan_evidence_from_ohlcv,
+        )
+
+        empty: tuple[list, dict] = ([], {})
         params = self._parse_leader_pullback_scan_params()
         if params is None:
             self.after(
@@ -3048,7 +3099,7 @@ class BacktestGUI(ctk.CTk):
                     "세력 개입 배수·눌림 거래량 비율은 0보다 큰 숫자여야 합니다.",
                 ),
             )
-            return []
+            return empty
         volume_burst_multiple, vol_shrink_limit, use_momentum_filter = params
         from src.v3_scan_config import resolve_effective_pullback_scan_params
 
@@ -3057,14 +3108,16 @@ class BacktestGUI(ctk.CTk):
         min_liq_trd = float(scan_ssot.min_liquidity_trade_amount_krw)
 
         _prime_krx_env_from_dotenv()
-        try:
-            name_map = fetch_filtered_universe(market, "")
-        except Exception:
-            name_map = {}
-        total_loaded = 0
         scan_market = str(market or "KOSPI").strip().upper()
-        if scan_market not in ("KOSPI", "KOSDAQ"):
+        if scan_market not in ("KOSPI", "KOSDAQ", "ALL"):
             scan_market = "KOSPI"
+        parity_limit = self._selected_universe_limit()
+        name_map: dict[str, str] = {}
+        for mk in pullback_bulk_markets_for_scan(scan_market, parity_limit):
+            try:
+                name_map.update(fetch_filtered_universe(mk, ""))
+            except Exception:
+                pass
 
         # 1) pykrx 22영업일 벌크 + v3.30 눌림목 벡터 필터
         pass_burst = 0
@@ -3075,13 +3128,13 @@ class BacktestGUI(ctk.CTk):
         pass_all = 0
         pass_liquidity = 0
         total_universe = 0
+        total_loaded = 0
         diag_burst = ""
         diag_shrink = ""
         prev_1 = ""
         prev_2 = ""
         requested_scan_date = str(end_date).strip()[:10]
         ainfo_pre = resolve_overnight_scan_anchor(requested_scan_date)
-        parity_limit = self._selected_universe_limit()
         bulk_end_date = requested_scan_date
         bulk = scan_leader_pullback_candidates_bulk(
             bulk_end_date,
@@ -3095,7 +3148,11 @@ class BacktestGUI(ctk.CTk):
             min_liquidity_trade_amount_krw=min_liq_trd,
         )
 
-        qualifiers: list[tuple[str, str, float, float | None, float | None]] = []
+        qualifiers: list[
+            tuple[str, str, float, float | None, float | None, str]
+        ] = []
+        evidence_by_code: dict[str, ScanEvidenceSnapshot] = {}
+        bulk_evidence_raw: dict = {}
         diag_policy = ""
         effective_anchor = ainfo_pre.anchor_date.strftime("%Y-%m-%d")
         st: dict = {}
@@ -3123,10 +3180,25 @@ class BacktestGUI(ctk.CTk):
             pol = (st or {}).get("anchor_policy_reason")
             if pol is not None:
                 diag_policy = str(pol)
-            for code, rise_pct, mar_krw, trd_krw in rows:
+            bulk_evidence_raw = bulk.get("evidence") if isinstance(bulk.get("evidence"), dict) else {}
+            for row in rows:
+                if len(row) >= 5:
+                    code, rise_pct, mar_krw, trd_krw, listing_mk = row[:5]
+                else:
+                    code, rise_pct, mar_krw, trd_krw = row[:4]
+                    listing_mk = scan_market if scan_market in ("KOSPI", "KOSDAQ") else "KOSPI"
                 c6 = str(code).zfill(6)
                 name = str(name_map.get(c6, "")).strip() or c6
-                qualifiers.append((c6, name, float(rise_pct), mar_krw, trd_krw))
+                qualifiers.append(
+                    (
+                        c6,
+                        name,
+                        float(rise_pct),
+                        mar_krw,
+                        trd_krw,
+                        str(listing_mk or "KOSPI").strip().upper(),
+                    )
+                )
         else:
             reason = str(bulk.get("reason", ""))
             fallback_limit = self._selected_universe_limit()
@@ -3153,7 +3225,7 @@ class BacktestGUI(ctk.CTk):
                     ),
                 )
             if reason == "cancelled":
-                return []
+                return empty
             ainfo_fb = resolve_overnight_scan_anchor(requested_scan_date)
             anchor_fb = ainfo_fb.anchor_date.strftime("%Y-%m-%d")
             effective_anchor = anchor_fb
@@ -3163,23 +3235,29 @@ class BacktestGUI(ctk.CTk):
             warm_start = (
                 pd.Timestamp(anchor_fb) - BDay(PULLBACK_SCAN_HISTORY_BDAY + 15)
             ).strftime("%Y-%m-%d")
-            universe = load_v3_0_overnight_scalper_data(
-                start_date=warm_start,
-                end_date=anchor_fb,
-                market=scan_market,
-                universe_limit=fallback_limit,
+            fallback_markets = pullback_bulk_markets_for_scan(
+                scan_market, fallback_limit
             )
-            total_loaded = len(name_map) if name_map else len(universe)
-            krx_map_fb = fetch_pykrx_marcap_trade_krw_by_code(
-                anchor_fb, market=scan_market
-            )
+            universe_pairs: list[tuple[str, object, str]] = []
+            for fb_mk in fallback_markets:
+                part = load_v3_0_overnight_scalper_data(
+                    start_date=warm_start,
+                    end_date=anchor_fb,
+                    market=fb_mk,
+                    universe_limit=fallback_limit,
+                )
+                for code, df in part:
+                    universe_pairs.append((str(code).zfill(6), df, fb_mk))
+            total_loaded = len(universe_pairs)
             diag_policy = diag_policy or ainfo_fb.anchor_policy_reason
-            for code, df in universe:
+            for c6, df, fb_mk in universe_pairs:
                 if self._scan_cancel_event.is_set():
-                    return []
-                if df is None or df.empty:
+                    return empty
+                if df is None or getattr(df, "empty", True):
                     continue
-                c6 = str(code).zfill(6)
+                krx_map_fb = fetch_pykrx_marcap_trade_krw_by_code(
+                    anchor_fb, market=fb_mk
+                )
                 mar_krw: float | None = None
                 trd_krw: float | None = None
                 tp = krx_map_fb.get(c6)
@@ -3216,60 +3294,65 @@ class BacktestGUI(ctk.CTk):
                 pass_price += 1
                 pass_volume += 1
                 pass_all += 1
-                c = float(pd.to_numeric(df["Close"], errors="coerce").iloc[-1])
-                vl = float(pd.to_numeric(df["Volume"], errors="coerce").iloc[-1])
-                proxy_amt = (c * vl) if vl >= 0 else None
-                name = str(name_map.get(str(code).zfill(6), "")).strip() or str(code)
-                qualifiers.append((str(code).zfill(6), name, rise_pct, mar_krw, trd_krw))
+                name = str(name_map.get(c6, "")).strip() or c6
+                qualifiers.append(
+                    (c6, name, rise_pct, mar_krw, trd_krw, fb_mk)
+                )
+                ev_fb = build_scan_evidence_from_ohlcv(
+                    df,  # type: ignore[arg-type]
+                    code=c6,
+                    name=name,
+                    anchor_date=effective_anchor,
+                    listing_market=fb_mk,
+                    market_cap_krw=mar_krw,
+                    trade_amount_krw=trd_krw,
+                    min_liquidity_market_cap_krw=min_liq_cap,
+                    min_liquidity_trade_amount_krw=min_liq_trd,
+                    volume_burst_multiple=volume_burst_multiple,
+                    vol_shrink_limit=vol_shrink_limit,
+                )
+                if ev_fb is not None:
+                    evidence_by_code[c6] = ev_fb
 
-            total_universe = len(universe)
+            total_universe = len(universe_pairs)
             total_loaded = pass_liquidity
 
         qualifiers.sort(key=lambda z: (-float(z[2]), str(z[0]).zfill(6)))
 
-        krx_map = fetch_pykrx_marcap_trade_krw_by_code(
-            effective_anchor, market=scan_market
-        )
-        listing_mk = normalize_krx_listing_market(market) or "KOSPI"
-        try:
-            listing_caps = fetch_listing_market_cap_krw_by_code(listing_mk)
-        except Exception:
-            listing_caps = {}
-        if not isinstance(listing_caps, dict):
-            listing_caps = {}
-
-        out: list[tuple[str, str, float, str, str]] = []
-        for code, name, rise_pct, mar_seed, trd_seed in qualifiers:
+        out: list[tuple[str, str, float, str, str, str]] = []
+        for code, name, rise_pct, mar_seed, trd_seed, listing_mk in qualifiers:
             mar_krw: float | None = mar_seed
             trd_krw: float | None = trd_seed
-            tp = krx_map.get(code)
-            if tp:
-                mar_api, trd_api = tp
-                if mar_api is not None:
-                    mar_krw = mar_api
-                if trd_api is not None:
-                    trd_krw = trd_api
-            if mar_krw is None:
-                v = listing_caps.get(code)
-                if v is not None and math.isfinite(float(v)) and float(v) > 0:
-                    mar_krw = float(v)
-            if trd_krw is not None and (not math.isfinite(float(trd_krw)) or float(trd_krw) <= 0):
+            if trd_krw is not None and (
+                not math.isfinite(float(trd_krw)) or float(trd_krw) <= 0
+            ):
                 trd_krw = None
             mc_s = _format_marcap_display_krw(mar_krw)
             amt_s = _format_round_eok_krw(trd_krw)
-            out.append((code, name, rise_pct, mc_s, amt_s))
+            lm = (
+                normalize_krx_listing_market(listing_mk)
+                or str(listing_mk or "KOSPI").strip().upper()
+            )
+            out.append((code, name, rise_pct, mc_s, amt_s, lm))
+
+        for code, name, *_rest in qualifiers:
+            c6 = str(code).zfill(6)
+            raw_ev = bulk_evidence_raw.get(c6)
+            if isinstance(raw_ev, ScanEvidenceSnapshot):
+                evidence_by_code[c6] = raw_ev.with_display_name(name)
 
         if not total_universe:
             total_universe = total_loaded
 
         debug_lines = [
             "=====================================================",
-            "⚙️ [DEBUG] v4.00 주도주 눌림목 스캐너 (Liquidity Filter)",
+            "⚙️ [DEBUG] v4.25 주도주 눌림목 스캐너 (OHLC Evidence Snapshot)",
             "=====================================================",
             f" - Requested End Date : {requested_scan_date}",
             f" - Effective OHLCV Anchor (t0) : {effective_anchor}",
             f" - Prev_1 Date : {prev_1 or '-'} | Prev_2 Date : {prev_2 or '-'}",
             f" - Anchor policy : {diag_policy or '-'}",
+            f" - Scan Market : {scan_market}",
             f" - Top : {universe_limit_display_label(parity_limit)}",
             f" - Markets pipeline : {st.get('markets_pipeline', scan_market)}",
             f" - 세력 개입 배수 : {diag_burst or volume_burst_multiple}",
@@ -3280,7 +3363,7 @@ class BacktestGUI(ctk.CTk):
             " [Applied Rules — 타임라인 격리]",
             "  0) v4.00 시총·당일 거래대금 유동성 (Pass 0)",
             "  1) t-1 vol > mean(t-2..t-21 vol) × burst_mult & t-1 양봉(종가>시가)",
-            "  2) t low < MA20 & t close >= MA20 & t close >= (t-1 고저)/2",
+            "  2) v4.15 MA20 OR 중심선 + v4.25 이격도5≤105%·20≤110%",
             "  3) t vol <= t-1 vol × shrink_limit",
             "  4) v3.95 종가>MA60·MA120 AND MA60>MA120 (Perfect Trend Lock)",
             (
@@ -3301,7 +3384,7 @@ class BacktestGUI(ctk.CTk):
             ),
             f"  ▶ Pass 0 (+ 유동성) : {pass_liquidity}개 (스캔 유니버스 {total_loaded}개)",
             f"  ▶ Pass 1 (세력+전일양봉) : {pass_burst}개",
-            f"  ▶ Pass 2 (+ MA20·중심선) : {pass_price}개",
+            f"  ▶ Pass 2 (+ MA20 OR 중심선) : {pass_price}개",
             f"  ▶ Pass 3 (+ 거래량 급감) : {pass_volume}개",
             f"  ▶ Pass 4 (+ Perfect Trend) : {pass_kim_long}개",
             (
@@ -3320,7 +3403,7 @@ class BacktestGUI(ctk.CTk):
                 f.write(debug_text + "\n")
         except OSError:
             pass
-        return out
+        return out, evidence_by_code
 
     def _on_search(self) -> None:
         """v3.30 주도주 눌림목 스캔: 코드|종목명|당일 상승률|시총|거래대금."""
@@ -3330,7 +3413,7 @@ class BacktestGUI(ctk.CTk):
             )
             return
         market = self.var_market.get().strip().upper() or "KOSPI"
-        if market not in ("KOSPI", "KOSDAQ", "ETF"):
+        if market not in ("KOSPI", "KOSDAQ", "ALL"):
             market = "KOSPI"
         try:
             end_date = self._date_end.get_date().strftime("%Y-%m-%d")
@@ -3363,27 +3446,104 @@ class BacktestGUI(ctk.CTk):
         self._end_search_loading_state()
         self.set_status_message("스캔이 중단되었습니다. (사용자 취소)")
 
-    def _finalize_v31_scan(
-        self, rows: list[tuple[str, str, float, str, str]]
+    def _render_scan_result_listbox(
+        self, rows: list[tuple[str, str, float, str, str, str]]
     ) -> None:
-        self._busy = False
-        self._end_search_loading_state()
+        """v4.10: 스캔 결과 스냅샷만 렌더 — 시장 콤보 변경과 무관."""
         self.list_codes.delete(0, tk.END)
         self._candidates = []
-        for code, name, rise_pct, mc_s, amt_s in rows:
-            line = (
-                f"{code} | {name} | {rise_pct:+.2f} % | 시총 {mc_s} | 대금 {amt_s}"
+        self._scan_ticker_market = {}
+        for code, name, rise_pct, mc_s, amt_s, listing_mk in rows:
+            lm = normalize_krx_listing_market(listing_mk) or str(listing_mk or "KOSPI")
+            line = format_gui_list_leader_pullback(
+                code, name, lm, rise_pct, mc_s, amt_s
             )
             self.list_codes.insert(tk.END, line)
             self._candidates.append((code, name, None))
+            self._scan_ticker_market[str(code).zfill(6)] = lm
             self._register_ticker_name(code, name)
+
+    def _finalize_v31_scan(
+        self,
+        rows: list[tuple[str, str, float, str, str, str]],
+        evidence_by_code: dict[str, object] | None = None,
+    ) -> None:
+        self._busy = False
+        self._end_search_loading_state()
+        self._scan_result_snapshot = list(rows)
+        self._scan_evidence_by_code = dict(evidence_by_code or {})
+        if rows and self._scan_evidence_by_code:
+            first = str(rows[0][0]).zfill(6)
+            snap0 = self._scan_evidence_by_code.get(first)
+            if snap0 is not None and hasattr(snap0, "anchor_date"):
+                self._scan_evidence_anchor = str(getattr(snap0, "anchor_date", ""))[:10]
+        self._render_scan_result_listbox(rows)
         if rows:
-            self.list_codes.selection_set(0)
+            try:
+                self.list_codes.selection_clear(0, tk.END)
+            except tk.TclError:
+                pass
             self.set_status_message(
-                f"🔥 총 {len(rows)}개 주도주 눌림목 포착 (시총/대금)"
+                f"🔥 총 {len(rows)}개 주도주 눌림목 포착 "
+                f"(근거 스냅샷 {len(self._scan_evidence_by_code)}건)"
             )
         else:
             self.set_status_message("조건에 맞는 주도주 눌림목이 없습니다.")
+
+    def _on_export_scan_evidence(self) -> None:
+        """v4.20: 검출 전 종목 정량 근거 Excel — 스캔 시점 스냅샷 일괄 저장."""
+        from src.engine.exporter import ScanEvidenceSnapshot, export_scan_evidence_snapshots
+
+        if not self._scan_evidence_by_code:
+            messagebox.showinfo(
+                "근거 내보내기",
+                "먼저 스캔을 실행해 검출 종목을 확보하세요.",
+            )
+            return
+
+        targets: list[str] = []
+        for row in self._scan_result_snapshot:
+            cd = str(row[0]).strip().zfill(6)
+            if cd and cd in self._scan_evidence_by_code:
+                targets.append(cd)
+        if not targets:
+            targets = list(self._scan_evidence_by_code.keys())
+
+        snaps: list[ScanEvidenceSnapshot] = []
+        for cd in targets:
+            ev = self._scan_evidence_by_code.get(cd)
+            if isinstance(ev, ScanEvidenceSnapshot):
+                snaps.append(ev)
+
+        if not snaps:
+            messagebox.showwarning("근거 내보내기", "내보낼 스냅샷 데이터가 없습니다.")
+            return
+
+        try:
+            paths = export_scan_evidence_snapshots(snaps)
+        except ModuleNotFoundError as ex:
+            if ex.name == "openpyxl":
+                messagebox.showerror(
+                    "근거 내보내기 실패",
+                    "openpyxl 패키지가 없습니다.\n\n"
+                    "프로젝트 venv에서 실행:\n"
+                    "  pip install openpyxl\n\n"
+                    "또는:\n"
+                    "  pip install -r requirements.txt",
+                )
+            else:
+                messagebox.showerror("근거 내보내기 실패", str(ex))
+            return
+        except Exception as ex:
+            messagebox.showerror("근거 내보내기 실패", str(ex))
+            return
+
+        if len(paths) == 1:
+            msg = f"저장 완료:\n{paths[0]}"
+        else:
+            msg = f"{len(paths)}건 저장 (outputs/evidences/)\n예: {paths[0]}"
+        self.set_status_message(f"근거 스냅샷 {len(paths)}건 Excel 저장")
+        messagebox.showinfo("근거 내보내기", msg)
 
     def _exec_search_worker(
         self,

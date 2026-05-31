@@ -710,6 +710,7 @@ def make_backtest_figure(
     show_candle: bool = True,
     show_volume: bool = True,
     figsize: tuple[float, float] | None = None,
+    ohlc_overlay: dict[str, str] | None = None,
 ) -> Figure:
     """가격(OHLC)·선택 거래량 2패널 mplfinance 렌더."""
     import matplotlib.pyplot as plt
@@ -751,7 +752,10 @@ def make_backtest_figure(
 
     # v4.5: 추세 이평은 가격 패널 ax.legend — 세로 라벨(Price 등) 대신 패널 뱃지로 패널 구분.
 
-    title = str(name or "").strip()
+    # v4.30: GUI 미니멀 OHLC 박스 사용 시 mplfinance 대제목 제거(차트 가림 방지).
+    title = ""
+    if ohlc_overlay is None:
+        title = str(name or "").strip()
 
     plot_type = "candle" if show_candle else "line"
 
@@ -797,6 +801,25 @@ def make_backtest_figure(
     _autoscale_price_panel_y_with_trends(
         ax_price, odata, trend_ma, idx, trend_ma_visible=trend_ma_visible
     )
+    if ohlc_overlay is not None:
+        from src.chart_renderer import (
+            draw_ohlc_minimal_panel,
+            format_t0_date_label,
+            resolve_ohlc_overlay_row,
+        )
+
+        row = resolve_ohlc_overlay_row(ohlc_overlay, sim)
+        if row is not None:
+            draw_ohlc_minimal_panel(
+                ax_price,
+                str(ohlc_overlay.get("code", "")),
+                str(ohlc_overlay.get("name", name or "")),
+                str(
+                    ohlc_overlay.get("t0_date")
+                    or format_t0_date_label(sim)
+                ),
+                row,
+            )
     return fig
 
 
@@ -851,6 +874,7 @@ def render_backtest_chart_png_bytes(
     figsize: tuple[float, float] | None = None,
     save_dpi: int = DEFAULT_CLI_SAVE_DPI,
     layout_preset: str = "report",
+    ohlc_overlay: dict[str, str] | None = None,
 ) -> bytes:
     """
     v3.1 GUI 등: 동일 품질 차트를 PNG 바이트로 반환. 디스크 저장 없음(output/ I/O 절감).
@@ -867,6 +891,7 @@ def render_backtest_chart_png_bytes(
         show_candle=show_candle,
         show_volume=show_volume,
         figsize=figsize,
+        ohlc_overlay=ohlc_overlay,
     )
     try:
         return figure_to_png_bytes(fig, dpi=save_dpi, layout_preset=layout_preset)

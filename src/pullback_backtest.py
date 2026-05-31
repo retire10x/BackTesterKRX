@@ -11,10 +11,14 @@ import pandas as pd
 
 from src.data_loader import (
     ensure_datetime_index,
-    leader_pullback_center_defense,
     leader_pullback_prev_day_yang,
 )
-from src.filters import PULLBACK_MIN_OHLCV_BARS, kim_straight_trend_pass
+from src.filters import (
+    PULLBACK_MIN_OHLCV_BARS,
+    kim_straight_trend_pass,
+    leader_pullback_pass2_ma20_or_center,
+    pass_disparity_lock,
+)
 
 # GUI 스캔·백테스트 공통 고정 비용 (Harness)
 PULLBACK_BUY_COST = 0.00015
@@ -50,6 +54,7 @@ def pullback_signal_at_index(
     prev_vol = float(vol.iloc[i - 1])
     today_vol = float(vol.iloc[i])
     ma20 = float(close.iloc[i - 19 : i + 1].mean())
+    ma5 = float(close.iloc[i - 4 : i + 1].mean())
     low_t = float(low.iloc[i])
     close_t = float(close.iloc[i])
 
@@ -76,9 +81,15 @@ def pullback_signal_at_index(
         return False
     if not leader_pullback_prev_day_yang(prev_open, prev_close):
         return False
-    if not (low_t < ma20 and close_t >= ma20):
+    if not leader_pullback_pass2_ma20_or_center(
+        low_t=low_t,
+        close_t=close_t,
+        ma20=ma20,
+        prev_high=prev_high,
+        prev_low=prev_low,
+    ):
         return False
-    if not leader_pullback_center_defense(prev_high, prev_low, close_t):
+    if not pass_disparity_lock(close_t, ma5, ma20):
         return False
     if today_vol > prev_vol * shrink:
         return False
@@ -175,7 +186,7 @@ def run_pullback_timeline_backtest(
         f"■ {hdr}",
         f"■ 기간: {work.index[0].strftime('%Y-%m-%d')} ~ {work.index[-1].strftime('%Y-%m-%d')}",
         f"■ 세력 개입 배수: {volume_burst_multiple:g} | 눌림 거래량 비율: {vol_shrink_limit:g}",
-        "■ v3.80: t-1 양봉 · t 종가>=전일 중심선",
+        "■ v4.15 Pass2: MA20 터치 회복 OR (MA20 위 + t-1 중심선 수호)",
         (
             "■ v3.95 추세: 종가>MA60·MA120·MA60>MA120 · MA5≥MA10"
             if use_momentum_filter

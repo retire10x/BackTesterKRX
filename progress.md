@@ -62,8 +62,34 @@
 - [x] **v3.90** OHLCV pykrx 단일화(벌크 캐시·by_date)·Pass4 MA60·MA120 듀얼 AND·MA5≥MA10 부트스트랩 기본 ON (`filters.py`, `data_loader.py`, `gui.py`, `gui_helpers.py`)
 - [x] **v3.95** Pass4 Perfect Trend Lock: 종가>MA60·MA120 AND **MA60>MA120** 배열성 (`filters.py`, `data_loader.py`, `gui.py`)
 - [x] **v4.00** Pass0 유동성: 시총·당일 거래대금 하한 SSOT(`settings.yaml` v3_0) · 벌크·폴백·단일 판정 (`filters.py`, `v3_scan_config.py`, `data_loader.py`, `gui.py`)
+- [x] **v4.10** 시장/유니버스 분리: 시장=ALL(KOSPI+KOSDAQ)·Top=ALL(선택 시장 전종목) · 리스트 [주]/[닥] · 스캔 스냅샷 고정 (`filters.py`, `data_loader.py`, `gui.py`, `gui_helpers.py`)
+- [x] **v4.15** Pass2 중심선 OR: MA20 터치 회복 **또는** (MA20 위 + t-1 중심선) — 벌크·단일·백테스트 SSOT (`filters.py`, `data_loader.py`, `pullback_backtest.py`, `gui.py`)
+- [x] **v4.20** 스캔 검출 근거 Excel 스냅샷: `src/engine/exporter.py` · Pass0~4 정량 필드 · Disparity5/20 · GUI 📥 근거 버튼 · `outputs/evidences/`
+- [x] **v4.25** OHLC 4대 가격 스냅샷·이격도 락: t0 Open/High/Low/Close Excel 강제 · Pass2 105%/110% 스캔 게이트 SSOT
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-05-31 (**v4.25** OHLC Evidence Snapshot)
+- **`src/engine/exporter.py`:** 메타 직후 `당일 가격 (OHLC) ★` 4행 · 종목명/코드 통합 · MA20 교차검증 행
+- **`src/filters.py`:** `pass_disparity_lock` · `PULLBACK_DISPARITY5/20_LOCK_PCT`
+- **`src/data_loader.py`:** `High_t0` · 벌크 `cond_disparity` · 단일 스캔 이격도 락
+- **`src/gui.py`:** 창 제목 v4.25
+
+### 2026-05-31 (**v4.20** Scan Evidence Snapshot Export)
+- **`src/engine/exporter.py`:** `ScanEvidenceSnapshot`·`generate_evidence_snapshot`·네이비 헤더/Zebra/PASS·FAIL 조건부 서식
+- **`src/data_loader.py`:** 벌크 스캔 `evidence` dict (종목별 고정 문자열)
+- **`src/gui.py`:** 📥 근거 버튼 · `_scan_evidence_by_code` · 창 제목 v4.20
+
+### 2026-05-31 (**v4.15** Pass2 Pipeline Logic Optimization)
+- **`src/filters.py`:** `leader_pullback_pass2_ma20_or_center` · `leader_pullback_center_defense` SSOT
+- **`src/data_loader.py`:** 벌크 `cond_pass2` OR 벡터 · `qualifies_leader_pullback_from_ohlcv` 동기화
+- **`src/pullback_backtest.py`·`src/gui.py`:** 타임라인·디버그 Pass2 문구 · 창 제목 v4.15
+
+### 2026-05-31 (**v4.10** Market Unified & Snapshot)
+- **`src/filters.py`:** `normalize_pullback_scan_market` · `pullback_bulk_markets_for_scan` — dual은 **시장=ALL** 전용, Top=ALL은 선택 시장 전종목
+- **`src/data_loader.py`:** 벌크 `code_to_market` · rows 5튜플(상장시장) · stats `scan_market`
+- **`src/gui_helpers.py`:** `format_krx_market_badge`·`format_gui_list_leader_pullback`·`parse_gui_list_row_code` [주]/[닥] · ALL 세션·try_build 종목별 시장
+- **`src/gui.py`:** 시장 콤보 ALL · 스냅샷 `_scan_result_snapshot` · 시장 변경 시 리스트 재조회 제거 · 창 제목 v4.10
 
 ### 2026-05-30 (**v4.00** Liquidity Filter — Pass 0)
 - **`src/filters.py`:** `pass_liquidity_gate` — 시총·거래대금 AND

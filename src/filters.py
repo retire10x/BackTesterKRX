@@ -3,6 +3,7 @@ v3.95 주도주 눌림목 스캔·백테스트 필터 (장기 대세선·단기 
 
 Pass 4: 종가 > MA60 AND 종가 > MA120 AND MA60 > MA120 (Perfect Trend Lock).
 Pass 5(기본 ON): MA5 >= MA10.
+Pass 2(v4.15): MA20 터치 회복 OR (MA20 위 + t-1 중심선) + v4.25 이격도5≤105%·20≤110%.
 Pass 0(v4.00): 시총·당일 거래대금 유동성 게이트.
 """
 from __future__ import annotations
@@ -17,6 +18,9 @@ PULLBACK_MIN_OHLCV_BARS = PULLBACK_VERY_LONG_MA_DAYS
 PULLBACK_SCAN_HISTORY_BDAY = PULLBACK_VERY_LONG_MA_DAYS - 1  # t0 포함 120영업일
 UNIVERSE_LIMIT_ALL = 0
 PULLBACK_DUAL_MARKET_LABEL = "KOSPI+KOSDAQ"
+# v4.25 Pass2 이격도 과열 락 (근거 Excel·스캔 게이트 SSOT)
+PULLBACK_DISPARITY5_LOCK_PCT = 105.0
+PULLBACK_DISPARITY20_LOCK_PCT = 110.0
 
 
 def resolve_pullback_universe_head(universe_limit: int) -> int | None:
@@ -27,21 +31,32 @@ def resolve_pullback_universe_head(universe_limit: int) -> int | None:
     return max(20, min(1000, ul))
 
 
-def pullback_scan_is_dual_market(universe_limit: int) -> bool:
-    """Top ALL(0) — 코스피·코스닥 통합 풀."""
-    return int(universe_limit) <= 0
+def normalize_pullback_scan_market(raw: object) -> str:
+    """스캔 파이프라인 시장 인자 — KOSPI / KOSDAQ / ALL."""
+    m = str(raw or "KOSPI").strip().upper()
+    if m == "ALL":
+        return "ALL"
+    if m not in ("KOSPI", "KOSDAQ"):
+        return "KOSPI"
+    return m
+
+
+def pullback_scan_is_dual_market(market: str, universe_limit: int = 0) -> bool:
+    """v4.10: 시장=ALL — 코스피·코스닥 통합 풀 (Top 유니버스와 분리)."""
+    _ = universe_limit  # 하위 호환·명시적 무관
+    return normalize_pullback_scan_market(market) == "ALL"
 
 
 def pullback_bulk_markets_for_scan(market: str, universe_limit: int) -> tuple[str, ...]:
     """
-    v3.86: ALL(0)이면 GUI 시장 콤보와 무관하게 KOSPI+KOSDAQ 병렬 유니버스.
-    그 외에는 단일 시장(KOSPI 또는 KOSDAQ).
+    v4.10:
+    - 시장=ALL → KOSPI+KOSDAQ (Top 설정과 무관)
+    - 그 외 → 선택 시장 단일 (Top=ALL이면 해당 시장 전종목, cap=None)
     """
-    if pullback_scan_is_dual_market(universe_limit):
+    _ = universe_limit
+    m = normalize_pullback_scan_market(market)
+    if m == "ALL":
         return ("KOSPI", "KOSDAQ")
-    m = str(market or "KOSPI").strip().upper()
-    if m not in ("KOSPI", "KOSDAQ"):
-        m = "KOSPI"
     return (m,)
 
 
@@ -113,6 +128,59 @@ def pass_short_momentum_ma5_ge_ma10(
     if not all(np.isfinite(v) for v in (ma5, ma10)):
         return False
     return ma5 >= ma10
+
+
+def leader_pullback_center_defense(
+    prev_high: float, prev_low: float, close_t: float
+) -> bool:
+    """Reference 봉 중심선 (고+저)/2 — t 종가가 위에 있는지."""
+    if not all(np.isfinite(v) for v in (prev_high, prev_low, close_t)):
+        return False
+    return float(close_t) >= (float(prev_high) + float(prev_low)) / 2.0
+
+
+def leader_pullback_pass2_ma20_or_center(
+    *,
+    low_t: float,
+    close_t: float,
+    ma20: float,
+    prev_high: float,
+    prev_low: float,
+) -> bool:
+    """
+    v4.15 Pass 2 — MA20 터치 회복(핵심) OR (MA20 위 안착 + t-1 중심선 수호).
+
+    cond_ma20_protect = low < MA20 & close >= MA20
+    pass_2 = cond_ma20_protect | (close >= MA20 & close >= t-1 center)
+    """
+    if not all(
+        np.isfinite(v) for v in (low_t, close_t, ma20, prev_high, prev_low)
+    ):
+        return False
+    lt, ct, m20 = float(low_t), float(close_t), float(ma20)
+    cond_ma20_protect = (lt < m20) and (ct >= m20)
+    cond_center_protect = leader_pullback_center_defense(prev_high, prev_low, ct)
+    return cond_ma20_protect or (ct >= m20 and cond_center_protect)
+
+
+def pass_disparity_lock(
+    close_t: float,
+    ma5: float,
+    ma20: float,
+) -> bool:
+    """v4.25: 5·20일 이격도 과열 락 — 초과 시 Pass2 FAIL."""
+    try:
+        c, m5, m20 = float(close_t), float(ma5), float(ma20)
+    except (TypeError, ValueError):
+        return False
+    if not all(np.isfinite(v) and v > 0 for v in (c, m5, m20)):
+        return False
+    d5 = c / m5 * 100.0
+    d20 = c / m20 * 100.0
+    return (
+        d5 <= float(PULLBACK_DISPARITY5_LOCK_PCT)
+        and d20 <= float(PULLBACK_DISPARITY20_LOCK_PCT)
+    )
 
 
 def kim_straight_trend_pass(

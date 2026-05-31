@@ -79,6 +79,68 @@ def default_screener_pipeline_dict() -> dict[str, bool]:
     }
 
 
+def format_krx_market_badge(listing_market: str) -> str:
+    """v4.10 리스트 시장 접두 — KOSPI [주], KOSDAQ [닥]."""
+    m = str(listing_market or "").strip().upper()
+    if m == "KOSPI":
+        return "[주]"
+    if m == "KOSDAQ":
+        return "[닥]"
+    return ""
+
+
+def listing_market_from_gui_badge(raw: str) -> str | None:
+    """리스트 첫 필드의 [주]/[닥] → KOSPI/KOSDAQ."""
+    head = str(raw or "").strip()
+    if head.startswith("[주]"):
+        return "KOSPI"
+    if head.startswith("[닥]"):
+        return "KOSDAQ"
+    return None
+
+
+def format_gui_list_leader_pullback(
+    code: str,
+    name: str,
+    listing_market: str,
+    rise_pct: float,
+    mc_s: str,
+    amt_s: str,
+) -> str:
+    """v4.10 주도주 눌림목 스캔 리스트 — 시장 배지·조회 시점 스냅샷 문자열."""
+    cdf = str(code or "").strip().zfill(6)
+    nm = str(name or "").strip() or cdf
+    badge = format_krx_market_badge(listing_market)
+    prefix = f"{badge} " if badge else ""
+    return (
+        f"{prefix}{cdf} | {nm} | {float(rise_pct):+.2f} % | "
+        f"시총 {mc_s} | 대금 {amt_s}"
+    )
+
+
+def format_gui_list_hist_pullback_snapshot(
+    code: str,
+    name: str,
+    listing_market: str,
+    rise_s: str,
+    mc_s: str,
+    amt_s: str,
+) -> str:
+    """최근 이력 — 눌림목 스캔 스냅샷(시장·금액 고정)."""
+    cdf = str(code or "").strip().zfill(6)
+    nm = str(name or "").strip() or cdf
+    badge = format_krx_market_badge(listing_market)
+    prefix = f"{badge} " if badge else ""
+    rise_disp = str(rise_s or "").strip()
+    mc_disp = str(mc_s or "").strip()
+    amt_disp = str(amt_s or "").strip()
+    if mc_disp and not mc_disp.startswith("시총"):
+        mc_disp = f"시총 {mc_disp}"
+    if amt_disp and not amt_disp.startswith("대금"):
+        amt_disp = f"대금 {amt_disp}"
+    return f"{prefix}{cdf} | {nm} | {rise_disp} | {mc_disp} | {amt_disp}"
+
+
 def parse_gui_list_row_code(line: str) -> str:
     """리스트 줄에서 6자리 티커만 추출(구분 '|' 허용, 첫 세그먼트만 사용)."""
     raw = str(line or "").strip()
@@ -87,6 +149,8 @@ def parse_gui_list_row_code(line: str) -> str:
     head = raw.split("|", 1)[0].strip()
     if not head:
         return ""
+    if head.startswith("[") and "]" in head:
+        head = head.split("]", 1)[-1].strip()
     tok = head.split()[0].strip()
     digits = "".join(ch for ch in tok if ch.isdigit())
     if not digits:
@@ -368,8 +432,10 @@ def apply_last_session_chrome_to_ui(ui: "BacktestGUI") -> bool:
         return False
 
     mk = str(data.get("market") or "").strip().upper()
-    if mk in ("KOSPI", "KOSDAQ", "ETF"):
+    if mk in ("KOSPI", "KOSDAQ", "ALL"):
         ui.var_market.set(mk)
+    elif mk == "ETF":
+        ui.var_market.set("KOSPI")
 
     for key, setter in (
         ("start_date", ui._date_start),
@@ -707,7 +773,7 @@ def apply_yaml_to_widgets(ui: "BacktestGUI") -> None:
     uni = cfg.get("universe", {})
     if uni.get("market"):
         mv = str(uni["market"]).strip().upper()
-        if mv not in ("KOSPI", "KOSDAQ", "ETF"):
+        if mv not in ("KOSPI", "KOSDAQ", "ALL"):
             mv = "KOSPI"
         ui.var_market.set(mv)
     if uni.get("search_keyword") is not None:
@@ -954,7 +1020,22 @@ def try_build_config(
     else:
         kw = ui.var_keyword.get().strip()
     m_gui = ui.var_market.get().strip().upper() or "KOSPI"
-    if m_gui not in ("KOSPI", "KOSDAQ", "ETF"):
+    if m_gui == "ALL":
+        ticker_mk: str | None = None
+        sel = ""
+        if selected_code_override:
+            sel = str(selected_code_override).strip().zfill(6)
+        elif hasattr(ui, "get_selected_list_ticker"):
+            try:
+                sel = str(ui.get_selected_list_ticker() or "").strip().zfill(6)
+            except Exception:
+                sel = ""
+        if sel and sel != "000000":
+            snap = getattr(ui, "_scan_ticker_market", None)
+            if isinstance(snap, dict):
+                ticker_mk = snap.get(sel)
+        m_gui = normalize_krx_listing_market(ticker_mk) or "KOSPI"
+    elif m_gui not in ("KOSPI", "KOSDAQ"):
         m_gui = "KOSPI"
 
     mo = normalize_krx_listing_market(market_override)
