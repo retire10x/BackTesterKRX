@@ -84,3 +84,23 @@ v3_0:
   # v4.00 유동성 안전장치 (원화 SSOT) — Pass 0
   min_liquidity_market_cap_krw: 50000000000    # 500억
   min_liquidity_trade_amount_krw: 1000000000     # 10억
+
+# v4.0 스마트머니 포트폴리오 (run_v4_portfolio.py · portfolio_manager SSOT)
+# Phase G 튜닝: python run_v4_tune.py [--quick] → outputs/v4_tune_report.md (main 병합 없음)
+# Ruin 서면: docs/v4_ruin_analysis.md
+v4_0:
+  strategy:
+    nuliim_ratio: 0.03              # 눌림목 일봉 타점 (-3%) — PF·진입 빈도 레버
+    fixed_invest_amount: 10000000   # 슬롯당 단리 (원). Ruin 완화 시 300만~500만 후보
+    stop_loss_ratio: 0.05           # 하드 손절 (-5%)
+    target_profit_ratio: 0.035      # 고정 익절 (+3.5%)
+    max_track_days: 30              # 기준봉 후 1회차 미진입 시 tracked 만료
+    max_hold_days: 3                # 타임스탑 보유 일수
+    min_invest_amount: 100000       # 최소 투자금 (원)
+    max_daily_cash_deploy_ratio: 0.45  # 당일 현금 배분 상한 — 연속 손절 방어 시 0.15~0.25
+  portfolio:
+    initial_cash: 30000000          # 초기 자본 (3,000만 원)
+    max_slots: 3                    # 동시 최대 보유 슬롯
+  costs:
+    buy_fee: 0.00015                # 매수 수수료 (0.015%)
+    sell_fee_tax: 0.0018            # 매도 수수료+세금 (0.18%)

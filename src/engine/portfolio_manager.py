@@ -14,17 +14,20 @@ import pandas as pd
 from src.data_loader import _load_ohlcv_pykrx_by_date, _normalize_pykrx_ohlcv_columns, ensure_datetime_index
 from src.data_loader import _fetch_bulk_ohlcv_day_frames, _merge_multi_market_bulk_day_frames
 from src.engine.smart_money_cascade import (
-    MAX_HOLD_DAYS,
     STAGE_ALLOCATIONS,
+    compute_stage_invest_amount,
     evaluate_daily_exit,
     scan_smart_money_universe,
     stage_entry_triggered,
 )
+from src.v4_config import V4Config, load_v4_config
 
-INITIAL_EQUITY = 30_000_000
-MAX_SLOTS = 3
 WARM_BDAYS = 30
 _CACHE_ROOT = Path(__file__).resolve().parents[2] / "data" / "cache"
+
+
+def _default_v4_config() -> V4Config:
+    return load_v4_config()
 
 
 @dataclass
@@ -35,6 +38,9 @@ class OpenPosition:
     entry_price: float
     invest_amount: float
     hold_days: int = 0
+    trade_id: int = 0
+    slot_budget_at_entry: float = 0.0
+    alloc_ratio: float = 0.0
 
 
 @dataclass
@@ -42,6 +48,7 @@ class TrackedStock:
     code: str
     stage: int = 1
     smart_money_date: pd.Timestamp | None = None
+    anchor_close: float | None = None
     next_entry_day_idx: int = 0
     completed: bool = False
 
@@ -51,7 +58,31 @@ class PortfolioResult:
     metrics: dict[str, Any]
     equity_curve: pd.DataFrame
     trades: pd.DataFrame
+    trades_detail: pd.DataFrame
     pass_logs: list[str] = field(default_factory=list)
+
+
+TRADES_DETAIL_COLUMNS = [
+    "trade_id",
+    "side",
+    "timestamp",
+    "code",
+    "stage",
+    "entry_date",
+    "entry_price",
+    "exit_price",
+    "qty",
+    "invest_amount",
+    "proceeds",
+    "pnl_amount",
+    "pnl_rate",
+    "exit_type",
+    "cash_after",
+    "total_equity_after",
+    "open_slots_after",
+    "slot_budget_at_entry",
+    "alloc_ratio",
+]
 
 
 def _panel_cache_path(start_date: str, end_date: str, warm_bdays: int) -> Path:
@@ -226,29 +257,94 @@ class PortfolioManager:
         *,
         start_date: str,
         end_date: str,
-        initial_equity: float = INITIAL_EQUITY,
-        max_slots: int = MAX_SLOTS,
+        initial_equity: float | None = None,
+        max_slots: int | None = None,
+        allowed_codes: frozenset[str] | set[str] | None = None,
+        anchor_first_smart_money_only: bool = False,
+        preload_ohlcv: dict[str, pd.DataFrame] | None = None,
+        phase_g_mode: bool = True,
+        v4_config: V4Config | None = None,
     ):
+        cfg = v4_config if v4_config is not None else _default_v4_config()
+        strat = cfg.strategy
+        port = cfg.portfolio
+        costs = cfg.costs
+
         self.day_frames = day_frames
         self.bdays = pd.DatetimeIndex(bdays).normalize()
         self.start_date = pd.Timestamp(str(start_date).strip()[:10]).normalize()
         self.end_date = pd.Timestamp(str(end_date).strip()[:10]).normalize()
-        self.initial_equity = float(initial_equity)
-        self.max_slots = int(max_slots)
+        self.v4_config = cfg
+        self.initial_equity = float(
+            port.initial_cash if initial_equity is None else initial_equity
+        )
+        self.max_slots = int(port.max_slots if max_slots is None else max_slots)
+        self.allowed_codes = (
+            frozenset(str(c).zfill(6) for c in allowed_codes) if allowed_codes else None
+        )
+        self.anchor_first_smart_money_only = bool(anchor_first_smart_money_only)
+        self.phase_g_mode = bool(phase_g_mode)
+        self.nuliim_ratio = float(strat.nuliim_ratio)
+        self.fixed_invest_amount = float(strat.fixed_invest_amount)
+        self.stop_loss_ratio = float(strat.stop_loss_ratio)
+        self.target_profit_ratio = float(strat.target_profit_ratio)
+        self.max_hold_days = int(strat.max_hold_days)
+        self.min_invest_amount = float(strat.min_invest_amount)
+        self.max_track_days = int(strat.max_track_days)
+        self.max_daily_cash_deploy_ratio = float(strat.max_daily_cash_deploy_ratio)
+        self.buy_fee_rate = float(costs.buy_fee)
+        self.sell_cost_rate = float(costs.sell_fee_tax)
+        self._anchored_codes: set[str] = set()
 
-        self.cash = float(initial_equity)
+        self.cash = float(self.initial_equity)
         self.positions: dict[str, OpenPosition] = {}
         self.tracked: dict[str, TrackedStock] = {}
         self.stock_history: dict[str, pd.DataFrame] = {}
+        if preload_ohlcv:
+            self.preload_stock_histories(preload_ohlcv)
 
         self.trade_rows: list[dict[str, Any]] = []
+        self.trade_detail_rows: list[dict[str, Any]] = []
         self.equity_rows: list[dict[str, Any]] = []
         self.pass_logs: list[str] = []
+        self._trade_id_counter = 0
+        self._day_deployed_cash = 0.0
+        self.phase_g_same_day_entries = 0
 
         self._sim_start_idx = int(self.bdays.get_indexer([self.start_date], method="bfill")[0])
         self._sim_end_idx = int(self.bdays.get_indexer([self.end_date], method="ffill")[0])
         if self._sim_start_idx < 0 or self._sim_end_idx < 0:
             raise ValueError("시뮬레이션 기간이 벌크 데이터 범위 밖입니다.")
+
+    def preload_stock_histories(self, ohlcv_by_code: dict[str, pd.DataFrame]) -> None:
+        """패리티/단일 엔진 정합: 종목별 전체 OHLCV를 stock_history에 선적재."""
+        from src.engine.smart_money_cascade import _normalize_ohlcv_columns
+
+        for code, df in ohlcv_by_code.items():
+            c6 = str(code).zfill(6)
+            if df is None or df.empty:
+                continue
+            work = _normalize_ohlcv_columns(ensure_datetime_index(df.copy()))
+            work.index = pd.DatetimeIndex(work.index).normalize()
+            self.stock_history[c6] = work
+
+    def _code_allowed(self, code: str) -> bool:
+        c6 = str(code).zfill(6)
+        if self.allowed_codes is not None and c6 not in self.allowed_codes:
+            return False
+        return True
+
+    def _ohlcv_history_as_of(self, code: str, day_idx: int) -> pd.DataFrame | None:
+        """당일 종가 시점까지의 OHLCV만 사용(선적재 시 미래 봉 참조 방지)."""
+        c6 = str(code).zfill(6)
+        hist = self.stock_history.get(c6)
+        if hist is None or hist.empty:
+            return None
+        dt = pd.Timestamp(self.bdays[day_idx]).normalize()
+        sub = hist.loc[hist.index <= dt].copy()
+        if len(sub) < 2:
+            return None
+        return sub
 
     @property
     def open_slot_count(self) -> int:
@@ -259,7 +355,87 @@ class PortfolioManager:
         return max(0, self.max_slots - self.open_slot_count)
 
     def _slot_budget(self, total_equity: float) -> float:
+        if self.phase_g_mode:
+            return self.fixed_invest_amount
         return total_equity / self.max_slots
+
+    def _get_daily_ohlcv(self, code: str, day_idx: int) -> dict[str, float] | None:
+        c6 = str(code).zfill(6)
+        day_frame = self.day_frames[day_idx]
+        if c6 not in day_frame.index:
+            return None
+        row = day_frame.loc[c6]
+        return {
+            "Open": float(row["Open"]),
+            "High": float(row["High"]),
+            "Low": float(row["Low"]),
+            "Close": float(row["Close"]),
+        }
+
+    def _compute_fixed_invest_amount(self) -> float:
+        """Phase G 단리: 슬롯당 고정 금액, 잔고 부족 시 95%·최소 투자금."""
+        invest = self.fixed_invest_amount
+        if self.cash < invest:
+            invest = self.cash * 0.95
+        if invest < self.min_invest_amount:
+            return 0.0
+        return invest
+
+    def _evaluate_phase_g_exit(
+        self,
+        *,
+        entry_price: float,
+        invest_amount: float,
+        high: float,
+        low: float,
+        close: float,
+        hold_days: int,
+    ) -> tuple[float, float, float, float, str] | None:
+        """하드 손절(-5%) → 익절(+3.5%) → 3일 타임스탑 (저가/고가 장중 반영)."""
+        target_px = entry_price * (1.0 + self.target_profit_ratio)
+        stop_px = entry_price * (1.0 - self.stop_loss_ratio)
+
+        if low <= stop_px:
+            exit_price = stop_px
+            exit_type = "STOP_LOSS"
+        elif high >= target_px:
+            exit_price = target_px
+            exit_type = "TAKE_PROFIT"
+        elif hold_days >= self.max_hold_days:
+            exit_price = close
+            exit_type = "TIME_STOP"
+        else:
+            return None
+
+        gross = invest_amount * (exit_price / entry_price)
+        net_proceeds = gross * (1.0 - self.sell_cost_rate)
+        pnl_amount = net_proceeds - invest_amount
+        pnl_rate = pnl_amount / invest_amount if invest_amount > 0 else 0.0
+        return exit_price, net_proceeds, pnl_amount, pnl_rate, exit_type
+
+    def _phase_g_entry_allowed(
+        self,
+        *,
+        tracked: TrackedStock,
+        trade_date: pd.Timestamp,
+        current_close: float,
+    ) -> bool:
+        """1회차: 기준봉 당일 금지 + 기준봉 종가 대비 -nuliim% 눌림목."""
+        if tracked.stage != 1:
+            return True
+        if tracked.smart_money_date is not None and trade_date.normalize() == tracked.smart_money_date.normalize():
+            return False
+        anchor = tracked.anchor_close
+        if anchor is None or anchor <= 0 or not np.isfinite(current_close):
+            return False
+        trigger_price = anchor * (1.0 - self.nuliim_ratio)
+        return current_close <= trigger_price
+
+    def _legacy_entry_signal(self, code: str, day_idx: int, stage: int) -> bool:
+        hist = self._ohlcv_history_as_of(code, day_idx)
+        if hist is None:
+            return False
+        return stage_entry_triggered(hist, stage)
 
     def _position_market_value(self, code: str, day_idx: int) -> float:
         pos = self.positions.get(code)
@@ -277,6 +453,58 @@ class PortfolioManager:
     def _total_equity(self, day_idx: int) -> float:
         mv = sum(self._position_market_value(code, day_idx) for code in self.positions)
         return self.cash + mv
+
+    def _append_trade_detail(
+        self,
+        *,
+        side: str,
+        day_idx: int,
+        code: str,
+        stage: int,
+        trade_id: int,
+        entry_date: str | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        invest_amount: float | None = None,
+        proceeds: float | None = None,
+        pnl_amount: float | None = None,
+        pnl_rate: float | None = None,
+        exit_type: str | None = None,
+        slot_budget_at_entry: float | None = None,
+        alloc_ratio: float | None = None,
+    ) -> None:
+        timestamp = pd.Timestamp(self.bdays[day_idx]).normalize().strftime("%Y-%m-%d")
+        ep = float(entry_price) if entry_price is not None and np.isfinite(entry_price) else np.nan
+        inv = float(invest_amount) if invest_amount is not None and np.isfinite(invest_amount) else np.nan
+        qty = inv / ep if np.isfinite(ep) and ep > 0 and np.isfinite(inv) else np.nan
+
+        self.trade_detail_rows.append({
+            "trade_id": int(trade_id),
+            "side": str(side).upper(),
+            "timestamp": timestamp,
+            "code": str(code).zfill(6),
+            "stage": int(stage),
+            "entry_date": entry_date or "",
+            "entry_price": ep,
+            "exit_price": float(exit_price) if exit_price is not None and np.isfinite(exit_price) else np.nan,
+            "qty": qty,
+            "invest_amount": inv,
+            "proceeds": float(proceeds) if proceeds is not None and np.isfinite(proceeds) else np.nan,
+            "pnl_amount": float(pnl_amount) if pnl_amount is not None and np.isfinite(pnl_amount) else np.nan,
+            "pnl_rate": float(pnl_rate) if pnl_rate is not None and np.isfinite(pnl_rate) else np.nan,
+            "exit_type": exit_type or "",
+            "cash_after": float(self.cash),
+            "total_equity_after": float(self._total_equity(day_idx)),
+            "open_slots_after": int(self.open_slot_count),
+            "slot_budget_at_entry": (
+                float(slot_budget_at_entry)
+                if slot_budget_at_entry is not None and np.isfinite(slot_budget_at_entry)
+                else np.nan
+            ),
+            "alloc_ratio": (
+                float(alloc_ratio) if alloc_ratio is not None and np.isfinite(alloc_ratio) else np.nan
+            ),
+        })
 
     def _append_history_bar(self, code: str, day_idx: int) -> None:
         c6 = str(code).zfill(6)
@@ -302,39 +530,74 @@ class PortfolioManager:
             self.stock_history[c6] = pd.concat([hist, pd.DataFrame([bar], index=[dt])]).sort_index()
 
     def _process_exits(self, day_idx: int) -> None:
+        """일별 청산 — Phase G: 손절/익절/타임스탑, 레거시: cascade evaluate_daily_exit."""
         trade_date = pd.Timestamp(self.bdays[day_idx]).normalize()
         closed_codes: list[str] = []
 
         for code, pos in list(self.positions.items()):
             c6 = str(code).zfill(6)
-            day_frame = self.day_frames[day_idx]
-            if c6 not in day_frame.index:
+            ohlcv = self._get_daily_ohlcv(c6, day_idx)
+            if ohlcv is None:
                 continue
 
             pos.hold_days += 1
-            row = day_frame.loc[c6]
-            high = float(row["High"])
-            close = float(row["Close"])
-            exit_info = evaluate_daily_exit(high, close, pos.entry_price, pos.hold_days)
-            if exit_info is None:
-                continue
+            high = ohlcv["High"]
+            low = ohlcv["Low"]
+            close = ohlcv["Close"]
 
-            exit_price, pnl_rate, exit_type = exit_info
-            proceeds = pos.invest_amount * (1.0 + pnl_rate)
+            if self.phase_g_mode:
+                exit_info = self._evaluate_phase_g_exit(
+                    entry_price=pos.entry_price,
+                    invest_amount=pos.invest_amount,
+                    high=high,
+                    low=low,
+                    close=close,
+                    hold_days=pos.hold_days,
+                )
+                if exit_info is None:
+                    continue
+                exit_price, proceeds, pnl_amount, pnl_rate, exit_type = exit_info
+            else:
+                legacy = evaluate_daily_exit(high, close, pos.entry_price, pos.hold_days)
+                if legacy is None:
+                    continue
+                exit_price, pnl_rate, exit_type = legacy
+                proceeds = pos.invest_amount * (1.0 + pnl_rate)
+                pnl_amount = proceeds - pos.invest_amount
+
             self.cash += proceeds
+            entry_date_s = pos.entry_date.strftime("%Y-%m-%d")
 
             self.trade_rows.append({
                 "code": c6,
                 "stage": pos.stage,
-                "entry_date": pos.entry_date.strftime("%Y-%m-%d"),
+                "entry_date": entry_date_s,
                 "exit_date": trade_date.strftime("%Y-%m-%d"),
                 "entry_price": pos.entry_price,
                 "exit_price": exit_price,
                 "invest_amount": pos.invest_amount,
-                "pnl_amount": proceeds - pos.invest_amount,
+                "pnl_amount": pnl_amount,
                 "pnl_rate": pnl_rate,
                 "exit_type": exit_type,
             })
+
+            self._append_trade_detail(
+                side="SELL",
+                day_idx=day_idx,
+                code=c6,
+                stage=pos.stage,
+                trade_id=pos.trade_id,
+                entry_date=entry_date_s,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                invest_amount=pos.invest_amount,
+                proceeds=proceeds,
+                pnl_amount=pnl_amount,
+                pnl_rate=pnl_rate,
+                exit_type=exit_type,
+                slot_budget_at_entry=pos.slot_budget_at_entry,
+                alloc_ratio=pos.alloc_ratio,
+            )
 
             tracked = self.tracked.get(c6)
             if tracked is not None:
@@ -349,30 +612,75 @@ class PortfolioManager:
         for code in closed_codes:
             self.positions.pop(code, None)
 
+    def _expire_stale_tracked(self, day_idx: int) -> None:
+        """D-2: 기준봉 후 N영업일 내 진입 없으면 tracked 제거(유령 큐 방지)."""
+        expired: list[str] = []
+        for c6, tracked in list(self.tracked.items()):
+            if tracked.completed or c6 in self.positions:
+                continue
+            # 연쇄 2회차 이상 진행 중이면 만료하지 않음 (단일 엔진 cascade와 정합)
+            if tracked.stage > 1:
+                continue
+            if tracked.smart_money_date is None:
+                expired.append(c6)
+                continue
+            sm_idx = int(
+                self.bdays.get_indexer([tracked.smart_money_date.normalize()], method="bfill")[0]
+            )
+            if sm_idx < 0 or (day_idx - sm_idx) > self.max_track_days:
+                expired.append(c6)
+        for c6 in expired:
+            sm = self.tracked[c6].smart_money_date
+            self.pass_logs.append(
+                f"{pd.Timestamp(self.bdays[day_idx]).date()} {c6} tracked 만료 "
+                f"(기준봉 {sm.date() if sm is not None else '?'}, "
+                f">{self.max_track_days}영업일)"
+            )
+            del self.tracked[c6]
+
     def _register_universe(self, codes: list[str], day_idx: int) -> None:
         trade_date = pd.Timestamp(self.bdays[day_idx]).normalize()
+        day_frame = self.day_frames[day_idx]
         for code in codes:
             c6 = str(code).zfill(6)
-            if c6 in self.tracked and not self.tracked[c6].completed:
+            if not self._code_allowed(c6):
                 continue
-            if c6 not in self.tracked:
-                self.tracked[c6] = TrackedStock(
-                    code=c6,
-                    stage=1,
-                    smart_money_date=trade_date,
-                    next_entry_day_idx=day_idx + 1,
-                )
+            if self.anchor_first_smart_money_only and c6 in self._anchored_codes:
+                continue
+            if c6 in self.tracked:
+                if not self.tracked[c6].completed:
+                    continue
+                del self.tracked[c6]
+            anchor_px = np.nan
+            if c6 in day_frame.index:
+                anchor_px = float(day_frame.loc[c6, "Close"])
+            self._anchored_codes.add(c6)
+            self.tracked[c6] = TrackedStock(
+                code=c6,
+                stage=1,
+                smart_money_date=trade_date,
+                anchor_close=anchor_px if np.isfinite(anchor_px) and anchor_px > 0 else None,
+                next_entry_day_idx=day_idx + 1,
+            )
+
+    def _max_daily_deploy_remaining(self) -> float:
+        cap = float(self.cash) * self.max_daily_cash_deploy_ratio
+        return max(0.0, cap - self._day_deployed_cash)
 
     def _process_entries(self, day_idx: int, candidate_codes: list[str]) -> None:
-        if self.available_slots <= 0:
+        """일별 진입 — Phase G: 눌림목·단리, 레거시: 복리+MA 회차 조건."""
+        if self.available_slots <= 0 or self.cash <= 0:
             return
 
         total_equity = self._total_equity(day_idx)
         slot_budget = self._slot_budget(total_equity)
         trade_date = pd.Timestamp(self.bdays[day_idx]).normalize()
+        daily_remaining = self._max_daily_deploy_remaining()
+        if daily_remaining <= 0 and not self.phase_g_mode:
+            return
 
         for code in candidate_codes:
-            if self.available_slots <= 0:
+            if self.available_slots <= 0 or self.cash <= 0:
                 break
 
             c6 = str(code).zfill(6)
@@ -385,16 +693,48 @@ class PortfolioManager:
             if day_idx < tracked.next_entry_day_idx:
                 continue
 
-            hist = self.stock_history.get(c6)
-            if hist is None or len(hist) < 2:
+            ohlcv = self._get_daily_ohlcv(c6, day_idx)
+            if ohlcv is None:
                 continue
-            if not stage_entry_triggered(hist, tracked.stage):
+            entry_price = float(ohlcv["Close"])
+            if not np.isfinite(entry_price) or entry_price <= 0:
                 continue
 
-            alloc_ratio = STAGE_ALLOCATIONS[tracked.stage]
-            invest_amount = slot_budget * alloc_ratio
-            if invest_amount <= 0:
-                continue
+            if self.phase_g_mode:
+                if tracked.stage == 1:
+                    if not self._phase_g_entry_allowed(
+                        tracked=tracked,
+                        trade_date=trade_date,
+                        current_close=entry_price,
+                    ):
+                        continue
+                elif not self._legacy_entry_signal(c6, day_idx, tracked.stage):
+                    continue
+                invest_amount = self._compute_fixed_invest_amount()
+                if invest_amount <= 0:
+                    continue
+                daily_cap = self._max_daily_deploy_remaining()
+                if daily_cap <= 0:
+                    continue
+                invest_amount = min(invest_amount, daily_cap)
+                alloc_ratio = invest_amount / self.fixed_invest_amount if self.fixed_invest_amount > 0 else 1.0
+            else:
+                if not self._legacy_entry_signal(c6, day_idx, tracked.stage):
+                    continue
+                alloc_ratio = STAGE_ALLOCATIONS[tracked.stage]
+                if daily_remaining <= 0:
+                    continue
+                invest_amount = compute_stage_invest_amount(
+                    total_equity=total_equity,
+                    max_slots=self.max_slots,
+                    stage=tracked.stage,
+                    cash=self.cash,
+                    available_slots=self.available_slots,
+                    max_daily_remaining_cash=self._max_daily_deploy_remaining(),
+                )
+                if invest_amount <= 0:
+                    continue
+
             if self.cash < invest_amount:
                 self.pass_logs.append(
                     f"{trade_date.date()} {c6} {tracked.stage}회차 Pass — "
@@ -402,14 +742,19 @@ class PortfolioManager:
                 )
                 continue
 
-            day_frame = self.day_frames[day_idx]
-            if c6 not in day_frame.index:
-                continue
-            entry_price = float(day_frame.loc[c6, "Close"])
-            if not np.isfinite(entry_price) or entry_price <= 0:
+            if (
+                self.phase_g_mode
+                and tracked.stage == 1
+                and tracked.smart_money_date is not None
+                and trade_date.normalize() == tracked.smart_money_date.normalize()
+            ):
+                self.phase_g_same_day_entries += 1
                 continue
 
+            self._trade_id_counter += 1
+            trade_id = self._trade_id_counter
             self.cash -= invest_amount
+            self._day_deployed_cash += invest_amount
             self.positions[c6] = OpenPosition(
                 code=c6,
                 stage=tracked.stage,
@@ -417,17 +762,40 @@ class PortfolioManager:
                 entry_price=entry_price,
                 invest_amount=invest_amount,
                 hold_days=0,
+                trade_id=trade_id,
+                slot_budget_at_entry=slot_budget,
+                alloc_ratio=alloc_ratio,
+            )
+
+            self._append_trade_detail(
+                side="BUY",
+                day_idx=day_idx,
+                code=c6,
+                stage=tracked.stage,
+                trade_id=trade_id,
+                entry_date=trade_date.strftime("%Y-%m-%d"),
+                entry_price=entry_price,
+                invest_amount=invest_amount,
+                slot_budget_at_entry=slot_budget,
+                alloc_ratio=alloc_ratio,
+                exit_type="ENTRY" if self.phase_g_mode else None,
             )
 
     def run(self) -> PortfolioResult:
         for day_idx in range(self._sim_start_idx, self._sim_end_idx + 1):
             trade_date = pd.Timestamp(self.bdays[day_idx]).normalize()
+            self._day_deployed_cash = 0.0
 
             self._process_exits(day_idx)
+            self._expire_stale_tracked(day_idx)
 
             day_frame = self.day_frames[day_idx]
             market_snap = _market_snapshot_for_scan(day_frame)
             universe_codes = scan_smart_money_universe(market_snap)
+            if self.allowed_codes is not None:
+                universe_codes = [
+                    c for c in universe_codes if str(c).zfill(6) in self.allowed_codes
+                ]
             self._register_universe(universe_codes, day_idx)
 
             ranked = market_snap.copy()
@@ -441,7 +809,9 @@ class PortfolioManager:
             candidate_codes = sorted(
                 [
                     c for c, t in self.tracked.items()
-                    if not t.completed and c not in self.positions
+                    if not t.completed
+                    and c not in self.positions
+                    and self._code_allowed(c)
                 ],
                 key=lambda c: rank_map.get(c, 0.0),
                 reverse=True,
@@ -461,18 +831,28 @@ class PortfolioManager:
 
         equity_curve = pd.DataFrame(self.equity_rows)
         trades = pd.DataFrame(self.trade_rows)
-        metrics = self._compute_metrics(equity_curve, trades)
+        if self.trade_detail_rows:
+            trades_detail = pd.DataFrame(self.trade_detail_rows)[TRADES_DETAIL_COLUMNS]
+        else:
+            trades_detail = pd.DataFrame(columns=TRADES_DETAIL_COLUMNS)
+        metrics = self._compute_metrics(equity_curve, trades, self.initial_equity)
         return PortfolioResult(
             metrics=metrics,
             equity_curve=equity_curve,
             trades=trades,
+            trades_detail=trades_detail,
             pass_logs=self.pass_logs,
         )
 
     @staticmethod
-    def _compute_metrics(equity_curve: pd.DataFrame, trades: pd.DataFrame) -> dict[str, Any]:
+    def _compute_metrics(
+        equity_curve: pd.DataFrame,
+        trades: pd.DataFrame,
+        initial_equity: float,
+    ) -> dict[str, Any]:
+        base = float(initial_equity)
         if equity_curve.empty:
-            final_equity = INITIAL_EQUITY
+            final_equity = base
             mdd_pct = 0.0
         else:
             eq = pd.to_numeric(equity_curve["total_equity"], errors="coerce")
@@ -488,7 +868,7 @@ class PortfolioManager:
                 "win_rate_pct": 0.0,
                 "profit_factor": 0.0,
                 "final_equity": final_equity,
-                "cumulative_return_pct": (final_equity / INITIAL_EQUITY - 1.0) * 100.0,
+                "cumulative_return_pct": (final_equity / base - 1.0) * 100.0,
                 "mdd_pct": mdd_pct,
             }
 
@@ -503,6 +883,6 @@ class PortfolioManager:
             "win_rate_pct": wins / total_trades * 100.0,
             "profit_factor": profit_factor,
             "final_equity": final_equity,
-            "cumulative_return_pct": (final_equity / INITIAL_EQUITY - 1.0) * 100.0,
+            "cumulative_return_pct": (final_equity / base - 1.0) * 100.0,
             "mdd_pct": mdd_pct,
         }

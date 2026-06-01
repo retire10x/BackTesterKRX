@@ -4,6 +4,33 @@ TRADING_COST = 0.00215
 PROFIT_TARGET_PCT = 0.035
 MAX_HOLD_DAYS = 3
 STAGE_ALLOCATIONS = {1: 0.50, 2: 0.30, 3: 0.20, 4: 0.10}
+TRACKED_EXPIRE_BDAYS = 30
+MAX_DAILY_CASH_DEPLOY_RATIO = 0.45
+
+
+def compute_stage_invest_amount(
+    *,
+    total_equity: float,
+    max_slots: int,
+    stage: int,
+    cash: float,
+    available_slots: int,
+    max_daily_remaining_cash: float | None = None,
+) -> float:
+    """회차별 투입 금액 — equity 슬롯 예산과 가용 현금·당일 배분 상한을 동시에 적용."""
+    if available_slots <= 0 or cash <= 0 or max_slots <= 0:
+        return 0.0
+    slot_budget = total_equity / max_slots
+    alloc_ratio = STAGE_ALLOCATIONS.get(int(stage), 0.0)
+    if alloc_ratio <= 0:
+        return 0.0
+    invest = slot_budget * alloc_ratio
+    invest = min(invest, cash / float(available_slots))
+    if max_daily_remaining_cash is not None:
+        invest = min(invest, max(0.0, max_daily_remaining_cash))
+    return max(0.0, invest)
+
+
 _OHLCV_COLS = ("open", "high", "low", "close", "volume")
 
 
