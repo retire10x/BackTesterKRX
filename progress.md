@@ -66,8 +66,15 @@
 - [x] **v4.15** Pass2 중심선 OR: MA20 터치 회복 **또는** (MA20 위 + t-1 중심선) — 벌크·단일·백테스트 SSOT (`filters.py`, `data_loader.py`, `pullback_backtest.py`, `gui.py`)
 - [x] **v4.20** 스캔 검출 근거 Excel 스냅샷: `src/engine/exporter.py` · Pass0~4 정량 필드 · Disparity5/20 · GUI 📥 근거 버튼 · `outputs/evidences/`
 - [x] **v4.25** OHLC 4대 가격 스냅샷·이격도 락: t0 Open/High/Low/Close Excel 강제 · Pass2 105%/110% 스캔 게이트 SSOT
+- [x] **v4.0** 스마트머니 연쇄 청산 엔진: `scan_smart_money_universe`·`calculate_cascade_backtest` (`src/engine/smart_money_cascade.py`)
+- [x] **v4.0** LG전자(066570) 3개년 연쇄 청산 실행 스크립트 (`run_v4_test.py` · sys.path 방어 · `_load_ohlcv_pykrx_by_date`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-01 (**v4.0** Smart Money Cascade Engine)
+- **`src/engine/smart_money_cascade.py`:** Pass0~1 유니버스(1,500억·Top20) · 1~4회차 종가 매수(MA3/5/10/20+거래량 건조) · 익일~3영업일 +3.5% 익절/타임스탑 · 비용 0.00215 · 미청산 중복 진입 차단
+- **`run_v4_test.py`:** 프로젝트 루트 `sys.path` 주입 · `src.data_loader._load_ohlcv_pykrx_by_date` · LG전자 첫 스마트머니 기준봉 연쇄 리포트
+- **인수:** `python run_v4_test.py` 단일 실행 · 1회차 익절 후 2~3회차 순차 레벨업(중복 진입 없음)
 
 ### 2026-05-31 (**v4.25** OHLC Evidence Snapshot)
 - **`src/engine/exporter.py`:** 메타 직후 `당일 가격 (OHLC) ★` 4행 · 종목명/코드 통합 · MA20 교차검증 행
