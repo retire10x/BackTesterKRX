@@ -14,9 +14,6 @@ def _normalize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
         if str(col).lower() in _OHLCV_COLS
     }
     return df.rename(columns=rename)
-PROFIT_TARGET_PCT = 0.035
-MAX_HOLD_DAYS = 3
-STAGE_ALLOCATIONS = {1: 0.50, 2: 0.30, 3: 0.20, 4: 0.10}
 
 
 def scan_smart_money_universe(df_market_today):
@@ -26,6 +23,12 @@ def scan_smart_money_universe(df_market_today):
     """
     df = df_market_today.copy()
     df = _normalize_ohlcv_columns(df)
+    if "code" not in df.columns:
+        df = df.reset_index()
+        if "index" in df.columns and "code" not in df.columns:
+            df = df.rename(columns={"index": "code"})
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype("float64")
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").astype("float64")
     df["trading_value"] = df["close"] * df["volume"]
 
     min_value_barrier = 150_000_000_000
@@ -35,7 +38,7 @@ def scan_smart_money_universe(df_market_today):
     cond_rank = df["value_rank"] <= 20
 
     universe = df[cond_value & cond_rank]
-    return universe["code"].tolist()
+    return universe["code"].astype(str).str.zfill(6).tolist()
 
 
 def _stage_entry_triggered(df_stock, idx, stage):
@@ -52,6 +55,31 @@ def _stage_entry_triggered(df_stock, idx, stage):
         recent_vol_avg = df_stock["volume"].iloc[max(0, idx - 5):idx].mean()
         return row["close"] <= row["MA20"] and row["volume"] <= recent_vol_avg * 0.30
     return False
+
+
+def stage_entry_triggered(df_stock, stage):
+    """당일(마지막 봉) 기준 회차별 진입 조건."""
+    work = _normalize_ohlcv_columns(df_stock.copy())
+    work["MA3"] = work["close"].rolling(window=3).mean()
+    work["MA5"] = work["close"].rolling(window=5).mean()
+    work["MA10"] = work["close"].rolling(window=10).mean()
+    work["MA20"] = work["close"].rolling(window=20).mean()
+    idx = len(work) - 1
+    if idx <= 0:
+        return False
+    return _stage_entry_triggered(work, idx, stage)
+
+
+def evaluate_daily_exit(high, close, entry_price, hold_days):
+    """보유 n일차 장중 고가·종가 기준 청산 판정. (exit_price, pnl_rate) 또는 None."""
+    target_profit_price = entry_price * (1 + PROFIT_TARGET_PCT)
+    if high >= target_profit_price:
+        return target_profit_price, PROFIT_TARGET_PCT - TRADING_COST, "익절"
+    if hold_days >= MAX_HOLD_DAYS:
+        pnl_rate = (close / entry_price) - 1 - TRADING_COST
+        exit_type = "타임스탑" if pnl_rate >= 0 else "손절"
+        return close, pnl_rate, exit_type
+    return None
 
 
 def _resolve_exit(df_stock, entry_idx, entry_price):

@@ -71,6 +71,11 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-01 (**v4.0** Portfolio Manager Engine)
+- **`src/engine/portfolio_manager.py`:** 일자별 시뮬레이션 루프 · Total Equity 3천만 · Max Slots 3 · 슬롯/현금 부족 시 진입 Pass · 보유 포지션 청산(+3.5%/3일 타임스탑) 우선 처리 후 진입 · Equity Curve/MDD 산출
+- **`run_v4_portfolio.py`:** `.env` 로드(KRX ID/PW) · 벌크 로드 강제 · `outputs/v4_equity_curve.csv` 자동 저장 · 승률/프로핏팩터/수익률/MDD 출력
+- **Fix:** 거래대금(종가×거래량) `int32` 오버플로우 방지(float64 캐스팅)로 유니버스 0건 문제 해결
+
 ### 2026-06-01 (**v4.0** Smart Money Cascade Engine)
 - **`src/engine/smart_money_cascade.py`:** Pass0~1 유니버스(1,500억·Top20) · 1~4회차 종가 매수(MA3/5/10/20+거래량 건조) · 익일~3영업일 +3.5% 익절/타임스탑 · 비용 0.00215 · 미청산 중복 진입 차단
 - **`run_v4_test.py`:** 프로젝트 루트 `sys.path` 주입 · `src.data_loader._load_ohlcv_pykrx_by_date` · LG전자 첫 스마트머니 기준봉 연쇄 리포트
