@@ -70,9 +70,19 @@
 - [x] **v4.0** LG전자(066570) 3개년 연쇄 청산 실행 스크립트 (`run_v4_test.py` · sys.path 방어 · `_load_ohlcv_pykrx_by_date`)
 - [x] **v4.0** 포트폴리오 매니저·전 종목 백테스트 (`portfolio_manager.py`·`run_v4_portfolio.py` · Phase A~D 검증·`outputs/v4_trades.csv`)
 - [x] **v4.0** Phase G 심폐소생 (눌림 -3%·단리 1천만·손절 -5%·익절 +3.5%) — `portfolio_manager` Phase G 진입/청산
+- [x] **v4.0** Phase G 14시나리오 전체 스윕·눌림목 타점 보고 (`run_v4_tune.py` → `outputs/v4_tune_report.md` §눌림목)
 - [x] **v4.0** Phase E SSOT — `config/settings.yaml` `v4_0.*` · `src/v4_config.py` · `src/utils/config.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-02 (**v4.0** Phase G — 14시나리오 전체 스윕·최적 눌림목 도출)
+- **실행:** `python run_v4_tune.py` (벌크 1회 · 920영업일 · ~162분) → `outputs/v4_tune_results.csv` · `v4_tune_report.md`
+- **결과:** PF≥1 **0/14** · 흑자 **0/14** — 현 그리드로 Ruin 해소 불가
+- **PF 1위:** `rr_asym_sl3_tp5` (손절 3%·익절 5%) PF **0.69**, 최종 261만(-91.3%)
+- **최종 자산 1위:** `combo_def3m_rr_wide` (300만·deploy 20%·눌림 4%·SL5/TP5) **872만**(-70.9%), PF **0.68**
+- **눌림목 단독(1천만·deploy 45%·SL/TP 동일):** 2% PF 0.57 ≈ 3% baseline 0.57 > 5% PF 0.50 — **얕은 2%** PF 우세, 자산은 baseline(63만)이 2%(60만)보다 근소 우세
+- **코드:** `run_v4_tune.py` 보고서에 `## 눌림목 타점` 섹션 추가 · `docs/v4_ruin_analysis.md` §7 갱신
+- **YAML:** 자동 반영 없음(main 병합 없음) — 채택 시 `nuliim_ratio`·사이징·손익비 수동 검토
 
 ### 2026-06-01 (**v4.0** Phase G — Ruin 서면·튜닝 러너, main 병합 없음)
 - **`docs/v4_ruin_analysis.md`:** Ruin 메커니즘·Phase B/C 인용·튜닝 레버 표

@@ -258,6 +258,56 @@ def _write_report(df: pd.DataFrame, baseline: dict[str, float | int]) -> None:
             f"{best_eq['final_equity']:,.0f}원 ({best_eq['cumulative_return_pct']:.2f}%), PF {best_eq['profit_factor']:.2f}"
         )
 
+    # 눌림목(nuliim_ratio) 단독 레버 — baseline·nuliim_* 및 동일 deploy/손익비 시나리오 비교
+    nuliim_keys = (
+        "fixed_invest_amount",
+        "max_daily_cash_deploy_ratio",
+        "stop_loss_ratio",
+        "target_profit_ratio",
+    )
+    base_row = df[df["scenario"] == "baseline_yaml"]
+    if not base_row.empty:
+        base_vals = {k: base_row.iloc[0][k] for k in nuliim_keys}
+        nuliim_only = df[
+            df.apply(
+                lambda r: all(r[k] == base_vals[k] for k in nuliim_keys),
+                axis=1,
+            )
+        ].copy()
+        if len(nuliim_only) >= 2:
+            n_sorted = nuliim_only.sort_values(
+                ["pf_ge_1", "profit_factor", "final_equity"], ascending=[False, False, False]
+            )
+            best_pf_n = n_sorted.iloc[0]
+            best_eq_n = nuliim_only.sort_values("final_equity", ascending=False).iloc[0]
+            lines.extend(
+                [
+                    "",
+                    "## 눌림목 타점 (nuliim_ratio) — 동일 사이징·손익비",
+                    "",
+                    "_기준: YAML과 동일한 `fixed_invest_amount`·`max_daily_cash_deploy_ratio`·손절/익절._",
+                    "",
+                    _table(n_sorted),
+                    "",
+                    "### 권장 눌림 깊이 (자동)",
+                    "",
+                    f"- **PF 1위:** `{best_pf_n['scenario']}` — "
+                    f"`nuliim_ratio={best_pf_n['nuliim_ratio']:.3f}` "
+                    f"({float(best_pf_n['nuliim_ratio']) * 100:.1f}%), "
+                    f"PF {best_pf_n['profit_factor']:.2f}, 최종 {best_pf_n['final_equity']:,.0f}원",
+                    f"- **최종 자산 1위:** `{best_eq_n['scenario']}` — "
+                    f"{float(best_eq_n['nuliim_ratio']) * 100:.1f}%, "
+                    f"최종 {best_eq_n['final_equity']:,.0f}원, PF {best_eq_n['profit_factor']:.2f}",
+                ]
+            )
+            shallow = nuliim_only.sort_values("nuliim_ratio").iloc[0]
+            deep = nuliim_only.sort_values("nuliim_ratio", ascending=False).iloc[0]
+            if shallow["scenario"] != deep["scenario"]:
+                lines.append(
+                    f"- **얕은 vs 깊은:** 얕음 `{shallow['scenario']}` ({float(shallow['nuliim_ratio'])*100:.1f}%, PF {shallow['profit_factor']:.2f}) "
+                    f"· 깊음 `{deep['scenario']}` ({float(deep['nuliim_ratio'])*100:.1f}%, PF {deep['profit_factor']:.2f})"
+                )
+
     from pathlib import Path
 
     Path(OUT_MD).write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -105,4 +105,6 @@ Phase G 목표는 main 병합이 아니라:
 | `--quick` 최선(자산) | 8,137,735원 | -72.87% | 0.56 | -73.15% | `defense_3m_deploy15` (300만·deploy 15%) |
 | `--quick` PF 1위 | 1,076,330원 | -96.41% | 0.64 | -96.62% | `rr_wide_5pct` (익절 5%) |
 
-*2026-06-01 `run_v4_tune.py --quick` — PF≥1·흑자 시나리오 없음. 전체 스윕(`python run_v4_tune.py`) 또는 유니버스·보유일수 검토 필요.*
+*2026-06-01 `run_v4_tune.py --quick` — PF≥1·흑자 시나리오 없음.*
+
+**2026-06-02 전체 14시나리오 (`python run_v4_tune.py`):** PF≥1 **0/14** · 흑자 **0/14**. PF 1위 `rr_asym_sl3_tp5` (PF **0.69**, -91.3%). 최종 자산 1위 `combo_def3m_rr_wide` (**871만**, -70.9%, PF 0.68). 눌림목 단독(동일 1천만·deploy 45%): **2%** PF 0.57 > **3% baseline** 0.57 > **5%** PF 0.50 — 얕은 눌림이 PF·자산 모두 우세. 상세: `outputs/v4_tune_report.md`.*
