@@ -71,9 +71,32 @@
 - [x] **v4.0** 포트폴리오 매니저·전 종목 백테스트 (`portfolio_manager.py`·`run_v4_portfolio.py` · Phase A~D 검증·`outputs/v4_trades.csv`)
 - [x] **v4.0** Phase G 심폐소생 (눌림 -3%·단리 1천만·손절 -5%·익절 +3.5%) — `portfolio_manager` Phase G 진입/청산
 - [x] **v4.0** Phase G 14시나리오 전체 스윕·눌림목 타점 보고 (`run_v4_tune.py` → `outputs/v4_tune_report.md` §눌림목)
+- [x] **v4.0** Phase H 계단식 박스권 쌍바닥(Double Bottom) 타점 엔진 (`portfolio_manager` Phase H 진입/청산 + `run_v4_tune` `combo_phase_h_double_bottom`)
+- [x] **v4.0** Phase H-2 미세 그리드 스윕 CLI (`run_v4_tune.py --phase-h2-grid`) 및 H 파라미터 주입형 엔진 실행
+- [x] **v4.0** Phase H-3 소액 필드 테스트 모드(10만 원·2슬롯·주가 1천~2만 캡) 및 진입 선필터
 - [x] **v4.0** Phase E SSOT — `config/settings.yaml` `v4_0.*` · `src/v4_config.py` · `src/utils/config.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-02 (**v4.0** Phase H-3 — 10만 원 소액 필드 테스트 인프라)
+- **`config/settings.yaml`:** `v4_0.environment.mode=field_test`·`initial_cash=100000` · `portfolio.max_slots=2` · `strategy.field_test_invest_amount=50000` · `stock_price_floor=1000` · `stock_price_ceiling=20000`
+- **`src/v4_config.py`:** `environment` 섹션 파싱 및 `V4Config` 확장(`environment_mode`, `environment_initial_cash`) · field_test 시 `portfolio.initial_cash`를 환경값으로 대체
+- **`src/engine/portfolio_manager.py`:** `_phase_h_entry_allowed` 신설 — **주가 floor/ceiling 선검사 후** `_phase_h_tactical_filter` 수행(연산량 절감) · field_test 모드 기본 H 베팅금=5만 적용
+
+### 2026-06-02 (**v4.0** Phase H-2 — 손절·익절·황제주컷 미세 그리드)
+- **`run_v4_tune.py`:** `--phase-h2-grid` 추가 (`sl` 3/4/5%, `tp` 6/8/10%, `emperor_cap` 30/20/15%) · `--quick` 시 축소 그리드
+- **`run_v4_tune.py`:** Phase H 결과 열 `phase_h_sl_ratio`·`phase_h_tp_ratio`·`phase_h_emperor_cap_ratio`·`phase_h_fixed_amount` CSV/리포트 반영
+- **`src/engine/portfolio_manager.py`:** Phase H 하이퍼파라미터를 생성자 주입값으로 수용(시나리오별 미세 튜닝 실행 가능)
+
+### 2026-06-02 (**v4.0** Phase H-2 — 시간·황제주·저점 윈도우 정합성 패치)
+- **`_phase_h_tactical_filter`:** 달력일 `.days` 제거 → **영업일 5일** 관망 · 황제주(종가 > 베팅금 30%) 진입 차단 · 로컬 저점 **20영업일** · 정수 주수 기준 `invest_amount` 캡(수량 누수 방지)
+- **`run_v4_tune.py`:** `--only SCENARIO ...` (부분 스윕)
+
+### 2026-06-02 (**v4.0** Phase H — 계단식 박스권 쌍바닥 타점 엔진)
+- **`src/engine/portfolio_manager.py`:** `phase_h_mode` 추가 · 5일선 하회+MA10/20 수렴+쌍바닥 지지 진입 · SL -3% / TP +10% / 5일 타임스탑 청산(`STOP_LOSS_H`/`TAKE_PROFIT_H`/`TIME_STOP_H`)
+- **운용:** Phase H는 1회차 단일 진입만 허용(연쇄 stage 진입 비활성) · 슬롯당 300만 단리·당일 배분 상한 유지
+- **`run_v4_tune.py`:** 시나리오 구조 `(name, overrides, phase_mode)`로 확장 · `combo_phase_h_double_bottom` 추가 · 결과 CSV에 `phase_mode`/`stop_loss_h_count` 기록
+- **DoD 보고:** 튜닝 리포트에 `## Phase H DoD 체크` 자동 생성(거래수 감소율, `STOP_LOSS_H` 건수, PF 1.0 돌파 여부)
 
 ### 2026-06-02 (**v4.0** Phase G — 14시나리오 전체 스윕·최적 눌림목 도출)
 - **실행:** `python run_v4_tune.py` (벌크 1회 · 920영업일 · ~162분) → `outputs/v4_tune_results.csv` · `v4_tune_report.md`

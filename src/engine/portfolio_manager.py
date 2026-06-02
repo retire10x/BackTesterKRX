@@ -263,6 +263,11 @@ class PortfolioManager:
         anchor_first_smart_money_only: bool = False,
         preload_ohlcv: dict[str, pd.DataFrame] | None = None,
         phase_g_mode: bool = True,
+        phase_h_mode: bool = False,
+        phase_h_sl_ratio: float | None = None,
+        phase_h_tp_ratio: float | None = None,
+        phase_h_fixed_amount: float | None = None,
+        phase_h_emperor_price_ratio: float | None = None,
         v4_config: V4Config | None = None,
     ):
         cfg = v4_config if v4_config is not None else _default_v4_config()
@@ -284,6 +289,7 @@ class PortfolioManager:
         )
         self.anchor_first_smart_money_only = bool(anchor_first_smart_money_only)
         self.phase_g_mode = bool(phase_g_mode)
+        self.phase_h_mode = bool(phase_h_mode)
         self.nuliim_ratio = float(strat.nuliim_ratio)
         self.fixed_invest_amount = float(strat.fixed_invest_amount)
         self.stop_loss_ratio = float(strat.stop_loss_ratio)
@@ -294,6 +300,7 @@ class PortfolioManager:
         self.max_daily_cash_deploy_ratio = float(strat.max_daily_cash_deploy_ratio)
         self.buy_fee_rate = float(costs.buy_fee)
         self.sell_cost_rate = float(costs.sell_fee_tax)
+        self.environment_mode = str(cfg.environment_mode).strip().lower()
         self._anchored_codes: set[str] = set()
 
         self.cash = float(self.initial_equity)
@@ -310,6 +317,25 @@ class PortfolioManager:
         self._trade_id_counter = 0
         self._day_deployed_cash = 0.0
         self.phase_g_same_day_entries = 0
+        # Phase H 하이퍼파라미터 (H-2: YAML 이관 전 엔진 고정값)
+        self.phase_h_tp_ratio = float(phase_h_tp_ratio) if phase_h_tp_ratio is not None else 0.10
+        self.phase_h_sl_ratio = float(phase_h_sl_ratio) if phase_h_sl_ratio is not None else 0.03
+        default_h_fixed = (
+            float(strat.field_test_invest_amount)
+            if self.environment_mode == "field_test"
+            else 3_000_000.0
+        )
+        self.phase_h_fixed_amount = float(phase_h_fixed_amount) if phase_h_fixed_amount is not None else default_h_fixed
+        self.phase_h_min_wait_bdays = 5  # H-2: 영업일 5일(달력일 .days 금지)
+        self.phase_h_local_bottom_lookback = 20  # H-2: 로컬 저점 10→20영업일
+        self.phase_h_emperor_price_ratio = (
+            float(phase_h_emperor_price_ratio)
+            if phase_h_emperor_price_ratio is not None
+            else 0.30
+        )  # H-2: 1주가 > 베팅금 비율이면 진입 금지
+        self.phase_h_time_stop_days = 5
+        self.phase_h_stock_price_ceiling = float(strat.stock_price_ceiling)
+        self.phase_h_stock_price_floor = float(strat.stock_price_floor)
 
         self._sim_start_idx = int(self.bdays.get_indexer([self.start_date], method="bfill")[0])
         self._sim_end_idx = int(self.bdays.get_indexer([self.end_date], method="ffill")[0])
@@ -355,6 +381,8 @@ class PortfolioManager:
         return max(0, self.max_slots - self.open_slot_count)
 
     def _slot_budget(self, total_equity: float) -> float:
+        if self.phase_h_mode:
+            return self.phase_h_fixed_amount
         if self.phase_g_mode:
             return self.fixed_invest_amount
         return total_equity / self.max_slots
@@ -374,12 +402,108 @@ class PortfolioManager:
 
     def _compute_fixed_invest_amount(self) -> float:
         """Phase G 단리: 슬롯당 고정 금액, 잔고 부족 시 95%·최소 투자금."""
-        invest = self.fixed_invest_amount
+        invest = self.phase_h_fixed_amount if self.phase_h_mode else self.fixed_invest_amount
         if self.cash < invest:
             invest = self.cash * 0.95
         if invest < self.min_invest_amount:
             return 0.0
         return invest
+
+    def _phase_h_bdays_since_anchor(self, tracked: TrackedStock, day_idx: int) -> int | None:
+        """기준봉 대비 경과 **영업일** 수 (달력일 .days 사용 금지 — H-2)."""
+        if tracked.smart_money_date is None:
+            return None
+        anchor_idx = int(
+            self.bdays.get_indexer([tracked.smart_money_date.normalize()], method="bfill")[0]
+        )
+        if anchor_idx < 0:
+            return None
+        return day_idx - anchor_idx
+
+    def _phase_h_tactical_filter(
+        self,
+        tracked: TrackedStock,
+        code: str,
+        day_idx: int,
+        current_close: float,
+    ) -> bool:
+        """
+        [Phase H-2] 황제주 가격 필터 + 영업일 관망 + 20일 로컬 쌍바닥 지지.
+        """
+        if not np.isfinite(current_close) or current_close <= 0:
+            return False
+
+        # 1) 황제주: 1주 가격이 슬롯 베팅금의 30% 초과 시 수량 누수 방지
+        max_share_px = self.phase_h_fixed_amount * self.phase_h_emperor_price_ratio
+        if current_close > max_share_px:
+            return False
+
+        # 2) 시간 축: 기준봉 이후 최소 5영업일 박스 횡보 관망
+        bdays_since = self._phase_h_bdays_since_anchor(tracked, day_idx)
+        if bdays_since is None or bdays_since < self.phase_h_min_wait_bdays:
+            return False
+
+        hist = self._ohlcv_history_as_of(code, day_idx)
+        min_bars = max(25, self.phase_h_local_bottom_lookback + 5)
+        if hist is None or len(hist) < min_bars:
+            return False
+        if not {"close", "low"}.issubset(set(hist.columns)):
+            return False
+
+        close_s = pd.to_numeric(hist["close"], errors="coerce")
+        low_s = pd.to_numeric(hist["low"], errors="coerce")
+        if close_s.isna().all() or low_s.isna().all():
+            return False
+
+        current_low = float(low_s.iloc[-1])
+        ma_5 = float(close_s.rolling(window=5).mean().iloc[-1])
+        ma_10 = float(close_s.rolling(window=10).mean().iloc[-1])
+        ma_20 = float(close_s.rolling(window=20).mean().iloc[-1])
+
+        if not np.isfinite(current_low):
+            return False
+        if not np.isfinite(ma_5) or not np.isfinite(ma_10) or not np.isfinite(ma_20):
+            return False
+
+        # 3) 5일선 아래(추격 방지)
+        if current_close >= ma_5:
+            return False
+        # 4) MA10/20 수렴권
+        if not (ma_20 * 0.97 <= current_close <= ma_10 * 1.03):
+            return False
+
+        # 5) 최근 20영업일(오늘 제외) 로컬 저점 — 쌍바닥 지지
+        lookback = min(self.phase_h_local_bottom_lookback, len(hist) - 1)
+        if lookback < 5:
+            return False
+        past_days = hist.iloc[-(lookback + 1):-1]
+        real_first_bottom = float(pd.to_numeric(past_days["low"], errors="coerce").min())
+        if not np.isfinite(real_first_bottom) or real_first_bottom <= 0:
+            return False
+
+        lower = real_first_bottom * 0.99
+        upper = real_first_bottom * 1.03
+        return (lower <= current_close <= upper) or (lower <= current_low <= upper)
+
+    def _phase_h_entry_allowed(
+        self,
+        tracked: TrackedStock,
+        code: str,
+        day_idx: int,
+        current_close: float,
+    ) -> bool:
+        """
+        H-3 진입 게이트:
+        1) 주가 상하한 캡(연산 경량화)
+        2) Phase H 쌍바닥 전술 필터
+        """
+        if not np.isfinite(current_close) or current_close <= 0:
+            return False
+        if current_close < self.phase_h_stock_price_floor:
+            return False
+        if current_close > self.phase_h_stock_price_ceiling:
+            return False
+        return self._phase_h_tactical_filter(tracked, code, day_idx, current_close)
 
     def _evaluate_phase_g_exit(
         self,
@@ -545,7 +669,25 @@ class PortfolioManager:
             low = ohlcv["Low"]
             close = ohlcv["Close"]
 
-            if self.phase_g_mode:
+            if self.phase_h_mode:
+                target_px = pos.entry_price * (1.0 + self.phase_h_tp_ratio)
+                stop_px = pos.entry_price * (1.0 - self.phase_h_sl_ratio)
+                if low <= stop_px:
+                    exit_price = stop_px
+                    exit_type = "STOP_LOSS_H"
+                elif high >= target_px:
+                    exit_price = target_px
+                    exit_type = "TAKE_PROFIT_H"
+                elif pos.hold_days >= self.phase_h_time_stop_days:
+                    exit_price = close
+                    exit_type = "TIME_STOP_H"
+                else:
+                    continue
+                gross = pos.invest_amount * (exit_price / pos.entry_price)
+                proceeds = gross * (1.0 - self.sell_cost_rate)
+                pnl_amount = proceeds - pos.invest_amount
+                pnl_rate = pnl_amount / pos.invest_amount if pos.invest_amount > 0 else 0.0
+            elif self.phase_g_mode:
                 exit_info = self._evaluate_phase_g_exit(
                     entry_price=pos.entry_price,
                     invest_amount=pos.invest_amount,
@@ -601,7 +743,9 @@ class PortfolioManager:
 
             tracked = self.tracked.get(c6)
             if tracked is not None:
-                if tracked.stage >= 4:
+                if self.phase_h_mode:
+                    tracked.completed = True
+                elif tracked.stage >= 4:
                     tracked.completed = True
                 else:
                     tracked.stage += 1
@@ -700,7 +844,31 @@ class PortfolioManager:
             if not np.isfinite(entry_price) or entry_price <= 0:
                 continue
 
-            if self.phase_g_mode:
+            if self.phase_h_mode:
+                # Phase H: 1회차(기준봉 기반) 단일 진입만 허용
+                if tracked.stage != 1:
+                    continue
+                if not self._phase_h_entry_allowed(
+                    tracked, c6, day_idx, entry_price
+                ):
+                    continue
+                invest_amount = self._compute_fixed_invest_amount()
+                # H-2: 황제주 수량 누수 — 실제 매수 가능 금액(정수 주수)으로 캡
+                max_affordable = int(invest_amount // entry_price) * entry_price
+                if max_affordable < self.min_invest_amount:
+                    continue
+                invest_amount = min(invest_amount, max_affordable)
+                if invest_amount <= 0:
+                    continue
+                daily_cap = self._max_daily_deploy_remaining()
+                if daily_cap <= 0:
+                    continue
+                invest_amount = min(invest_amount, daily_cap)
+                alloc_ratio = (
+                    invest_amount / self.phase_h_fixed_amount
+                    if self.phase_h_fixed_amount > 0 else 1.0
+                )
+            elif self.phase_g_mode:
                 if tracked.stage == 1:
                     if not self._phase_g_entry_allowed(
                         tracked=tracked,
@@ -778,7 +946,7 @@ class PortfolioManager:
                 invest_amount=invest_amount,
                 slot_budget_at_entry=slot_budget,
                 alloc_ratio=alloc_ratio,
-                exit_type="ENTRY" if self.phase_g_mode else None,
+                exit_type="ENTRY_H" if self.phase_h_mode else ("ENTRY" if self.phase_g_mode else None),
             )
 
     def run(self) -> PortfolioResult:

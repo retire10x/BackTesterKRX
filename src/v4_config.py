@@ -32,6 +32,9 @@ class V4StrategyConfig:
     max_hold_days: int
     min_invest_amount: float
     max_daily_cash_deploy_ratio: float
+    field_test_invest_amount: float
+    stock_price_ceiling: float
+    stock_price_floor: float
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,8 @@ class V4CostsConfig:
 
 @dataclass(frozen=True)
 class V4Config:
+    environment_mode: str
+    environment_initial_cash: float
     strategy: V4StrategyConfig
     portfolio: V4PortfolioConfig
     costs: V4CostsConfig
@@ -65,7 +70,12 @@ def _v4_yaml_section(cfg: dict | None = None) -> dict:
 
 
 def v4_config_from_yaml_section(v4: dict) -> V4Config:
+    environment = v4.get("environment")
     strategy = v4.get("strategy")
+    if environment is None:
+        environment = {}
+    if not isinstance(environment, dict):
+        raise KeyError("v4_0.environment 블록 형식이 올바르지 않습니다.")
     portfolio = v4.get("portfolio")
     costs = v4.get("costs")
     if not isinstance(strategy, dict):
@@ -86,7 +96,14 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
         raise KeyError("v4_0.costs 필수 키 누락: " + ", ".join(missing_c))
 
     deploy = strategy.get("max_daily_cash_deploy_ratio", 0.45)
+    env_mode = str(environment.get("mode", "standard")).strip().lower()
+    env_initial_cash = float(environment.get("initial_cash", portfolio["initial_cash"]))
+    ft_invest = float(strategy.get("field_test_invest_amount", 50_000))
+    stock_price_ceiling = float(strategy.get("stock_price_ceiling", 20_000))
+    stock_price_floor = float(strategy.get("stock_price_floor", 1_000))
     return V4Config(
+        environment_mode=env_mode,
+        environment_initial_cash=env_initial_cash,
         strategy=V4StrategyConfig(
             nuliim_ratio=float(strategy["nuliim_ratio"]),
             fixed_invest_amount=float(strategy["fixed_invest_amount"]),
@@ -96,9 +113,12 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
             max_hold_days=int(strategy["max_hold_days"]),
             min_invest_amount=float(strategy["min_invest_amount"]),
             max_daily_cash_deploy_ratio=float(deploy),
+            field_test_invest_amount=ft_invest,
+            stock_price_ceiling=stock_price_ceiling,
+            stock_price_floor=stock_price_floor,
         ),
         portfolio=V4PortfolioConfig(
-            initial_cash=float(portfolio["initial_cash"]),
+            initial_cash=env_initial_cash if env_mode == "field_test" else float(portfolio["initial_cash"]),
             max_slots=int(portfolio["max_slots"]),
         ),
         costs=V4CostsConfig(
