@@ -86,27 +86,32 @@ v3_0:
   min_liquidity_trade_amount_krw: 1000000000     # 10억
 
 # v4.0 스마트머니 포트폴리오 (run_v4_portfolio.py · portfolio_manager SSOT)
-# Phase G 튜닝: python run_v4_tune.py [--quick] → outputs/v4_tune_report.md (main 병합 없음)
+# ★ Phase H 동결 (h2_sl03_tp10_ec20 · field_test) — Phase I 폐기 · main 병합 보류
 # Ruin 서면: docs/v4_ruin_analysis.md
 v4_0:
   environment:
-    mode: "field_test"             # H-3: 소액 테스트 모드
-    initial_cash: 100000           # H-3: 초기 자본금 10만 원
-  strategy:
-    nuliim_ratio: 0.03              # 눌림목 일봉 타점 (-3%) — PF·진입 빈도 레버
-    fixed_invest_amount: 10000000   # 슬롯당 단리 (원). Ruin 완화 시 300만~500만 후보
-    field_test_invest_amount: 50000 # H-3: 슬롯당 5만 원 고정 베팅
-    stock_price_ceiling: 20000      # H-3: 1주당 2만 원 이하만 허용
-    stock_price_floor: 1000         # H-3: 1,000원 미만 동전주 배제
-    stop_loss_ratio: 0.05           # 하드 손절 (-5%)
-    target_profit_ratio: 0.035      # 고정 익절 (+3.5%)
-    max_track_days: 30              # 기준봉 후 1회차 미진입 시 tracked 만료
-    max_hold_days: 3                # 타임스탑 보유 일수
-    min_invest_amount: 42500        # H-3: 5만 베팅·정수 주수(85%) 하한
-    max_daily_cash_deploy_ratio: 1.0   # H-3: 10만·2슬롯(5만×2) 풀 배분 (0.45면 4.5만 상한으로 진입 불가)
+    mode: "field_test"                 # 10만 원 실전 소액 필드 테스트 모드 고정
+    initial_cash: 100000
+  engine:
+    phase_mode: "h"                    # Phase H 쌍바닥 엔진 고정 (Phase G/I 미사용)
   portfolio:
-    initial_cash: 100000            # H-3: 초기 자본 10만 원
-    max_slots: 2                    # H-3: 2슬롯(5만 원×2)
+    initial_cash: 100000
+    max_slots: 2                       # 슬롯당 5만 원 고정 배분
+  strategy:
+    field_test_invest_amount: 50000
+    fixed_invest_amount: 10000000      # Phase G 레거시 (field_test 시 5만 사용)
+    stock_price_floor: 1000            # 동전주 배제
+    stock_price_ceiling: 20000         # 1주 2만 원 이하 (황제주컷 20%와 병행)
+    max_track_days: 30
+    max_daily_cash_deploy_ratio: 0.45  # 당일 현금 배분 상한 (연속 손절 방어)
+    # [★ 통계 검증 Phase H 최적 — h2_sl03_tp10_ec20]
+    nuliim_ratio: 0.04                 # Phase G 레거시 키 (H 진입은 쌍바닥·5영업일 관망)
+    stop_loss_ratio: 0.03              # Phase H SL -3% (확장 금지)
+    target_profit_ratio: 0.10          # Phase H TP +10%
+    max_hold_days: 5                   # Phase H 5일 타임스탑
+    emperor_cap_ratio: 0.20            # 황제주컷 20% → 5만×20%=1.5만/주 상한
+    phase_h_min_wait_bdays: 5          # 기준봉 후 5영업일 관망
+    min_invest_amount: 100000          # YAML 명세 (field_test 시 엔진이 5만·85%로 캡)
   costs:
-    buy_fee: 0.00015                # 매수 수수료 (0.015%)
-    sell_fee_tax: 0.0018            # 매도 수수료+세금 (0.18%)
+    buy_fee: 0.00015
+    sell_fee_tax: 0.0018

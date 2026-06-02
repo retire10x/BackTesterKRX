@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 TRADING_COST = 0.00215
@@ -66,6 +67,59 @@ def scan_smart_money_universe(df_market_today):
 
     universe = df[cond_value & cond_rank]
     return universe["code"].astype(str).str.zfill(6).tolist()
+
+
+# Phase I: 코스닥 중소형 탄력주(시총 700억~5,000억) + 기준봉 거래대금 폭발
+PHASE_I_MIN_MCAP_KRW = 70_000_000_000
+PHASE_I_MAX_MCAP_KRW = 500_000_000_000
+PHASE_I_MIN_ANCHOR_TRADE_KRW = 3_000_000_000  # 기준봉 최소 거래대금 30억
+PHASE_I_ANCHOR_TOP_N = 30
+PHASE_I_VOLUME_DRY_RATIO = 0.15
+
+
+def scan_phase_i_kosdaq_universe(
+    df_market_today: pd.DataFrame,
+    marcap_by_code: dict[str, float],
+    kosdaq_codes: frozenset[str],
+    *,
+    min_mcap: float = PHASE_I_MIN_MCAP_KRW,
+    max_mcap: float = PHASE_I_MAX_MCAP_KRW,
+    min_anchor_trade_krw: float = PHASE_I_MIN_ANCHOR_TRADE_KRW,
+    top_n: int = PHASE_I_ANCHOR_TOP_N,
+) -> list[str]:
+    """
+    [Phase I] 코스닥 전용 — 시총 밴드 내 당일 거래대금 상위(주포 유입) 종목만 기준봉 후보.
+    """
+    df = df_market_today.copy()
+    df = _normalize_ohlcv_columns(df)
+    if "code" not in df.columns:
+        df = df.reset_index()
+        if "index" in df.columns and "code" not in df.columns:
+            df = df.rename(columns={"index": "code"})
+    df["code"] = df["code"].astype(str).str.zfill(6)
+    df["close"] = pd.to_numeric(df["close"], errors="coerce").astype("float64")
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").astype("float64")
+    df["trading_value"] = df["close"] * df["volume"]
+
+    rows: list[dict[str, object]] = []
+    for _, row in df.iterrows():
+        c6 = str(row["code"]).zfill(6)
+        if c6 not in kosdaq_codes:
+            continue
+        cap = marcap_by_code.get(c6)
+        if cap is None or not np.isfinite(cap):
+            continue
+        if cap < min_mcap or cap > max_mcap:
+            continue
+        tv = float(row["trading_value"])
+        if not np.isfinite(tv) or tv < min_anchor_trade_krw:
+            continue
+        rows.append({"code": c6, "trading_value": tv})
+
+    if not rows:
+        return []
+    ranked = pd.DataFrame(rows).sort_values("trading_value", ascending=False).head(int(top_n))
+    return ranked["code"].astype(str).str.zfill(6).tolist()
 
 
 def _stage_entry_triggered(df_stock, idx, stage):

@@ -13,10 +13,15 @@ import pandas as pd
 
 from src.data_loader import _load_ohlcv_pykrx_by_date, _normalize_pykrx_ohlcv_columns, ensure_datetime_index
 from src.data_loader import _fetch_bulk_ohlcv_day_frames, _merge_multi_market_bulk_day_frames
+from src.data_loader import fetch_listing_market_cap_krw_by_code
 from src.engine.smart_money_cascade import (
+    PHASE_I_ANCHOR_TOP_N,
+    PHASE_I_MIN_ANCHOR_TRADE_KRW,
+    PHASE_I_VOLUME_DRY_RATIO,
     STAGE_ALLOCATIONS,
     compute_stage_invest_amount,
     evaluate_daily_exit,
+    scan_phase_i_kosdaq_universe,
     scan_smart_money_universe,
     stage_entry_triggered,
 )
@@ -49,8 +54,24 @@ class TrackedStock:
     stage: int = 1
     smart_money_date: pd.Timestamp | None = None
     anchor_close: float | None = None
+    anchor_volume_amt: float | None = None
     next_entry_day_idx: int = 0
     completed: bool = False
+
+
+def _load_kosdaq_code_set() -> frozenset[str]:
+    """FDR 상장표 기준 코스닥 종목 코드 집합."""
+    listing = fdr.StockListing("KRX")
+    if listing is None or listing.empty or "Code" not in listing.columns:
+        listing = fdr.StockListing("KOSDAQ")
+    if listing is None or listing.empty:
+        return frozenset()
+    codes = listing["Code"].astype(str).str.strip().str.zfill(6)
+    if "Market" in listing.columns:
+        m = listing["Market"].astype(str).str.upper()
+        mask = m.str.contains("KOSDAQ", na=False) | m.str.contains("KQ", na=False)
+        return frozenset(codes[mask].tolist())
+    return frozenset(codes.tolist())
 
 
 @dataclass
@@ -264,10 +285,14 @@ class PortfolioManager:
         preload_ohlcv: dict[str, pd.DataFrame] | None = None,
         phase_g_mode: bool = True,
         phase_h_mode: bool = False,
+        phase_i_mode: bool = False,
         phase_h_sl_ratio: float | None = None,
         phase_h_tp_ratio: float | None = None,
         phase_h_fixed_amount: float | None = None,
         phase_h_emperor_price_ratio: float | None = None,
+        phase_i_volume_dry_ratio: float | None = None,
+        phase_i_min_anchor_trade_krw: float | None = None,
+        phase_i_anchor_top_n: int | None = None,
         v4_config: V4Config | None = None,
     ):
         cfg = v4_config if v4_config is not None else _default_v4_config()
@@ -288,8 +313,11 @@ class PortfolioManager:
             frozenset(str(c).zfill(6) for c in allowed_codes) if allowed_codes else None
         )
         self.anchor_first_smart_money_only = bool(anchor_first_smart_money_only)
-        self.phase_g_mode = bool(phase_g_mode)
-        self.phase_h_mode = bool(phase_h_mode)
+        self.phase_g_mode = bool(phase_g_mode) and not bool(phase_i_mode)
+        self.phase_h_mode = bool(phase_h_mode) and not bool(phase_i_mode)
+        self.phase_i_mode = bool(phase_i_mode)
+        if self.phase_i_mode and self.phase_h_mode:
+            raise ValueError("phase_h_mode와 phase_i_mode는 동시에 켤 수 없습니다.")
         self.nuliim_ratio = float(strat.nuliim_ratio)
         self.fixed_invest_amount = float(strat.fixed_invest_amount)
         self.stop_loss_ratio = float(strat.stop_loss_ratio)
@@ -317,25 +345,62 @@ class PortfolioManager:
         self._trade_id_counter = 0
         self._day_deployed_cash = 0.0
         self.phase_g_same_day_entries = 0
-        # Phase H 하이퍼파라미터 (H-2: YAML 이관 전 엔진 고정값)
-        self.phase_h_tp_ratio = float(phase_h_tp_ratio) if phase_h_tp_ratio is not None else 0.10
-        self.phase_h_sl_ratio = float(phase_h_sl_ratio) if phase_h_sl_ratio is not None else 0.03
+        # Phase H — YAML SSOT (동결: h2_sl03_tp10_ec20)
+        if phase_h_sl_ratio is not None:
+            self.phase_h_sl_ratio = float(phase_h_sl_ratio)
+        elif self.phase_h_mode or self.phase_i_mode:
+            self.phase_h_sl_ratio = float(strat.stop_loss_ratio)
+        else:
+            self.phase_h_sl_ratio = 0.03
+        if phase_h_tp_ratio is not None:
+            self.phase_h_tp_ratio = float(phase_h_tp_ratio)
+        elif self.phase_h_mode or self.phase_i_mode:
+            self.phase_h_tp_ratio = float(strat.target_profit_ratio)
+        else:
+            self.phase_h_tp_ratio = 0.10
+        self.phase_i_volume_dry_ratio = (
+            float(phase_i_volume_dry_ratio)
+            if phase_i_volume_dry_ratio is not None
+            else PHASE_I_VOLUME_DRY_RATIO
+        )
+        self.phase_i_min_anchor_trade_krw = (
+            float(phase_i_min_anchor_trade_krw)
+            if phase_i_min_anchor_trade_krw is not None
+            else PHASE_I_MIN_ANCHOR_TRADE_KRW
+        )
+        self.phase_i_anchor_top_n = (
+            int(phase_i_anchor_top_n)
+            if phase_i_anchor_top_n is not None
+            else PHASE_I_ANCHOR_TOP_N
+        )
         default_h_fixed = (
             float(strat.field_test_invest_amount)
-            if self.environment_mode == "field_test"
+            if self.environment_mode == "field_test" or self.phase_h_mode or self.phase_i_mode
             else 3_000_000.0
         )
         self.phase_h_fixed_amount = float(phase_h_fixed_amount) if phase_h_fixed_amount is not None else default_h_fixed
-        self.phase_h_min_wait_bdays = 5  # H-2: 영업일 5일(달력일 .days 금지)
-        self.phase_h_local_bottom_lookback = 20  # H-2: 로컬 저점 10→20영업일
-        self.phase_h_emperor_price_ratio = (
-            float(phase_h_emperor_price_ratio)
-            if phase_h_emperor_price_ratio is not None
-            else 0.30
-        )  # H-2: 1주가 > 베팅금 비율이면 진입 금지
-        self.phase_h_time_stop_days = 5
+        self.phase_h_min_wait_bdays = int(strat.phase_h_min_wait_bdays)
+        self.phase_h_local_bottom_lookback = 20  # H-2: 로컬 저점 20영업일
+        if phase_h_emperor_price_ratio is not None:
+            self.phase_h_emperor_price_ratio = float(phase_h_emperor_price_ratio)
+        elif self.phase_h_mode:
+            self.phase_h_emperor_price_ratio = float(strat.emperor_cap_ratio)
+        else:
+            self.phase_h_emperor_price_ratio = 0.30
+        self.phase_h_time_stop_days = int(strat.max_hold_days)
         self.phase_h_stock_price_ceiling = float(strat.stock_price_ceiling)
         self.phase_h_stock_price_floor = float(strat.stock_price_floor)
+        self._kosdaq_codes: frozenset[str] = frozenset()
+        self._marcap_kosdaq: dict[str, float] = {}
+        if self.phase_i_mode:
+            self._kosdaq_codes = _load_kosdaq_code_set()
+            self._marcap_kosdaq = fetch_listing_market_cap_krw_by_code("KOSDAQ")
+            if not self._marcap_kosdaq:
+                self._marcap_kosdaq = fetch_listing_market_cap_krw_by_code("KRX")
+            print(
+                f"📌 Phase I: 코스닥 {len(self._kosdaq_codes)}종목 · "
+                f"시총맵 {len(self._marcap_kosdaq)}건 · SL -{self.phase_h_sl_ratio:.0%} / TP +{self.phase_h_tp_ratio:.0%}"
+            )
 
         self._sim_start_idx = int(self.bdays.get_indexer([self.start_date], method="bfill")[0])
         self._sim_end_idx = int(self.bdays.get_indexer([self.end_date], method="ffill")[0])
@@ -381,7 +446,7 @@ class PortfolioManager:
         return max(0, self.max_slots - self.open_slot_count)
 
     def _slot_budget(self, total_equity: float) -> float:
-        if self.phase_h_mode:
+        if self.phase_h_mode or self.phase_i_mode:
             return self.phase_h_fixed_amount
         if self.phase_g_mode:
             return self.fixed_invest_amount
@@ -398,11 +463,16 @@ class PortfolioManager:
             "High": float(row["High"]),
             "Low": float(row["Low"]),
             "Close": float(row["Close"]),
+            "Volume": float(row["Volume"]),
         }
 
     def _compute_fixed_invest_amount(self) -> float:
         """Phase G 단리: 슬롯당 고정 금액, 잔고 부족 시 95%·최소 투자금."""
-        invest = self.phase_h_fixed_amount if self.phase_h_mode else self.fixed_invest_amount
+        invest = (
+            self.phase_h_fixed_amount
+            if (self.phase_h_mode or self.phase_i_mode)
+            else self.fixed_invest_amount
+        )
         if self.cash < invest:
             invest = self.cash * 0.95
         if invest < self.min_invest_amount:
@@ -503,6 +573,39 @@ class PortfolioManager:
             return False
         if current_close > self.phase_h_stock_price_ceiling:
             return False
+        return self._phase_h_tactical_filter(tracked, code, day_idx, current_close)
+
+    def _phase_i_entry_allowed(
+        self,
+        tracked: TrackedStock,
+        code: str,
+        day_idx: int,
+        current_close: float,
+    ) -> bool:
+        """
+        Phase I: 코스닥 시총 밴드(기준봉 스캔) + 거래량 실종(기준봉 대비 15% 이하) + H-2 쌍바닥.
+        """
+        if not np.isfinite(current_close) or current_close <= 0:
+            return False
+        if current_close < self.phase_h_stock_price_floor:
+            return False
+        if current_close > self.phase_h_stock_price_ceiling:
+            return False
+
+        anchor_amt = tracked.anchor_volume_amt
+        if anchor_amt is None or not np.isfinite(anchor_amt) or anchor_amt <= 0:
+            return False
+
+        ohlcv = self._get_daily_ohlcv(code, day_idx)
+        if ohlcv is None:
+            return False
+        vol = float(ohlcv["Volume"])
+        if not np.isfinite(vol) or vol < 0:
+            return False
+        today_amt = current_close * vol
+        if today_amt > anchor_amt * self.phase_i_volume_dry_ratio:
+            return False
+
         return self._phase_h_tactical_filter(tracked, code, day_idx, current_close)
 
     def _evaluate_phase_g_exit(
@@ -669,7 +772,7 @@ class PortfolioManager:
             low = ohlcv["Low"]
             close = ohlcv["Close"]
 
-            if self.phase_h_mode:
+            if self.phase_h_mode or self.phase_i_mode:
                 target_px = pos.entry_price * (1.0 + self.phase_h_tp_ratio)
                 stop_px = pos.entry_price * (1.0 - self.phase_h_sl_ratio)
                 if low <= stop_px:
@@ -743,7 +846,7 @@ class PortfolioManager:
 
             tracked = self.tracked.get(c6)
             if tracked is not None:
-                if self.phase_h_mode:
+                if self.phase_h_mode or self.phase_i_mode:
                     tracked.completed = True
                 elif tracked.stage >= 4:
                     tracked.completed = True
@@ -796,14 +899,21 @@ class PortfolioManager:
                     continue
                 del self.tracked[c6]
             anchor_px = np.nan
+            anchor_vol_amt = None
             if c6 in day_frame.index:
-                anchor_px = float(day_frame.loc[c6, "Close"])
+                row = day_frame.loc[c6]
+                anchor_px = float(row["Close"])
+                close_v = float(row["Close"])
+                vol_v = float(row["Volume"])
+                if np.isfinite(close_v) and np.isfinite(vol_v) and close_v > 0:
+                    anchor_vol_amt = close_v * vol_v
             self._anchored_codes.add(c6)
             self.tracked[c6] = TrackedStock(
                 code=c6,
                 stage=1,
                 smart_money_date=trade_date,
                 anchor_close=anchor_px if np.isfinite(anchor_px) and anchor_px > 0 else None,
+                anchor_volume_amt=anchor_vol_amt,
                 next_entry_day_idx=day_idx + 1,
             )
 
@@ -844,7 +954,28 @@ class PortfolioManager:
             if not np.isfinite(entry_price) or entry_price <= 0:
                 continue
 
-            if self.phase_h_mode:
+            if self.phase_i_mode:
+                if tracked.stage != 1:
+                    continue
+                if not self._phase_i_entry_allowed(tracked, c6, day_idx, entry_price):
+                    continue
+                invest_amount = self._compute_fixed_invest_amount()
+                max_affordable = int(invest_amount // entry_price) * entry_price
+                if max_affordable < self.min_invest_amount:
+                    continue
+                invest_amount = min(invest_amount, max_affordable)
+                if invest_amount <= 0:
+                    continue
+                daily_cap = self._max_daily_deploy_remaining()
+                if daily_cap <= 0:
+                    continue
+                invest_amount = min(invest_amount, daily_cap)
+                alloc_ratio = (
+                    invest_amount / self.phase_h_fixed_amount
+                    if self.phase_h_fixed_amount > 0
+                    else 1.0
+                )
+            elif self.phase_h_mode:
                 # Phase H: 1회차(기준봉 기반) 단일 진입만 허용
                 if tracked.stage != 1:
                     continue
@@ -959,7 +1090,16 @@ class PortfolioManager:
 
             day_frame = self.day_frames[day_idx]
             market_snap = _market_snapshot_for_scan(day_frame)
-            universe_codes = scan_smart_money_universe(market_snap)
+            if self.phase_i_mode:
+                universe_codes = scan_phase_i_kosdaq_universe(
+                    market_snap,
+                    self._marcap_kosdaq,
+                    self._kosdaq_codes,
+                    min_anchor_trade_krw=self.phase_i_min_anchor_trade_krw,
+                    top_n=self.phase_i_anchor_top_n,
+                )
+            else:
+                universe_codes = scan_smart_money_universe(market_snap)
             if self.allowed_codes is not None:
                 universe_codes = [
                     c for c in universe_codes if str(c).zfill(6) in self.allowed_codes

@@ -120,12 +120,25 @@ def run_v4_portfolio_backtest():
     v4 = load_v4_config()
     s = v4.strategy
     p = v4.portfolio
-    print("🚀 v4.0 포트폴리오 백테스트 (Phase G · settings.yaml SSOT) — 벌크 로딩 중...")
+    phase_mode = str(v4.engine.phase_mode).strip().lower()
+    is_phase_h = phase_mode == "h"
     print(
-        f"   눌림 {s.nuliim_ratio:.0%} · 단리 {s.fixed_invest_amount:,.0f}원/슬롯 · "
-        f"손절 -{s.stop_loss_ratio:.0%} · 익절 +{s.target_profit_ratio:.1%} · "
-        f"{s.max_hold_days}일 타임스탑"
+        f"🚀 v4.0 포트폴리오 백테스트 (Phase {phase_mode.upper()} · settings.yaml SSOT · 동결) — 벌크 로딩 중..."
     )
+    if is_phase_h:
+        bet = s.field_test_invest_amount if v4.environment_mode == "field_test" else s.fixed_invest_amount
+        print(
+            f"   field_test={v4.environment_mode == 'field_test'} · 베팅 {bet:,.0f}원/슬롯 · "
+            f"SL -{s.stop_loss_ratio:.0%} · TP +{s.target_profit_ratio:.0%} · "
+            f"황제주 {s.emperor_cap_ratio:.0%} · {s.max_hold_days}일 타임스탑 · "
+            f"관망 {s.phase_h_min_wait_bdays}영업일"
+        )
+    else:
+        print(
+            f"   눌림 {s.nuliim_ratio:.0%} · 단리 {s.fixed_invest_amount:,.0f}원/슬롯 · "
+            f"손절 -{s.stop_loss_ratio:.0%} · 익절 +{s.target_profit_ratio:.1%} · "
+            f"{s.max_hold_days}일 타임스탑"
+        )
     day_frames, bdays = load_merged_market_day_frames(START_DATE, END_DATE, force_bulk=True)
     print(f"📊 벌크 로드 완료: {len(day_frames)} 영업일 × KOSPI+KOSDAQ")
 
@@ -134,7 +147,8 @@ def run_v4_portfolio_backtest():
         bdays,
         start_date=START_DATE,
         end_date=END_DATE,
-        phase_g_mode=True,
+        phase_g_mode=(phase_mode == "g"),
+        phase_h_mode=is_phase_h,
         v4_config=v4,
     )
     result = manager.run()
@@ -148,11 +162,14 @@ def run_v4_portfolio_backtest():
             fh.write("\n".join(result.pass_logs))
 
     phase_a = validate_phase_a_trades(result.trades_detail, result.trades)
+    fixed_for_dod = (
+        s.field_test_invest_amount if v4.environment_mode == "field_test" else s.fixed_invest_amount
+    )
     phase_g = validate_phase_g_dod(
         manager,
         result.trades_detail,
-        fixed_invest=s.fixed_invest_amount,
-    )
+        fixed_invest=fixed_for_dod,
+    ) if not is_phase_h else {"ok": True, "issues": []}
     buy_count = int((result.trades_detail["side"] == "BUY").sum()) if not result.trades_detail.empty else 0
     sell_count = int((result.trades_detail["side"] == "SELL").sum()) if not result.trades_detail.empty else 0
 
@@ -184,8 +201,13 @@ def run_v4_portfolio_backtest():
         print("⚠️ Phase A 이슈:")
         for msg in phase_a.get("issues", []):
             print(f"   - {msg}")
-    print("--- Phase G 검증 ---")
-    if phase_g["ok"]:
+    print("--- Phase G 검증 ---" if not is_phase_h else "--- Phase H (YAML 동결) ---")
+    if is_phase_h:
+        print(
+            f"✅ Phase H SSOT — SL {manager.phase_h_sl_ratio:.0%} / TP {manager.phase_h_tp_ratio:.0%} / "
+            f"emperor {manager.phase_h_emperor_price_ratio:.0%} / wait {manager.phase_h_min_wait_bdays}bd"
+        )
+    elif phase_g["ok"]:
         print("✅ Phase G DoD 통과 (기준봉 당일 매수 없음·단리·손절 작동)")
     else:
         print("⚠️ Phase G 이슈:")

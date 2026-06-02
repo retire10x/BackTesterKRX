@@ -35,6 +35,13 @@ class V4StrategyConfig:
     field_test_invest_amount: float
     stock_price_ceiling: float
     stock_price_floor: float
+    emperor_cap_ratio: float
+    phase_h_min_wait_bdays: int
+
+
+@dataclass(frozen=True)
+class V4EngineConfig:
+    phase_mode: str
 
 
 @dataclass(frozen=True)
@@ -53,6 +60,7 @@ class V4CostsConfig:
 class V4Config:
     environment_mode: str
     environment_initial_cash: float
+    engine: V4EngineConfig
     strategy: V4StrategyConfig
     portfolio: V4PortfolioConfig
     costs: V4CostsConfig
@@ -78,6 +86,11 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
         raise KeyError("v4_0.environment 블록 형식이 올바르지 않습니다.")
     portfolio = v4.get("portfolio")
     costs = v4.get("costs")
+    engine = v4.get("engine")
+    if engine is None:
+        engine = {"phase_mode": "g"}
+    if not isinstance(engine, dict):
+        raise KeyError("v4_0.engine 블록 형식이 올바르지 않습니다.")
     if not isinstance(strategy, dict):
         raise KeyError("v4_0.strategy 블록이 없습니다.")
     if not isinstance(portfolio, dict):
@@ -105,9 +118,13 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
         min_invest = min(min_invest, max(ft_invest * 0.85, 10_000.0))
     stock_price_ceiling = float(strategy.get("stock_price_ceiling", 20_000))
     stock_price_floor = float(strategy.get("stock_price_floor", 1_000))
+    emperor_cap = float(strategy.get("emperor_cap_ratio", 0.20))
+    phase_h_wait = int(strategy.get("phase_h_min_wait_bdays", 5))
+    phase_mode = str(engine.get("phase_mode", "g")).strip().lower()
     return V4Config(
         environment_mode=env_mode,
         environment_initial_cash=env_initial_cash,
+        engine=V4EngineConfig(phase_mode=phase_mode),
         strategy=V4StrategyConfig(
             nuliim_ratio=float(strategy["nuliim_ratio"]),
             fixed_invest_amount=float(strategy["fixed_invest_amount"]),
@@ -120,6 +137,8 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
             field_test_invest_amount=ft_invest,
             stock_price_ceiling=stock_price_ceiling,
             stock_price_floor=stock_price_floor,
+            emperor_cap_ratio=emperor_cap,
+            phase_h_min_wait_bdays=phase_h_wait,
         ),
         portfolio=V4PortfolioConfig(
             initial_cash=env_initial_cash if env_mode == "field_test" else float(portfolio["initial_cash"]),

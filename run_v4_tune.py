@@ -9,6 +9,8 @@ v4.0 Phase G — YAML 하이퍼파라미터 튜닝 (main 병합 없음).
   python run_v4_tune.py --quick                      # 대표 시나리오 축소 실행
   python run_v4_tune.py --phase-h2-grid             # Phase H-2 미세 그리드 전용
   python run_v4_tune.py --phase-h2-grid --quick     # H-2 소형 그리드
+  python run_v4_tune.py --phase-i-grid              # Phase I 소형 그리드(기준봉·실종·Top-N)
+  python run_v4_tune.py --phase-i-grid --quick      # Phase I 축소 그리드
 """
 from __future__ import annotations
 
@@ -82,6 +84,11 @@ def _scenarios(quick: bool) -> list[tuple[str, dict[str, float | int], str]]:
                 ("rr_tight_3pct", {"stop_loss_ratio": 0.03, "target_profit_ratio": 0.03}, "g"),
                 ("rr_wide_5pct", {"stop_loss_ratio": 0.05, "target_profit_ratio": 0.05}, "g"),
                 ("combo_phase_h_double_bottom", {}, "h"),
+                (
+                    "combo_phase_i_kosdaq_sniper",
+                    {"phase_h_sl_ratio": 0.04, "phase_h_tp_ratio": 0.10},
+                    "i",
+                ),
             ]
         )
         return scenarios
@@ -118,6 +125,11 @@ def _scenarios(quick: bool) -> list[tuple[str, dict[str, float | int], str]]:
                 "g",
             ),
             ("combo_phase_h_double_bottom", {}, "h"),
+            (
+                "combo_phase_i_kosdaq_sniper",
+                {"phase_h_sl_ratio": 0.04, "phase_h_tp_ratio": 0.10},
+                "i",
+            ),  # [폐기] Phase I — 튜닝 DoD 미달 · YAML engine.phase_mode=h 고정
         ]
     )
     return scenarios
@@ -161,6 +173,44 @@ def _phase_h2_grid_scenarios(
     return scenarios
 
 
+def _phase_i_grid_scenarios(quick: bool) -> list[tuple[str, dict[str, float | int], str]]:
+    """
+    Phase I 소형 그리드 (field_test · SL4/TP10 고정):
+    - min_anchor_trade_krw: 10억 / 30억 (quick: 10억만)
+    - phase_i_volume_dry_ratio: 10% / 15%
+    - phase_i_anchor_top_n: 15 / 30
+    """
+    anchor_grid = [1_000_000_000] if quick else [1_000_000_000, 3_000_000_000]
+    dry_grid = [0.10, 0.15]
+    top_grid = [15, 30] if not quick else [15, 30]
+    base = {
+        "phase_h_sl_ratio": 0.04,
+        "phase_h_tp_ratio": 0.10,
+    }
+    scenarios: list[tuple[str, dict[str, float | int], str]] = [
+        ("combo_phase_i_kosdaq_sniper", dict(base), "i"),
+    ]
+    for anc in anchor_grid:
+        for dry in dry_grid:
+            for top in top_grid:
+                tag = (
+                    f"i1_anc{int(anc/1e8):02d}e8_dry{int(dry*100):02d}_top{top:02d}"
+                )
+                scenarios.append(
+                    (
+                        tag,
+                        {
+                            **base,
+                            "phase_i_min_anchor_trade_krw": int(anc),
+                            "phase_i_volume_dry_ratio": dry,
+                            "phase_i_anchor_top_n": int(top),
+                        },
+                        "i",
+                    )
+                )
+    return scenarios
+
+
 def _run_one(
     day_frames,
     bdays,
@@ -170,7 +220,10 @@ def _run_one(
     initial_cash: float,
 ) -> dict[str, object]:
     v4 = v4_config_with_strategy_overrides(overrides)
-    is_phase_h = str(phase_mode).lower() == "h"
+    pm = str(phase_mode).lower()
+    is_phase_h = pm == "h"
+    is_phase_i = pm == "i"
+    is_box = is_phase_h or is_phase_i
     phase_h_sl = float(overrides["phase_h_sl_ratio"]) if "phase_h_sl_ratio" in overrides else None
     phase_h_tp = float(overrides["phase_h_tp_ratio"]) if "phase_h_tp_ratio" in overrides else None
     phase_h_emperor = (
@@ -181,17 +234,36 @@ def _run_one(
     phase_h_fixed = (
         float(overrides["phase_h_fixed_amount"]) if "phase_h_fixed_amount" in overrides else None
     )
+    phase_i_dry = (
+        float(overrides["phase_i_volume_dry_ratio"])
+        if "phase_i_volume_dry_ratio" in overrides
+        else None
+    )
+    phase_i_anc = (
+        float(overrides["phase_i_min_anchor_trade_krw"])
+        if "phase_i_min_anchor_trade_krw" in overrides
+        else None
+    )
+    phase_i_top = (
+        int(overrides["phase_i_anchor_top_n"])
+        if "phase_i_anchor_top_n" in overrides
+        else None
+    )
     mgr = PortfolioManager(
         day_frames,
         bdays,
         start_date=START_DATE,
         end_date=END_DATE,
-        phase_g_mode=not is_phase_h,
+        phase_g_mode=not is_box,
         phase_h_mode=is_phase_h,
-        phase_h_sl_ratio=phase_h_sl if is_phase_h else None,
-        phase_h_tp_ratio=phase_h_tp if is_phase_h else None,
-        phase_h_fixed_amount=phase_h_fixed if is_phase_h else None,
+        phase_i_mode=is_phase_i,
+        phase_h_sl_ratio=phase_h_sl if is_box else None,
+        phase_h_tp_ratio=phase_h_tp if is_box else None,
+        phase_h_fixed_amount=phase_h_fixed if is_box else None,
         phase_h_emperor_price_ratio=phase_h_emperor if is_phase_h else None,
+        phase_i_volume_dry_ratio=phase_i_dry if is_phase_i else None,
+        phase_i_min_anchor_trade_krw=phase_i_anc if is_phase_i else None,
+        phase_i_anchor_top_n=phase_i_top if is_phase_i else None,
         v4_config=v4,
     )
     result = mgr.run()
@@ -206,17 +278,24 @@ def _run_one(
         if not sells.empty and "exit_type" in sells.columns
         else 0
     )
-    h_sl = float(mgr.phase_h_sl_ratio) if is_phase_h else np.nan
-    h_tp = float(mgr.phase_h_tp_ratio) if is_phase_h else np.nan
+    h_sl = float(mgr.phase_h_sl_ratio) if is_box else np.nan
+    h_tp = float(mgr.phase_h_tp_ratio) if is_box else np.nan
     h_emperor = float(mgr.phase_h_emperor_price_ratio) if is_phase_h else np.nan
-    h_fixed = float(mgr.phase_h_fixed_amount) if is_phase_h else np.nan
+    h_fixed = float(mgr.phase_h_fixed_amount) if is_box else np.nan
+    i_dry = float(mgr.phase_i_volume_dry_ratio) if is_phase_i else np.nan
+    i_anc = float(mgr.phase_i_min_anchor_trade_krw) if is_phase_i else np.nan
+    i_top = int(mgr.phase_i_anchor_top_n) if is_phase_i else np.nan
+    phase_label = "I" if is_phase_i else ("H" if is_phase_h else "G")
     return {
         "scenario": name,
-        "phase_mode": "H" if is_phase_h else "G",
+        "phase_mode": phase_label,
         "phase_h_sl_ratio": h_sl,
         "phase_h_tp_ratio": h_tp,
         "phase_h_emperor_cap_ratio": h_emperor,
         "phase_h_fixed_amount": h_fixed,
+        "phase_i_volume_dry_ratio": i_dry,
+        "phase_i_min_anchor_trade_krw": i_anc,
+        "phase_i_anchor_top_n": i_top,
         "fixed_invest_amount": s.fixed_invest_amount,
         "max_daily_cash_deploy_ratio": s.max_daily_cash_deploy_ratio,
         "nuliim_ratio": s.nuliim_ratio,
@@ -351,6 +430,22 @@ def _write_report(df: pd.DataFrame, baseline: dict[str, float | int]) -> None:
     baseline_row = df[df["scenario"] == "combo_phase_h_double_bottom"]
     if baseline_row.empty:
         baseline_row = df[df["scenario"] == "baseline_yaml"]
+    phase_i_row = df[df["scenario"] == "combo_phase_i_kosdaq_sniper"]
+    if not phase_i_row.empty:
+        r = phase_i_row.iloc[0]
+        lines.extend(
+            [
+                "",
+                "## Phase I DoD 체크 (KOSDAQ Sniper · field_test)",
+                "",
+                f"- **승률:** {float(r['win_rate_pct']):.1f}% (목표 ≥45%)",
+                f"- **PF:** {float(r['profit_factor']):.2f} (목표 ≥1.0)",
+                f"- **최종 자산:** {float(r['final_equity']):,.0f}원 (초기 {float(r['initial_cash']):,.0f}원 · 흑자 목표)",
+                f"- **거래:** SELL {int(r['sell_count'])}건 · `STOP_LOSS_H` {int(r['stop_loss_h_count'])}건",
+                f"- **손익비:** SL {float(r['phase_h_sl_ratio']):.0%} / TP {float(r['phase_h_tp_ratio']):.0%}",
+            ]
+        )
+
     phase_h_row = df[df["scenario"] == "combo_phase_h_double_bottom"]
     if (
         not baseline_row.empty
@@ -439,6 +534,11 @@ def main() -> None:
         help="Phase H-2 미세 그리드(손절·익절·황제주컷) 전용 실행",
     )
     parser.add_argument(
+        "--phase-i-grid",
+        action="store_true",
+        help="Phase I 소형 그리드(기준봉 거래대금·거래량 실종·Top-N) 전용 실행",
+    )
+    parser.add_argument(
         "--only",
         nargs="+",
         metavar="SCENARIO",
@@ -451,11 +551,14 @@ def main() -> None:
     initial_cash = float(v4_base.portfolio.initial_cash)
     baseline = _yaml_strategy_baseline()
     field_test = str(v4_base.environment_mode).strip().lower() == "field_test"
-    scenario_list = (
-        _phase_h2_grid_scenarios(args.quick, field_test=field_test)
-        if args.phase_h2_grid
-        else _scenarios(args.quick)
-    )
+    if args.phase_h2_grid and args.phase_i_grid:
+        raise SystemExit("--phase-h2-grid 와 --phase-i-grid 는 동시에 사용할 수 없습니다.")
+    if args.phase_h2_grid:
+        scenario_list = _phase_h2_grid_scenarios(args.quick, field_test=field_test)
+    elif args.phase_i_grid:
+        scenario_list = _phase_i_grid_scenarios(args.quick)
+    else:
+        scenario_list = _scenarios(args.quick)
     if args.only:
         only_set = set(args.only)
         scenario_list = [s for s in scenario_list if s[0] in only_set]
@@ -465,7 +568,14 @@ def main() -> None:
         if not scenario_list:
             raise SystemExit("--only 로 매칭된 시나리오가 없습니다.")
 
-    mode_txt = "Phase H-2 Grid" if args.phase_h2_grid else "Phase G/H"
+    if args.phase_h2_grid:
+        mode_txt = "Phase H-2 Grid"
+    elif args.phase_i_grid:
+        mode_txt = "Phase I Grid"
+    elif scenario_list and all(s[2] == "i" for s in scenario_list):
+        mode_txt = "Phase I (KOSDAQ Sniper)"
+    else:
+        mode_txt = "Phase G/H/I"
     print(f"🔧 v4.0 {mode_txt} 튜닝 — 벌크 로드 (1회)...")
     day_frames, bdays = load_merged_market_day_frames(START_DATE, END_DATE, force_bulk=True)
     print(f"   {len(day_frames)} 영업일 · 시나리오 {len(scenario_list)}개")

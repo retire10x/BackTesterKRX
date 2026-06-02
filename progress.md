@@ -79,8 +79,36 @@
 - [x] **v4.0** Phase H-3 소액 필드 테스트 백테스트 실행·H-3 진입 차단 버그 3건 수정 (`run_v4_tune.py`·`v4_config.py`·`settings.yaml`)
 
 - [x] **v4.0** Phase H-3 H-2 미세 그리드(28시나리오·field_test 5만) 스윕 (`run_v4_tune.py --phase-h2-grid`)
+- [x] **v4.0** Phase I 코스닥 탄력주 엔진·백테스트 (`combo_phase_i_kosdaq_sniper` — DoD 미달)
+
+- [x] **v4.0** Phase I 소형 그리드(9시나리오·Top-N·실종·기준봉) 스윕 (`run_v4_tune.py --phase-i-grid`)
+
+- [x] **v4.0** Phase H YAML SSOT 동결 (`h2_sl03_tp10_ec20` · field_test · Phase I 폐기)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v4.0** Phase H — YAML SSOT 동결 · v4.0 검증 브랜치 마감)
+- **`config/settings.yaml`:** `engine.phase_mode=h` · field_test 10만/2슬롯/5만 · **SL 3% / TP 10% / emperor 20% / 5일 타임스탑 / 관망 5영업일** · deploy 45%
+- **`src/v4_config.py`:** `V4EngineConfig`·`emperor_cap_ratio`·`phase_h_min_wait_bdays` 파싱
+- **`portfolio_manager.py`:** Phase H SL/TP/emperor/wait/time_stop **YAML SSOT** 바인딩 (튜닝 오버라이드 없을 때)
+- **`run_v4_portfolio.py`:** `engine.phase_mode` 기준 Phase H 실행
+- **정책:** Phase I 라인 폐기 · main/GUI 병합 보류 유지 (Harness)
+
+### 2026-06-03 (**v4.0** Phase I — 소형 그리드 스윕)
+- **`run_v4_tune.py`:** `--phase-i-grid` — 기준봉 10억/30억 × 실종 10%/15% × Top15/30 (9시나리오)
+- **실행:** `python run_v4_tune.py --phase-i-grid` (~42분)
+- **PF 1위:** `i1_anc10e8_dry15_top15` — PF **0.71** · 79,351원 (-20.6%) · 62 SELL · 승률 **30.6%**
+- **핵심:** **Top15 >> Top30** (79k vs 44k) · 기준봉 10억/30억 동일(Top15 구간) · **PF≥1·흑자·승률45% 모두 미달**
+- **대비 Phase H-3:** PF 0.69·93,828원(-6.2%) — Phase I 그리드 최선도 **열위**
+- **산출:** `outputs/v4_tune_results.csv` · `v4_tune_run_phase_i_grid.log`
+
+### 2026-06-03 (**v4.0** Phase I — 코스닥 스나이퍼 백테스트·DoD 미달)
+- **엔진:** `scan_phase_i_kosdaq_universe`(코스닥·시총 700억~5,000억·거래대금 Top30≥30억) · `_phase_i_entry_allowed`(거래량 실종 15%+H-2 쌍바닥) · SL **-4%**/TP **+10%**
+- **Fix:** `_get_daily_ohlcv`에 `Volume` 누락 → 거래량 실종 필터 무력(진입 0건) 수정
+- **실행:** `python run_v4_tune.py --only combo_phase_i_kosdaq_sniper`
+- **결과:** 10만 → **44,533원** (-55.5%) · **74** SELL · 승률 **23.0%** · PF **0.37** · `STOP_LOSS_H` **42** — **PF≥1·흑자·승률45% 모두 미달**
+- **대비 Phase H-3:** 23 SELL·PF 0.67·-6.2% — Phase I는 거래·손절 급증·성과 악화
+- **산출:** `outputs/v4_tune_results.csv` · `v4_tune_report.md` §Phase I DoD · `v4_tune_run_phase_i.log`
 
 ### 2026-06-03 (**v4.0** Phase H-3 — H-2 미세 그리드 field_test 스윕)
 - **코드:** `run_v4_tune.py` — `field_test` 시 그리드 `phase_h_fixed_amount` 300만 주입 제거·기준선 `combo_phase_h_double_bottom`(Phase H)
