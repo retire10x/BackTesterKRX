@@ -99,6 +99,10 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
     env_mode = str(environment.get("mode", "standard")).strip().lower()
     env_initial_cash = float(environment.get("initial_cash", portfolio["initial_cash"]))
     ft_invest = float(strategy.get("field_test_invest_amount", 50_000))
+    min_invest = float(strategy["min_invest_amount"])
+    if env_mode == "field_test":
+        # H-3: 정수 주수 캡(예: 1.5만×3=4.5만) 허용 — 베팅금의 85% 이상이면 진입
+        min_invest = min(min_invest, max(ft_invest * 0.85, 10_000.0))
     stock_price_ceiling = float(strategy.get("stock_price_ceiling", 20_000))
     stock_price_floor = float(strategy.get("stock_price_floor", 1_000))
     return V4Config(
@@ -111,7 +115,7 @@ def v4_config_from_yaml_section(v4: dict) -> V4Config:
             target_profit_ratio=float(strategy["target_profit_ratio"]),
             max_track_days=int(strategy["max_track_days"]),
             max_hold_days=int(strategy["max_hold_days"]),
-            min_invest_amount=float(strategy["min_invest_amount"]),
+            min_invest_amount=min_invest,
             max_daily_cash_deploy_ratio=float(deploy),
             field_test_invest_amount=ft_invest,
             stock_price_ceiling=stock_price_ceiling,

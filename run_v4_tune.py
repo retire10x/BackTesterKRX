@@ -123,17 +123,25 @@ def _scenarios(quick: bool) -> list[tuple[str, dict[str, float | int], str]]:
     return scenarios
 
 
-def _phase_h2_grid_scenarios(quick: bool) -> list[tuple[str, dict[str, float | int], str]]:
+def _phase_h2_grid_scenarios(
+    quick: bool, *, field_test: bool = False
+) -> list[tuple[str, dict[str, float | int], str]]:
     """
     Phase H-2 미세 그리드:
     - sl_ratio: 3%/4%/5%
     - tp_ratio: 6%/8%/10%
     - emperor_cap_ratio: 30%/20%/15%
+    field_test(H-3)일 때 베팅금은 YAML(5만) SSOT — phase_h_fixed_amount 오버라이드 없음.
     """
     sl_grid = [0.03, 0.04] if quick else [0.03, 0.04, 0.05]
     tp_grid = [0.06, 0.08] if quick else [0.06, 0.08, 0.10]
     emperor_grid = [0.30, 0.20] if quick else [0.30, 0.20, 0.15]
-    scenarios: list[tuple[str, dict[str, float | int], str]] = [("baseline_yaml", {}, "g")]
+    scenarios: list[tuple[str, dict[str, float | int], str]] = [
+        ("combo_phase_h_double_bottom", {}, "h"),
+    ]
+    fixed_kw: dict[str, float | int] = (
+        {} if field_test else {"phase_h_fixed_amount": 3_000_000}
+    )
     for sl in sl_grid:
         for tp in tp_grid:
             for emperor in emperor_grid:
@@ -145,7 +153,7 @@ def _phase_h2_grid_scenarios(quick: bool) -> list[tuple[str, dict[str, float | i
                             "phase_h_sl_ratio": sl,
                             "phase_h_tp_ratio": tp,
                             "phase_h_emperor_cap_ratio": emperor,
-                            "phase_h_fixed_amount": 3_000_000,
+                            **fixed_kw,
                         },
                         "h",
                     )
@@ -163,10 +171,16 @@ def _run_one(
 ) -> dict[str, object]:
     v4 = v4_config_with_strategy_overrides(overrides)
     is_phase_h = str(phase_mode).lower() == "h"
-    phase_h_sl = float(overrides.get("phase_h_sl_ratio", 0.03))
-    phase_h_tp = float(overrides.get("phase_h_tp_ratio", 0.10))
-    phase_h_emperor = float(overrides.get("phase_h_emperor_cap_ratio", 0.30))
-    phase_h_fixed = float(overrides.get("phase_h_fixed_amount", 3_000_000))
+    phase_h_sl = float(overrides["phase_h_sl_ratio"]) if "phase_h_sl_ratio" in overrides else None
+    phase_h_tp = float(overrides["phase_h_tp_ratio"]) if "phase_h_tp_ratio" in overrides else None
+    phase_h_emperor = (
+        float(overrides["phase_h_emperor_cap_ratio"])
+        if "phase_h_emperor_cap_ratio" in overrides
+        else None
+    )
+    phase_h_fixed = (
+        float(overrides["phase_h_fixed_amount"]) if "phase_h_fixed_amount" in overrides else None
+    )
     mgr = PortfolioManager(
         day_frames,
         bdays,
@@ -192,13 +206,17 @@ def _run_one(
         if not sells.empty and "exit_type" in sells.columns
         else 0
     )
+    h_sl = float(mgr.phase_h_sl_ratio) if is_phase_h else np.nan
+    h_tp = float(mgr.phase_h_tp_ratio) if is_phase_h else np.nan
+    h_emperor = float(mgr.phase_h_emperor_price_ratio) if is_phase_h else np.nan
+    h_fixed = float(mgr.phase_h_fixed_amount) if is_phase_h else np.nan
     return {
         "scenario": name,
         "phase_mode": "H" if is_phase_h else "G",
-        "phase_h_sl_ratio": phase_h_sl if is_phase_h else np.nan,
-        "phase_h_tp_ratio": phase_h_tp if is_phase_h else np.nan,
-        "phase_h_emperor_cap_ratio": phase_h_emperor if is_phase_h else np.nan,
-        "phase_h_fixed_amount": phase_h_fixed if is_phase_h else np.nan,
+        "phase_h_sl_ratio": h_sl,
+        "phase_h_tp_ratio": h_tp,
+        "phase_h_emperor_cap_ratio": h_emperor,
+        "phase_h_fixed_amount": h_fixed,
         "fixed_invest_amount": s.fixed_invest_amount,
         "max_daily_cash_deploy_ratio": s.max_daily_cash_deploy_ratio,
         "nuliim_ratio": s.nuliim_ratio,
@@ -330,9 +348,15 @@ def _write_report(df: pd.DataFrame, baseline: dict[str, float | int]) -> None:
             f"{best_eq['final_equity']:,.0f}원 ({best_eq['cumulative_return_pct']:.2f}%), PF {best_eq['profit_factor']:.2f}"
         )
 
-    baseline_row = df[df["scenario"] == "baseline_yaml"]
+    baseline_row = df[df["scenario"] == "combo_phase_h_double_bottom"]
+    if baseline_row.empty:
+        baseline_row = df[df["scenario"] == "baseline_yaml"]
     phase_h_row = df[df["scenario"] == "combo_phase_h_double_bottom"]
-    if not baseline_row.empty and not phase_h_row.empty:
+    if (
+        not baseline_row.empty
+        and not phase_h_row.empty
+        and str(baseline_row.iloc[0]["scenario"]) != str(phase_h_row.iloc[0]["scenario"])
+    ):
         b_sell = int(baseline_row.iloc[0]["sell_count"])
         h_sell = int(phase_h_row.iloc[0]["sell_count"])
         reduction = (1.0 - (h_sell / b_sell)) * 100.0 if b_sell > 0 else 0.0
@@ -426,7 +450,12 @@ def main() -> None:
     v4_base = load_v4_config(cfg)
     initial_cash = float(v4_base.portfolio.initial_cash)
     baseline = _yaml_strategy_baseline()
-    scenario_list = _phase_h2_grid_scenarios(args.quick) if args.phase_h2_grid else _scenarios(args.quick)
+    field_test = str(v4_base.environment_mode).strip().lower() == "field_test"
+    scenario_list = (
+        _phase_h2_grid_scenarios(args.quick, field_test=field_test)
+        if args.phase_h2_grid
+        else _scenarios(args.quick)
+    )
     if args.only:
         only_set = set(args.only)
         scenario_list = [s for s in scenario_list if s[0] in only_set]

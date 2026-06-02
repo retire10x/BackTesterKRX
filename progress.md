@@ -76,7 +76,25 @@
 - [x] **v4.0** Phase H-3 소액 필드 테스트 모드(10만 원·2슬롯·주가 1천~2만 캡) 및 진입 선필터
 - [x] **v4.0** Phase E SSOT — `config/settings.yaml` `v4_0.*` · `src/v4_config.py` · `src/utils/config.py`
 
+- [x] **v4.0** Phase H-3 소액 필드 테스트 백테스트 실행·H-3 진입 차단 버그 3건 수정 (`run_v4_tune.py`·`v4_config.py`·`settings.yaml`)
+
+- [x] **v4.0** Phase H-3 H-2 미세 그리드(28시나리오·field_test 5만) 스윕 (`run_v4_tune.py --phase-h2-grid`)
+
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v4.0** Phase H-3 — H-2 미세 그리드 field_test 스윕)
+- **코드:** `run_v4_tune.py` — `field_test` 시 그리드 `phase_h_fixed_amount` 300만 주입 제거·기준선 `combo_phase_h_double_bottom`(Phase H)
+- **실행:** `python run_v4_tune.py --phase-h2-grid` (28시나리오 · 920영업일 · ~70분)
+- **결과:** PF≥1 **0/28** · 흑자 **0/28** · **PF 1위** `h2_sl03_tp10_ec20` (SL3%/TP10%/황제주20%) PF **0.69** · 최종 **94,518원** (-5.48%) · **최종자산 1위** 동일
+- **baseline 대비:** `combo_phase_h_double_bottom` PF 0.67·93,828원 → TP10%+ec20에서 PF +0.02·손실 -0.69%p 개선
+- **산출:** `outputs/v4_tune_results.csv` · `outputs/v4_tune_report.md` · `outputs/v4_tune_run_h3_h2_grid.log`
+
+### 2026-06-03 (**v4.0** Phase H-3 — 10만 원 필드 테스트 백테스트 실행)
+- **실행:** `python run_v4_tune.py --only combo_phase_h_double_bottom` (920영업일 · field_test SSOT)
+- **버그 수정(진입 0건 원인):** `run_v4_tune` Phase H `phase_h_fixed_amount` 기본값 300만 강제 주입 → `None` 시 YAML field_test(5만) 사용 · `min_invest_amount`·`max_daily_cash_deploy_ratio(0.45)`·정수 주수 캡이 5만 베팅과 충돌 → H-3 전용 하한·배분 1.0
+- **결과:** 초기 10만 → 최종 **93,828원** (-6.17%) · **23** SELL · PF **0.67** · MDD **-11.97%** · `STOP_LOSS_H` **12**건 · PF≥1 **0/1**
+- **산출:** `outputs/v4_tune_results.csv` · `outputs/v4_tune_report.md` · `outputs/v4_tune_run_h3_field_test.log`
+- **비교(H-2·3천만):** 동일 Phase H PF 0.62·-10.31% 대비 소액 유니버스(1천~2만·황제주 1.5만)에서 **거래 136→23건**·**MDD -12.7%→-12.0%**·Ruin(-97%) 회피
 
 ### 2026-06-02 (**v4.0** Phase H-3 — 10만 원 소액 필드 테스트 인프라)
 - **`config/settings.yaml`:** `v4_0.environment.mode=field_test`·`initial_cash=100000` · `portfolio.max_slots=2` · `strategy.field_test_invest_amount=50000` · `stock_price_floor=1000` · `stock_price_ceiling=20000`
