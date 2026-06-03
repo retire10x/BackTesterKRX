@@ -1,7 +1,7 @@
 """
 v5.x 20일선 변곡점 스나이퍼 — SSOT.
 
-유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 섹션.
+유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 / v5_3 섹션.
 """
 from __future__ import annotations
 
@@ -24,11 +24,22 @@ class V5UniverseLockConfig:
 
 
 @dataclass(frozen=True)
+class V5ScreenerConfig:
+    market: str
+    min_mcap_krw: float
+    max_mcap_krw: float
+    min_trade_krw: float
+    top_n: int
+
+
+@dataclass(frozen=True)
 class V5EnvironmentConfig:
     mode: str
     initial_cash: float
     universe_profile: str | None = None
     universe_lock: V5UniverseLockConfig | None = None
+    relay_interval_months: int | None = None
+    universe_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,7 @@ class V5Config:
     environment: V5EnvironmentConfig
     portfolio: V5PortfolioConfig
     strategy: V5StrategyConfig
+    screener: V5ScreenerConfig | None = None
 
 
 def _v5_yaml_section(cfg: dict | None = None, *, section: str = DEFAULT_V5_SECTION) -> dict:
@@ -121,6 +133,23 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
     price_ceiling = strategy.get("price_ceiling")
     price_floor = strategy.get("price_floor")
 
+    screener_raw = strategy.get("screener")
+    screener: V5ScreenerConfig | None = None
+    if isinstance(screener_raw, dict):
+        screener = V5ScreenerConfig(
+            market=str(screener_raw.get("market", "KOSDAQ")).strip().upper(),
+            min_mcap_krw=float(
+                screener_raw.get("min_mcap_krw", screener_raw.get("min_market_cap", 0))
+            ),
+            max_mcap_krw=float(
+                screener_raw.get("max_mcap_krw", screener_raw.get("max_market_cap", 0))
+            ),
+            min_trade_krw=float(
+                screener_raw.get("min_trade_krw", screener_raw.get("min_daily_volume_amt", 0))
+            ),
+            top_n=int(screener_raw.get("top_n", screener_raw.get("top_n_limit", 40))),
+        )
+
     lock_raw = environment.get("universe_lock")
     universe_lock: V5UniverseLockConfig | None = None
     if isinstance(lock_raw, dict):
@@ -155,6 +184,16 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
                 else None
             ),
             universe_lock=universe_lock,
+            relay_interval_months=(
+                int(environment["relay_interval_months"])
+                if environment.get("relay_interval_months") is not None
+                else None
+            ),
+            universe_dir=(
+                str(environment["universe_dir"]).strip()
+                if environment.get("universe_dir")
+                else None
+            ),
         ),
         portfolio=V5PortfolioConfig(
             max_slots=int(portfolio["max_slots"]),
@@ -190,7 +229,11 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
                 else None
             ),
         ),
+        screener=screener,
     )
+
+
+V53_SECTION = "v5_3"
 
 
 def load_v5_config(
@@ -199,6 +242,16 @@ def load_v5_config(
     section: str = DEFAULT_V5_SECTION,
 ) -> V5Config:
     return v5_config_from_yaml_section(_v5_yaml_section(cfg, section=section), section=section)
+
+
+def load_v5_relay_config(cfg: dict | None = None) -> V5Config:
+    """v5.3 릴레이 SSOT — screener·universe_dir 필수."""
+    v5 = load_v5_config(cfg=cfg, section=V53_SECTION)
+    if v5.screener is None:
+        raise KeyError(f"{V53_SECTION}.strategy.screener 블록이 필요합니다.")
+    if not v5.environment.universe_dir:
+        raise KeyError(f"{V53_SECTION}.environment.universe_dir 이 필요합니다.")
+    return v5
 
 
 UNIVERSE_LOCK_FALLBACK_SECTION = "v5_1"

@@ -89,10 +89,16 @@
 - [x] **v5.0 ②** field_test 920영업일 완주·`v5_run.log`·BUY 94/SELL 93 (Phase A PnL 검증식은 buy_fee 미반영으로 오탐)
 - [x] **v5.1** 고정 유니버스 JSON·`v5_1` SSOT·실행 전 스캔/백테스트 질문 러너
 - [x] **v5.2** Hit & Run 청산(+6%/-3%/3일)·`ma_inflection_hit_and_run`·`v5_2` SSOT (백테스트 사용자 승인 후)
-- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · 청산 효율 · `v5_dod_report.md` (v5_2 field_test 승인 후)
+- [x] **v5.3** 릴레이 7구간·`v5_relay_screener`·`run_v5_relay_portfolio`·PERIOD_RESET·자산 이월 (실행 사용자 승인 후)
+- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · 청산 효율 · `v5_dod_report.md` (v5_3 릴레이 field_test 승인 후)
 - [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v5.3** 릴레이 동적 유니버스 — 6개월 주도주 교체)
+- **`v5_3`:** `universe_dir` · `screener` · v5.2 손익비 청산 · 7구간(2023-01~2026-05)
+- **`v5_relay_screener.py`:** `univ_phase_1~7.json` + meta(억 원) + `relay_manifest.json` · 락 휴장일 자동 보정
+- **`run_v5_relay_portfolio.py`:** 구간별 자산 이월 · `PERIOD_RESET` · `v5_relay_equity_curve.csv` / `v5_relay_trades.csv` 병합
 
 ### 2026-06-03 (**v5.2** Hit & Run — MA20 추세청산 → 고정 손익비)
 - **원인(분석):** 변곡 당일 윗꼬리·단발 테마 → `TREND_EXIT_MA20` 시 손실 누적

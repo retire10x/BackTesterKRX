@@ -434,6 +434,23 @@ def load_v5_target_universe(
     return codes
 
 
+def write_universe_bundle(
+    codes: list[str],
+    meta: dict,
+    universe_path: str,
+) -> None:
+    """종목 코드 JSON + meta.json 저장."""
+    out_path = str(universe_path)
+    meta_path = _meta_path_for(out_path)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(codes, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+
+
 def scan_and_write_kosdaq_sniper_universe(
     *,
     project_root: str | None = None,
@@ -459,13 +476,7 @@ def scan_and_write_kosdaq_sniper_universe(
     meta_path = _meta_path_for(out_path)
 
     codes, meta, _ = _rank_codes_at_lock(lock_cfg, project_root=root)
-    os.makedirs(os.path.dirname(out_path) or root, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(codes, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    with open(meta_path, "w", encoding="utf-8") as fh:
-        json.dump(meta, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
+    write_universe_bundle(codes, meta, out_path)
 
     n = meta["total_scanned_count"]
     top = meta["scanned_items_report"][0] if meta["scanned_items_report"] else None

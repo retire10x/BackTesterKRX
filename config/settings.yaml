@@ -200,3 +200,37 @@ v5_2:
     target_profit_ratio: 0.06          # +6% 익절 (손익비 2.0)
     stop_loss_ratio: 0.03              # -3% 손절
     max_hold_days: 3                   # 3영업일 타임스탑
+
+v5_3:
+  environment:
+    mode: "field_test"
+    initial_cash: 100000
+    relay_interval_months: 6
+    universe_dir: "config/relay_universes/"
+
+  portfolio:
+    max_slots: 2
+    slot_invest_amount: 50000
+    trading_costs:
+      buy_cost_ratio: 0.00015
+      sell_cost_ratio: 0.00195
+
+  strategy:
+    strategy_name: "ma_inflection_relay_sniper"
+    lookback_window: 20
+    target_profit_ratio: 0.06
+    stop_loss_ratio: 0.03
+    max_hold_days: 3
+    screener:
+      market: "KOSDAQ"
+      min_market_cap: 70000000000
+      max_market_cap: 300000000000
+      min_daily_volume_amt: 5000000000
+      top_n_limit: 40
+
+# # 1) 7구간 유니버스만 박제 (수 분~수십 분, KRX/FDR)
+# .\venv\Scripts\python.exe run_v5_relay_portfolio.py --scan-only
+# # 2) 대화형: 스캔 Y/N → 백테스트 Y/N
+# .\venv\Scripts\python.exe run_v5_relay_portfolio.py
+# # 3) 기존 JSON으로 바로 백테스트
+# .\venv\Scripts\python.exe run_v5_relay_portfolio.py --yes      

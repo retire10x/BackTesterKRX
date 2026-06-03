@@ -45,6 +45,9 @@ class PortfolioManagerV5:
         end_date: str,
         v5_config: V5Config | None = None,
         target_universe: frozenset[str] | None = None,
+        starting_cash: float | None = None,
+        period_end_date: str | None = None,
+        trade_id_offset: int = 0,
     ):
         cfg = v5_config if v5_config is not None else load_v5_config()
         self.cfg = cfg
@@ -58,7 +61,9 @@ class PortfolioManagerV5:
         self.start_date = pd.Timestamp(str(start_date).strip()[:10]).normalize()
         self.end_date = pd.Timestamp(str(end_date).strip()[:10]).normalize()
 
-        self.initial_equity = float(env.initial_cash)
+        self.initial_equity = float(
+            starting_cash if starting_cash is not None else env.initial_cash
+        )
         self.max_slots = int(port.max_slots)
         self.fixed_amount = float(port.slot_invest_amount)
         self.buy_cost_ratio = float(costs.buy_cost_ratio)
@@ -90,7 +95,12 @@ class PortfolioManagerV5:
         self.trade_detail_rows: list[dict[str, Any]] = []
         self.equity_rows: list[dict[str, Any]] = []
         self.pass_logs: list[str] = []
-        self._trade_id_counter = 0
+        self._trade_id_counter = int(trade_id_offset)
+        self.period_end_date = (
+            pd.Timestamp(str(period_end_date).strip()[:10]).normalize()
+            if period_end_date
+            else None
+        )
 
         self._sim_start_idx = int(self.bdays.get_indexer([self.start_date], method="bfill")[0])
         self._sim_end_idx = int(self.bdays.get_indexer([self.end_date], method="ffill")[0])
@@ -379,6 +389,14 @@ class PortfolioManagerV5:
         )
         return True
 
+    def _period_reset_all(self, day_idx: int) -> None:
+        """구간 종료일 미청산 포지션 전량 종가 청산 (PERIOD_RESET)."""
+        for code in list(self.positions.keys()):
+            bar = self._get_daily_bar(code, day_idx)
+            if bar is None:
+                continue
+            self._execute_sell(code, float(bar["close"]), "PERIOD_RESET", day_idx)
+
     def _process_exits(self, day_idx: int) -> None:
         for code in list(self.positions.keys()):
             pos = self.positions[code]
@@ -451,8 +469,15 @@ class PortfolioManagerV5:
             self._execute_buy(c6, entry_price, day_idx)
 
     def evaluate_daily_trades_v5(self, day_idx: int) -> None:
-        """일자별 청산 후 변곡점 종가 진입."""
+        """일자별 청산 후 변곡점 종가 진입. 구간 말일은 PERIOD_RESET 후 진입 없음."""
+        trade_date = pd.Timestamp(self.bdays[day_idx]).normalize()
+        is_period_end = (
+            self.period_end_date is not None and trade_date == self.period_end_date
+        )
         self._process_exits(day_idx)
+        if is_period_end:
+            self._period_reset_all(day_idx)
+            return
         candidates = self._candidate_codes_ranked(day_idx)
         self._process_entries(day_idx, candidates)
 
