@@ -1,7 +1,7 @@
 """
 v5.x 20일선 변곡점 스나이퍼 — SSOT.
 
-유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 / v5_3 섹션.
+유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 / v5_3 / v5_4 섹션.
 """
 from __future__ import annotations
 
@@ -56,6 +56,12 @@ class V5PortfolioConfig:
 
 
 @dataclass(frozen=True)
+class V5MacroTrendFilterConfig:
+    enabled: bool
+    ma_window: int
+
+
+@dataclass(frozen=True)
 class V5StrategyConfig:
     strategy_name: str
     lookback_window: int
@@ -65,6 +71,7 @@ class V5StrategyConfig:
     stop_loss_ratio: float | None = None
     target_profit_ratio: float | None = None
     max_hold_days: int | None = None
+    macro_trend_filter: V5MacroTrendFilterConfig | None = None
 
     @property
     def use_hit_and_run_exit(self) -> bool:
@@ -150,6 +157,14 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
             top_n=int(screener_raw.get("top_n", screener_raw.get("top_n_limit", 40))),
         )
 
+    macro_raw = strategy.get("macro_trend_filter")
+    macro_trend_filter: V5MacroTrendFilterConfig | None = None
+    if isinstance(macro_raw, dict):
+        macro_trend_filter = V5MacroTrendFilterConfig(
+            enabled=bool(macro_raw.get("enabled", False)),
+            ma_window=int(macro_raw.get("ma_window", 60)),
+        )
+
     lock_raw = environment.get("universe_lock")
     universe_lock: V5UniverseLockConfig | None = None
     if isinstance(lock_raw, dict):
@@ -228,12 +243,15 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
                 if strategy.get("max_hold_days") is not None
                 else None
             ),
+            macro_trend_filter=macro_trend_filter,
         ),
         screener=screener,
     )
 
 
 V53_SECTION = "v5_3"
+V54_SECTION = "v5_4"
+DEFAULT_V5_RELAY_SECTION = V54_SECTION
 
 
 def load_v5_config(
@@ -244,13 +262,17 @@ def load_v5_config(
     return v5_config_from_yaml_section(_v5_yaml_section(cfg, section=section), section=section)
 
 
-def load_v5_relay_config(cfg: dict | None = None) -> V5Config:
-    """v5.3 릴레이 SSOT — screener·universe_dir 필수."""
-    v5 = load_v5_config(cfg=cfg, section=V53_SECTION)
+def load_v5_relay_config(
+    cfg: dict | None = None,
+    *,
+    section: str = DEFAULT_V5_RELAY_SECTION,
+) -> V5Config:
+    """v5.3/v5.4 릴레이 SSOT — screener·universe_dir 필수."""
+    v5 = load_v5_config(cfg=cfg, section=section)
     if v5.screener is None:
-        raise KeyError(f"{V53_SECTION}.strategy.screener 블록이 필요합니다.")
+        raise KeyError(f"{section}.strategy.screener 블록이 필요합니다.")
     if not v5.environment.universe_dir:
-        raise KeyError(f"{V53_SECTION}.environment.universe_dir 이 필요합니다.")
+        raise KeyError(f"{section}.environment.universe_dir 이 필요합니다.")
     return v5
 
 

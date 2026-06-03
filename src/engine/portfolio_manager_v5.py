@@ -86,6 +86,9 @@ class PortfolioManagerV5:
         self.price_floor = float(strat.price_floor) if strat.price_floor is not None else 0.0
         self.strategy_name = str(strat.strategy_name)
         self.target_universe = target_universe
+        macro = strat.macro_trend_filter
+        self.macro_trend_enabled = bool(macro.enabled) if macro is not None else False
+        self.macro_ma_window = int(macro.ma_window) if macro is not None and macro.enabled else 0
 
         self.cash = float(self.initial_equity)
         self.positions: dict[str, V5OpenPosition] = {}
@@ -150,9 +153,12 @@ class PortfolioManagerV5:
             self.stock_history[c6] = pd.concat([hist, pd.DataFrame([bar], index=[dt])]).sort_index()
 
     def _is_ma_inflection_turning_up(self, ohlcv_df: pd.DataFrame) -> bool:
-        """20일선 변곡: 어제 종가≤MA20(바닥권) + 오늘 종가>20영업일 전 종가."""
+        """20일선 변곡 + (선택) 오늘 종가 > MA60/120 장기 대세 필터."""
         window = self.lookback_window
-        if len(ohlcv_df) < window + 1:
+        min_bars = window + 1
+        if self.macro_trend_enabled:
+            min_bars = max(min_bars, self.macro_ma_window)
+        if len(ohlcv_df) < min_bars:
             return False
 
         close_s = pd.to_numeric(ohlcv_df["close"], errors="coerce")
@@ -172,9 +178,16 @@ class PortfolioManagerV5:
         if not np.isfinite(yesterday_close) or not np.isfinite(yesterday_ma):
             return False
 
-        if yesterday_close <= yesterday_ma and today_close > past_20_close:
-            return True
-        return False
+        if not (yesterday_close <= yesterday_ma and today_close > past_20_close):
+            return False
+
+        if self.macro_trend_enabled:
+            ma_macro = float(
+                close_s.rolling(window=self.macro_ma_window).mean().iloc[-1]
+            )
+            if not np.isfinite(ma_macro) or today_close <= ma_macro:
+                return False
+        return True
 
     def _should_trend_exit_ma20(self, ohlcv_df: pd.DataFrame) -> bool:
         window = self.exit_ma_window

@@ -49,7 +49,7 @@ from src.engine.portfolio_manager import (  # noqa: E402
     load_merged_market_day_frames,
 )
 from src.engine.portfolio_manager_v5 import PortfolioManagerV5  # noqa: E402
-from src.v5_config import V53_SECTION, load_v5_relay_config  # noqa: E402
+from src.v5_config import DEFAULT_V5_RELAY_SECTION, load_v5_relay_config  # noqa: E402
 from src.v5_relay_screener import (  # noqa: E402
     RELAY_BACKTEST_END,
     RELAY_BACKTEST_START,
@@ -81,19 +81,27 @@ def _prompt_yes_no(question: str, *, default: str | None = None) -> bool:
         print("  → y 또는 n 으로 답해 주세요.")
 
 
+def _entry_plan_line(strat) -> str:
+    base = (
+        f"MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
+    )
+    mf = strat.macro_trend_filter
+    if mf is not None and mf.enabled:
+        return f"{base} AND 종가>MA{mf.ma_window}"
+    return base
+
+
 def _print_relay_plan(v5, universe_dir: str) -> None:
     strat = v5.strategy
     env = v5.environment
     port = v5.portfolio
     sc = v5.screener
-    print(f"\n--- v5.3 릴레이 백테스트 계획 ({V53_SECTION}) ---")
+    print(f"\n--- v5 릴레이 백테스트 계획 ({v5.section}) ---")
     print(f"  전략     : {strat.strategy_name}")
     print(f"  기간     : {RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END} ({len(RELAY_PHASES)}구간)")
     print(f"  자본     : {env.initial_cash:,.0f}원 시작 · 구간 종료 시 이월")
     print(f"  슬롯     : {port.max_slots} × {port.slot_invest_amount:,.0f}원")
-    print(
-        f"  진입     : MA{strat.lookback_window} 변곡 종가"
-    )
+    print(f"  진입     : {_entry_plan_line(strat)}")
     print(
         f"  청산     : 익절 +{strat.target_profit_ratio:.0%} · "
         f"손절 -{strat.stop_loss_ratio:.0%} · {strat.max_hold_days}일 · 구간말 PERIOD_RESET"
@@ -121,10 +129,11 @@ def _all_universe_files_exist(universe_dir: str) -> bool:
 
 def run_v5_relay_backtest(
     *,
+    section: str = DEFAULT_V5_RELAY_SECTION,
     scan_universes: bool | None = None,
     skip_prompts: bool = False,
 ) -> None:
-    v5 = load_v5_relay_config()
+    v5 = load_v5_relay_config(section=section)
     universe_dir = _resolve_universe_dir(v5, project_root)
     os.makedirs(universe_dir, exist_ok=True)
 
@@ -234,7 +243,7 @@ def run_v5_relay_backtest(
     sell_count = int((detail_merged["side"] == "SELL").sum()) if not detail_merged.empty else 0
 
     print("\n========================================================")
-    print("📈 v5.3 릴레이 통합 성적표")
+    print(f"📈 v5 릴레이 통합 성적표 ({section})")
     print("========================================================")
     print(f"기간              : {RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END}")
     print(f"초기 자산         : {base_initial:,.0f} 원")
@@ -260,7 +269,13 @@ def run_v5_relay_backtest(
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="v5.3 릴레이 백테스트 — 7구간 동적 유니버스")
+    p = argparse.ArgumentParser(description="v5 릴레이 백테스트 — 7구간 동적 유니버스")
+    p.add_argument(
+        "--section",
+        default=DEFAULT_V5_RELAY_SECTION,
+        choices=("v5_3", "v5_4"),
+        help=f"YAML 섹션 (기본 {DEFAULT_V5_RELAY_SECTION})",
+    )
     p.add_argument(
         "--scan-universes",
         action="store_true",
@@ -282,13 +297,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 if __name__ == "__main__":
     args = _parse_args()
     if args.scan_only:
-        v5 = load_v5_relay_config()
+        v5 = load_v5_relay_config(section=args.section)
         scan_all_relay_universes(v5=v5, project_root=project_root)
         sys.exit(0)
 
     scan_flag: bool | None = None
     if args.scan_universes:
-        v5 = load_v5_relay_config()
+        v5 = load_v5_relay_config(section=args.section)
         scan_all_relay_universes(v5=v5, project_root=project_root)
         scan_flag = False
-    run_v5_relay_backtest(scan_universes=scan_flag, skip_prompts=args.yes)
+    run_v5_relay_backtest(
+        section=args.section,
+        scan_universes=scan_flag,
+        skip_prompts=args.yes,
+    )

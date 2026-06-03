@@ -83,9 +83,13 @@ def _print_strategy_plan(v5, universe_codes: list[str] | None) -> None:
     print(f"  전략     : {strat.strategy_name}")
     print(f"  기간     : {START_DATE} ~ {END_DATE}")
     print(f"  자본     : {env.initial_cash:,.0f}원 · 슬롯 {port.max_slots} × {port.slot_invest_amount:,.0f}원")
-    print(
-        f"  진입     : MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
+    entry = (
+        f"MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
     )
+    mf = strat.macro_trend_filter
+    if mf is not None and mf.enabled:
+        entry += f" AND 종가>MA{mf.ma_window}"
+    print(f"  진입     : {entry}")
     if strat.use_hit_and_run_exit:
         print(
             f"  청산     : 익절 +{strat.target_profit_ratio:.0%} · "
@@ -232,7 +236,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--section",
         default=DEFAULT_V5_SECTION,
-        choices=("v5_0", "v5_1", "v5_2"),
+        choices=("v5_0", "v5_1", "v5_2", "v5_3", "v5_4"),
         help=f"YAML 섹션 (기본 {DEFAULT_V5_SECTION})",
     )
     p.add_argument(

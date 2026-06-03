@@ -90,10 +90,15 @@
 - [x] **v5.1** 고정 유니버스 JSON·`v5_1` SSOT·실행 전 스캔/백테스트 질문 러너
 - [x] **v5.2** Hit & Run 청산(+6%/-3%/3일)·`ma_inflection_hit_and_run`·`v5_2` SSOT (백테스트 사용자 승인 후)
 - [x] **v5.3** 릴레이 7구간·`v5_relay_screener`·`run_v5_relay_portfolio`·PERIOD_RESET·자산 이월 (실행 사용자 승인 후)
+- [x] **v5.4** 장기 대세 필터(`macro_trend_filter` MA60/120)·`ma_inflection_with_macro_filter`·릴레이 기본 `v5_4`
 - [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · 청산 효율 · `v5_dod_report.md` (v5_3 릴레이 field_test 승인 후)
 - [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v5.4** 장기 이평 대세 필터 — 변곡 + MA60)
+- **`macro_trend_filter`:** `enabled` · `ma_window` 60/120 — 진입 시 종가 > 장기 MA
+- **`v5_4`:** v5.3 릴레이 + Hit&Run · `run_v5_relay_portfolio.py --section v5_4` (기본 섹션)
 
 ### 2026-06-03 (**v5.3** 릴레이 동적 유니버스 — 6개월 주도주 교체)
 - **`v5_3`:** `universe_dir` · `screener` · v5.2 손익비 청산 · 7구간(2023-01~2026-05)
