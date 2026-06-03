@@ -150,8 +150,8 @@ v5_1:
       lock_date: "2022-12-29"           # 백테스트 전날 스냅샷 (생존·미래참조 편향 차단)
       backtest_start: "2023-01-01"      # lock_date < backtest_start 검증용
       market: "KOSDAQ"
-      min_mcap_krw: 70000000000        # 700억 이상
-      max_mcap_krw: 300000000000       # 3,000억 이하
+      min_mcap_krw: 90000000000        # 900억 이상
+      max_mcap_krw: 400000000000       # 4,000억 이하
       top_n: 40                         # 거래대금 상위 40
       min_trade_krw: 5000000000        # 당일 거래대금 하한 50억 (절대 기준)
 
@@ -182,8 +182,8 @@ v5_2:
       lock_date: "2022-12-29"
       backtest_start: "2023-01-01"
       market: "KOSDAQ"
-      min_mcap_krw: 70000000000
-      max_mcap_krw: 300000000000
+      min_mcap_krw: 90000000000
+      max_mcap_krw: 400000000000
       top_n: 40
       min_trade_krw: 5000000000
 
@@ -223,8 +223,8 @@ v5_3:
     max_hold_days: 3
     screener:
       market: "KOSDAQ"
-      min_market_cap: 70000000000
-      max_market_cap: 300000000000
+      min_market_cap: 90000000000
+      max_market_cap: 400000000000
       min_daily_volume_amt: 5000000000
       top_n_limit: 40
 
@@ -254,8 +254,8 @@ v5_4:
       ma_window: 120                   # 60(수급선) 또는 120(경기선)
     screener:
       market: "KOSDAQ"
-      min_market_cap: 70000000000
-      max_market_cap: 300000000000
+      min_market_cap: 90000000000
+      max_market_cap: 400000000000
       min_daily_volume_amt: 5000000000
       top_n_limit: 40
 
@@ -289,8 +289,8 @@ v5_5:
         - 120
     screener:
       market: "KOSDAQ"
-      min_market_cap: 70000000000
-      max_market_cap: 300000000000
+      min_market_cap: 90000000000
+      max_market_cap: 400000000000
       min_daily_volume_amt: 5000000000
       top_n_limit: 40
 
