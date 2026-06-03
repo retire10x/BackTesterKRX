@@ -1,7 +1,7 @@
 """
 v5.x 20일선 변곡점 스나이퍼 백테스트.
 
-SSOT: config/settings.yaml v5_1 (기본) / v5_0
+SSOT: config/settings.yaml v5_2 (기본) / v5_1 / v5_0
 전략 설계 단계: 실행 전 유니버스·백테스트 여부를 반드시 질문한다.
 """
 from __future__ import annotations
@@ -44,7 +44,12 @@ _load_env_file(os.path.join(project_root, ".env"))
 from run_v4_portfolio import START_DATE, END_DATE, validate_phase_a_trades  # noqa: E402
 from src.engine.portfolio_manager import load_merged_market_day_frames  # noqa: E402
 from src.engine.portfolio_manager_v5 import PortfolioManagerV5  # noqa: E402
-from src.v5_config import DEFAULT_V5_SECTION, load_v5_config  # noqa: E402
+from src.v5_config import (  # noqa: E402
+    DEFAULT_V5_SECTION,
+    get_effective_universe_lock,
+    load_v5_config,
+    v5_config_for_universe_scan,
+)
 from src.v5_universe import load_v5_target_universe, scan_and_write_kosdaq_sniper_universe  # noqa: E402
 
 EQUITY_CSV = os.path.join(project_root, "outputs", "v5_equity_curve.csv")
@@ -81,7 +86,14 @@ def _print_strategy_plan(v5, universe_codes: list[str] | None) -> None:
     print(
         f"  진입     : MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
     )
-    print(f"  청산     : MA{strat.exit_ma_window} 종가 이탈")
+    if strat.use_hit_and_run_exit:
+        print(
+            f"  청산     : 익절 +{strat.target_profit_ratio:.0%} · "
+            f"손절 -{strat.stop_loss_ratio:.0%} · {strat.max_hold_days}일 타임스탑 (장중 H/L)"
+        )
+    else:
+        ew = strat.exit_ma_window or strat.lookback_window
+        print(f"  청산     : MA{ew} 종가 이탈")
     if strat.price_floor is not None and strat.price_ceiling is not None:
         print(f"  가격필터 : {strat.price_floor:,.0f}~{strat.price_ceiling:,.0f}원")
     else:
@@ -123,19 +135,27 @@ def run_v5_portfolio_backtest(
     if env.universe_profile:
         if scan_universe is None and not skip_prompts:
             lock_hint = ""
-            if env.universe_lock is not None:
-                lock_hint = f" [락 기준일 {env.universe_lock.lock_date}]"
+            eff_lock = get_effective_universe_lock(v5)
+            if eff_lock is not None:
+                src = v5.section if env.universe_lock is not None else "v5_1(폴백)"
+                lock_hint = f" [락 {eff_lock.lock_date} · {src}]"
             scan_universe = _prompt_yes_no(
                 f"코스닥 유니버스를 lock_date 기준으로 박제 스캔할까요?{lock_hint}",
                 default="n",
             )
         if scan_universe:
+            scan_cfg = v5_config_for_universe_scan(v5)
             if env.universe_lock is None:
-                raise KeyError("스캔하려면 v5_1.environment.universe_lock 설정이 필요합니다.")
+                lk = scan_cfg.environment.universe_lock
+                assert lk is not None
+                print(
+                    f"ℹ️ {v5.section} 에 universe_lock 없음 → "
+                    f"v5_1 락({lk.lock_date})으로 스캔합니다."
+                )
             print("📡 유니버스 락 스캔 중 (과거 스냅샷만 사용, 당일/미래 시총 금지)…")
             universe_codes = scan_and_write_kosdaq_sniper_universe(
                 project_root=project_root,
-                config=v5,
+                config=scan_cfg,
             )
         else:
             universe_codes = load_v5_target_universe(project_root=project_root, config=v5)
@@ -212,13 +232,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--section",
         default=DEFAULT_V5_SECTION,
-        choices=("v5_0", "v5_1"),
+        choices=("v5_0", "v5_1", "v5_2"),
         help=f"YAML 섹션 (기본 {DEFAULT_V5_SECTION})",
     )
     p.add_argument(
         "--scan-universe",
         action="store_true",
-        help="고정 유니버스 JSON 재스캔 후 저장 (v5_1)",
+        help="고정 유니버스 JSON 재스캔 후 저장 (universe_lock SSOT)",
     )
     p.add_argument(
         "--no-scan",

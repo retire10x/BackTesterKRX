@@ -88,10 +88,17 @@
 - [x] **v5.0 ①** SSOT·`PortfolioManagerV5`·변곡점/MA20 청산 (`ma_inflection_sniper`)
 - [x] **v5.0 ②** field_test 920영업일 완주·`v5_run.log`·BUY 94/SELL 93 (Phase A PnL 검증식은 buy_fee 미반영으로 오탐)
 - [x] **v5.1** 고정 유니버스 JSON·`v5_1` SSOT·실행 전 스캔/백테스트 질문 러너
-- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · `TREND_EXIT_MA20` 청산 효율 · `v5_dod_report.md` (v5_1 유니버스로 재실행 시 사용자 승인 후)
+- [x] **v5.2** Hit & Run 청산(+6%/-3%/3일)·`ma_inflection_hit_and_run`·`v5_2` SSOT (백테스트 사용자 승인 후)
+- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · 청산 효율 · `v5_dod_report.md` (v5_2 field_test 승인 후)
 - [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v5.2** Hit & Run — MA20 추세청산 → 고정 손익비)
+- **원인(분석):** 변곡 당일 윗꼬리·단발 테마 → `TREND_EXIT_MA20` 시 손실 누적
+- **`v5_2`:** 동일 40종 JSON · `target_profit_ratio` 0.06 · `stop_loss_ratio` 0.03 · `max_hold_days` 3
+- **`portfolio_manager_v5`:** 장중 H/L 손절·익절 · `STOP_LOSS`/`TAKE_PROFIT`/`TIME_STOP` · 진입 `ENTRY_MA_INFLECTION_HIT_RUN`
+- **기본 섹션:** `DEFAULT_V5_SECTION=v5_2` · `python run_v5_breakout.py` (실행 전 Y/N)
 
 ### 2026-06-03 (Python venv 정합 — Cursor·의존성)
 - **`venv/`:** `pip install -r requirements.txt` 동기화 · `src.v5_config` import 검증

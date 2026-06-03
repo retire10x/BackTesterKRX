@@ -1,7 +1,7 @@
 """
 v5.x 20일선 변곡점 스나이퍼 — SSOT.
 
-유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 섹션.
+유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 섹션.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from src.data_loader import load_config
 
-DEFAULT_V5_SECTION = "v5_1"
+DEFAULT_V5_SECTION = "v5_2"
 
 
 @dataclass(frozen=True)
@@ -48,9 +48,20 @@ class V5PortfolioConfig:
 class V5StrategyConfig:
     strategy_name: str
     lookback_window: int
-    exit_ma_window: int
+    exit_ma_window: int | None
     price_ceiling: float | None
     price_floor: float | None
+    stop_loss_ratio: float | None = None
+    target_profit_ratio: float | None = None
+    max_hold_days: int | None = None
+
+    @property
+    def use_hit_and_run_exit(self) -> bool:
+        return (
+            self.stop_loss_ratio is not None
+            and self.target_profit_ratio is not None
+            and self.max_hold_days is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -156,9 +167,28 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
         strategy=V5StrategyConfig(
             strategy_name=str(strategy["strategy_name"]),
             lookback_window=int(strategy["lookback_window"]),
-            exit_ma_window=int(strategy.get("exit_ma_window", strategy["lookback_window"])),
+            exit_ma_window=(
+                int(strategy["exit_ma_window"])
+                if strategy.get("exit_ma_window") is not None
+                else None
+            ),
             price_ceiling=float(price_ceiling) if price_ceiling is not None else None,
             price_floor=float(price_floor) if price_floor is not None else None,
+            stop_loss_ratio=(
+                float(strategy["stop_loss_ratio"])
+                if strategy.get("stop_loss_ratio") is not None
+                else None
+            ),
+            target_profit_ratio=(
+                float(strategy["target_profit_ratio"])
+                if strategy.get("target_profit_ratio") is not None
+                else None
+            ),
+            max_hold_days=(
+                int(strategy["max_hold_days"])
+                if strategy.get("max_hold_days") is not None
+                else None
+            ),
         ),
     )
 
@@ -169,3 +199,47 @@ def load_v5_config(
     section: str = DEFAULT_V5_SECTION,
 ) -> V5Config:
     return v5_config_from_yaml_section(_v5_yaml_section(cfg, section=section), section=section)
+
+
+UNIVERSE_LOCK_FALLBACK_SECTION = "v5_1"
+
+
+def get_effective_universe_lock(
+    v5: V5Config,
+    *,
+    cfg: dict | None = None,
+    fallback_section: str = UNIVERSE_LOCK_FALLBACK_SECTION,
+) -> V5UniverseLockConfig | None:
+    """현재 섹션 lock 없으면 v5_1 등 폴백 섹션 lock 반환."""
+    if v5.environment.universe_lock is not None:
+        return v5.environment.universe_lock
+    fb = load_v5_config(cfg=cfg, section=fallback_section)
+    return fb.environment.universe_lock
+
+
+def v5_config_for_universe_scan(
+    v5: V5Config,
+    *,
+    cfg: dict | None = None,
+    fallback_section: str = UNIVERSE_LOCK_FALLBACK_SECTION,
+) -> V5Config:
+    """유니버스 박제 스캔용 — universe_lock 이 없으면 폴백 섹션 lock 을 주입."""
+    lock = get_effective_universe_lock(v5, cfg=cfg, fallback_section=fallback_section)
+    if lock is None:
+        raise KeyError(
+            f"스캔하려면 {v5.section} 또는 {fallback_section}.environment.universe_lock "
+            "설정이 필요합니다."
+        )
+    if v5.environment.universe_lock is not None:
+        return v5
+    return V5Config(
+        section=v5.section,
+        environment=V5EnvironmentConfig(
+            mode=v5.environment.mode,
+            initial_cash=v5.environment.initial_cash,
+            universe_profile=v5.environment.universe_profile,
+            universe_lock=lock,
+        ),
+        portfolio=v5.portfolio,
+        strategy=v5.strategy,
+    )

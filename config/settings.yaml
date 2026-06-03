@@ -170,3 +170,33 @@ v5_1:
 # python run_v5_breakout.py              # 스캔·실행 각각 질문
 # python run_v5_breakout.py --no-scan    # 기존 JSON, 실행만 질문
 # python run_v5_breakout.py --scan-universe --yes   # CI/자동화 전용(질문 생략)
+
+# v5.2 변곡점 Hit & Run — 동일 40종 유니버스 · 고정 손익비 청산 (MA20 추세청산 제거)
+v5_2:
+  environment:
+    mode: "field_test"
+    initial_cash: 100000
+    universe_profile: "config/kosdaq_sniper_universe.json"
+    # v5_1 과 동일 락 (스캔·Look-ahead 검증 SSOT)
+    universe_lock:
+      lock_date: "2022-12-29"
+      backtest_start: "2023-01-01"
+      market: "KOSDAQ"
+      min_mcap_krw: 70000000000
+      max_mcap_krw: 300000000000
+      top_n: 40
+      min_trade_krw: 5000000000
+
+  portfolio:
+    max_slots: 2
+    slot_invest_amount: 50000
+    trading_costs:
+      buy_cost_ratio: 0.00015
+      sell_cost_ratio: 0.00195
+
+  strategy:
+    strategy_name: "ma_inflection_hit_and_run"
+    lookback_window: 20
+    target_profit_ratio: 0.06          # +6% 익절 (손익비 2.0)
+    stop_loss_ratio: 0.03              # -3% 손절
+    max_hold_days: 3                   # 3영업일 타임스탑

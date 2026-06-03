@@ -1,8 +1,8 @@
 """
-v5.0 20일선 변곡점 스나이퍼 + MA20 이탈 추세 청산 포트폴리오 엔진.
+v5.x 20일선 변곡점 스나이퍼 포트폴리오 엔진.
 
-전략 원칙: 20일선 하부 바닥권에서 20영업일 전 종가 저항 돌파(변곡) 시 종가 진입,
-종가가 MA20을 하방 이탈하면 청산. Phase H/I·고정 손익비 로직 없음.
+진입: 20일선 하부 바닥권에서 20영업일 전 종가 저항 돌파(변곡) 시 종가 매수.
+청산: v5_0/v5_1 MA20 종가 이탈 · v5_2 고정 익절/손절/타임스탑(Hit & Run).
 """
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ class V5OpenPosition:
     buy_cost_paid: float
     trade_id: int
     slot_budget_at_entry: float
+    hold_days: int = 0
 
 
 class PortfolioManagerV5:
-    """v5.0 변곡점 스나이퍼 — 20일선 변곡 진입, MA20 종가 이탈 청산."""
+    """v5 변곡점 스나이퍼 — 변곡 진입, MA20 추세청산 또는 Hit & Run 고정 손익비."""
 
     def __init__(
         self,
@@ -64,7 +65,17 @@ class PortfolioManagerV5:
         self.sell_cost_ratio = float(costs.sell_cost_ratio)
 
         self.lookback_window = int(strat.lookback_window)
-        self.exit_ma_window = int(strat.exit_ma_window)
+        self.use_hit_and_run_exit = strat.use_hit_and_run_exit
+        if self.use_hit_and_run_exit:
+            self.stop_loss_ratio = float(strat.stop_loss_ratio)
+            self.target_profit_ratio = float(strat.target_profit_ratio)
+            self.max_hold_days = int(strat.max_hold_days)
+            self.exit_ma_window = int(strat.exit_ma_window or strat.lookback_window)
+        else:
+            self.exit_ma_window = int(strat.exit_ma_window or strat.lookback_window)
+            self.stop_loss_ratio = 0.0
+            self.target_profit_ratio = 0.0
+            self.max_hold_days = 0
         self.use_price_filter = strat.price_ceiling is not None and strat.price_floor is not None
         self.price_ceiling = float(strat.price_ceiling) if strat.price_ceiling is not None else float("inf")
         self.price_floor = float(strat.price_floor) if strat.price_floor is not None else 0.0
@@ -165,6 +176,27 @@ class PortfolioManagerV5:
         if not np.isfinite(today_close) or not np.isfinite(ma_exit):
             return False
         return today_close < ma_exit
+
+    def _evaluate_hit_and_run_exit(
+        self,
+        *,
+        entry_price: float,
+        high: float,
+        low: float,
+        close: float,
+        hold_days: int,
+    ) -> tuple[float, str] | None:
+        """손절(-3%) → 익절(+6%) → max_hold_days 타임스탑(종가). 장중 저가/고가 반영."""
+        target_px = entry_price * (1.0 + self.target_profit_ratio)
+        stop_px = entry_price * (1.0 - self.stop_loss_ratio)
+
+        if low <= stop_px:
+            return stop_px, "STOP_LOSS"
+        if high >= target_px:
+            return target_px, "TAKE_PROFIT"
+        if hold_days >= self.max_hold_days:
+            return close, "TIME_STOP"
+        return None
 
     def _position_market_value(self, code: str, day_idx: int) -> float:
         pos = self.positions.get(code)
@@ -339,13 +371,37 @@ class PortfolioManagerV5:
             entry_price=entry_price,
             qty=float(qty),
             invest_amount=invest_amount,
-            exit_type="ENTRY_MA_INFLECTION_20D",
+            exit_type=(
+                "ENTRY_MA_INFLECTION_HIT_RUN"
+                if self.use_hit_and_run_exit
+                else "ENTRY_MA_INFLECTION_20D"
+            ),
         )
         return True
 
     def _process_exits(self, day_idx: int) -> None:
         for code in list(self.positions.keys()):
+            pos = self.positions[code]
             self._append_history_bar(code, day_idx)
+            pos.hold_days += 1
+
+            if self.use_hit_and_run_exit:
+                bar = self._get_daily_bar(code, day_idx)
+                if bar is None:
+                    continue
+                exit_info = self._evaluate_hit_and_run_exit(
+                    entry_price=pos.entry_price,
+                    high=bar["high"],
+                    low=bar["low"],
+                    close=bar["close"],
+                    hold_days=pos.hold_days,
+                )
+                if exit_info is None:
+                    continue
+                exit_price, exit_type = exit_info
+                self._execute_sell(code, exit_price, exit_type, day_idx)
+                continue
+
             hist = self._history_as_of(code, day_idx)
             if hist is None:
                 continue
@@ -395,7 +451,7 @@ class PortfolioManagerV5:
             self._execute_buy(c6, entry_price, day_idx)
 
     def evaluate_daily_trades_v5(self, day_idx: int) -> None:
-        """일자별 청산(MA 이탈) 후 변곡점 종가 진입."""
+        """일자별 청산 후 변곡점 종가 진입."""
         self._process_exits(day_idx)
         candidates = self._candidate_codes_ranked(day_idx)
         self._process_entries(day_idx, candidates)
