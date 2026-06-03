@@ -1,41 +1,48 @@
 """
-v5.0 코스닥 스나이퍼 — SSOT.
+v5.0 20일선 변곡점 스나이퍼 — SSOT.
 
 유일한 숫자 기본값: config/settings.yaml 의 v5_0 섹션.
-엔진은 v4 portfolio_manager Phase I 경로를 재사용하며, V4Config 어댑터로 주입한다.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from src.data_loader import load_config
-from src.v4_config import (
-    V4Config,
-    V4CostsConfig,
-    V4EngineConfig,
-    V4PortfolioConfig,
-    V4StrategyConfig,
-    v4_config_from_yaml_section,
-)
 
 
 @dataclass(frozen=True)
-class V5KosdaqUniverseConfig:
-    min_mcap_krw: float
-    max_mcap_krw: float
-    min_anchor_trade_krw: float
-    anchor_top_n: int
-    volume_dry_ratio: float
+class V5EnvironmentConfig:
+    mode: str
+    initial_cash: float
+
+
+@dataclass(frozen=True)
+class V5TradingCostsConfig:
+    buy_cost_ratio: float
+    sell_cost_ratio: float
+
+
+@dataclass(frozen=True)
+class V5PortfolioConfig:
+    max_slots: int
+    slot_invest_amount: float
+    trading_costs: V5TradingCostsConfig
+
+
+@dataclass(frozen=True)
+class V5StrategyConfig:
+    strategy_name: str
+    lookback_window: int
+    exit_ma_window: int
+    price_ceiling: float
+    price_floor: float
 
 
 @dataclass(frozen=True)
 class V5Config:
-    environment_mode: str
-    environment_initial_cash: float
-    strategy: V4StrategyConfig
-    portfolio: V4PortfolioConfig
-    costs: V4CostsConfig
-    kosdaq: V5KosdaqUniverseConfig
+    environment: V5EnvironmentConfig
+    portfolio: V5PortfolioConfig
+    strategy: V5StrategyConfig
 
 
 def _v5_yaml_section(cfg: dict | None = None) -> dict:
@@ -44,58 +51,73 @@ def _v5_yaml_section(cfg: dict | None = None) -> dict:
     if not isinstance(raw, dict):
         raise KeyError(
             "config/settings.yaml 에 v5_0 섹션이 없습니다. "
-            "environment / strategy / portfolio / kosdaq_universe / costs 블록을 추가하세요."
+            "environment / portfolio / strategy 블록을 추가하세요."
         )
     return raw
 
 
 def v5_config_from_yaml_section(v5: dict) -> V5Config:
-    environment = v5.get("environment") or {}
+    environment = v5.get("environment")
+    portfolio = v5.get("portfolio")
+    strategy = v5.get("strategy")
     if not isinstance(environment, dict):
-        raise KeyError("v5_0.environment 블록 형식이 올바르지 않습니다.")
-    kosdaq = v5.get("kosdaq_universe")
-    if not isinstance(kosdaq, dict):
-        raise KeyError("v5_0.kosdaq_universe 블록이 없습니다.")
+        raise KeyError("v5_0.environment 블록이 없습니다.")
+    if not isinstance(portfolio, dict):
+        raise KeyError("v5_0.portfolio 블록이 없습니다.")
+    if not isinstance(strategy, dict):
+        raise KeyError("v5_0.strategy 블록이 없습니다.")
 
-    required_k = (
-        "min_mcap_krw",
-        "max_mcap_krw",
-        "min_anchor_trade_krw",
-        "anchor_top_n",
-        "volume_dry_ratio",
+    costs_raw = portfolio.get("trading_costs")
+    if not isinstance(costs_raw, dict):
+        raise KeyError("v5_0.portfolio.trading_costs 블록이 없습니다.")
+    for key in ("buy_cost_ratio", "sell_cost_ratio"):
+        if key not in costs_raw:
+            raise KeyError(f"v5_0.portfolio.trading_costs.{key} 누락")
+
+    if "max_slots" not in portfolio:
+        raise KeyError("v5_0.portfolio.max_slots 누락")
+    if "initial_cash" not in environment:
+        raise KeyError("v5_0.environment.initial_cash 누락")
+
+    required_s = (
+        "strategy_name",
+        "lookback_window",
+        "price_ceiling",
+        "price_floor",
     )
-    missing_k = [k for k in required_k if k not in kosdaq]
-    if missing_k:
-        raise KeyError("v5_0.kosdaq_universe 필수 키 누락: " + ", ".join(missing_k))
+    missing_s = [k for k in required_s if k not in strategy]
+    if missing_s:
+        raise KeyError("v5_0.strategy 필수 키 누락: " + ", ".join(missing_s))
 
-    v4 = v4_config_from_yaml_section(v5)
+    slot_invest = float(
+        portfolio.get(
+            "slot_invest_amount",
+            environment["initial_cash"] / max(int(portfolio["max_slots"]), 1),
+        )
+    )
+
     return V5Config(
-        environment_mode=v4.environment_mode,
-        environment_initial_cash=v4.environment_initial_cash,
-        strategy=v4.strategy,
-        portfolio=v4.portfolio,
-        costs=v4.costs,
-        kosdaq=V5KosdaqUniverseConfig(
-            min_mcap_krw=float(kosdaq["min_mcap_krw"]),
-            max_mcap_krw=float(kosdaq["max_mcap_krw"]),
-            min_anchor_trade_krw=float(kosdaq["min_anchor_trade_krw"]),
-            anchor_top_n=int(kosdaq["anchor_top_n"]),
-            volume_dry_ratio=float(kosdaq["volume_dry_ratio"]),
+        environment=V5EnvironmentConfig(
+            mode=str(environment.get("mode", "standard")).strip().lower(),
+            initial_cash=float(environment["initial_cash"]),
+        ),
+        portfolio=V5PortfolioConfig(
+            max_slots=int(portfolio["max_slots"]),
+            slot_invest_amount=slot_invest,
+            trading_costs=V5TradingCostsConfig(
+                buy_cost_ratio=float(costs_raw["buy_cost_ratio"]),
+                sell_cost_ratio=float(costs_raw["sell_cost_ratio"]),
+            ),
+        ),
+        strategy=V5StrategyConfig(
+            strategy_name=str(strategy["strategy_name"]),
+            lookback_window=int(strategy["lookback_window"]),
+            exit_ma_window=int(strategy.get("exit_ma_window", strategy["lookback_window"])),
+            price_ceiling=float(strategy["price_ceiling"]),
+            price_floor=float(strategy["price_floor"]),
         ),
     )
 
 
 def load_v5_config(cfg: dict | None = None) -> V5Config:
     return v5_config_from_yaml_section(_v5_yaml_section(cfg))
-
-
-def v5_to_v4_config(v5: V5Config) -> V4Config:
-    """portfolio_manager 주입용 — engine.phase_mode=i 고정."""
-    return V4Config(
-        environment_mode=v5.environment_mode,
-        environment_initial_cash=v5.environment_initial_cash,
-        engine=V4EngineConfig(phase_mode="i"),
-        strategy=v5.strategy,
-        portfolio=v5.portfolio,
-        costs=v5.costs,
-    )

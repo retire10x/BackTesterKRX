@@ -85,18 +85,41 @@
 
 - [x] **v4.0** Phase H YAML SSOT 동결 (`h2_sl03_tp10_ec20` · field_test · Phase I 폐기)
 
-- [ ] **v5.0** 브랜치·`v5_0` SSOT·`run_v5_portfolio.py` 베이스라인 (Phase A DoD 대기)
-- [ ] **v5.0** 코스닥 스나이퍼 그리드 튜닝·PF≥1 DoD (`run_v5_tune.py` 예정)
+- [x] **v5.0 ①** SSOT·`PortfolioManagerV5`·변곡점/MA20 청산 (`ma_inflection_sniper`)
+- [x] **v5.0 ②** field_test 920영업일 완주·`v5_run.log`·BUY 94/SELL 93 (Phase A PnL 검증식은 buy_fee 미반영으로 오탐)
+- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · `TREND_EXIT_MA20` 청산 효율 · `v5_dod_report.md`
+- [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
 
 ## 2. 최신 변경 이력 (Changelog)
 
-### 2026-06-03 (**v5.0** 착수 — 브랜치·SSOT·베이스라인 러너)
-- **브랜치:** `v5.0` (`v4.0` HEAD 분기) · main/v4 병합 없음
-- **`config/settings.yaml`:** `v5_0` — field_test 10만·2슬롯·5만 고정·SL -3%/TP +10%·코스닥 유니버스(기준봉 10억 Top15·실종 15%)
-- **`src/v5_config.py`:** `load_v5_config()` · `v5_to_v4_config()` (Phase I 엔진 주입)
-- **`run_v5_portfolio.py`:** `outputs/v5_equity_curve.csv` · `v5_trades.csv`
-- **`docs/작업지시서-v5.0-Kosdaq-Sniper.md`:** Phase A~C 로드맵
-- **다음:** `python run_v5_portfolio.py` 베이스라인 → Phase A DoD 기록
+### 2026-06-03 (**v5.0** 변곡점 스나이퍼 — 첫 field_test 시뮬레이션 점화)
+- **실행:** `python run_v5_breakout.py` (~8분) · 920영업일 · `outputs/v5_run.log`
+- **결과:** 10만 → **65,996원** (-34.0%) · **93** SELL · 승률 **34.4%** · PF **0.82** · MDD **-86.1%**
+- **청산:** `TREND_EXIT_MA20` 93건 · 진입 `ENTRY_MA_INFLECTION_20D` 94건
+- **Phase A:** SELL 건수·cash_after OK · PnL 샘플 10/10 불일치 — 검증식이 **매수 수수료 미반영**(엔진 `buy_cost_paid` 정상)
+- **다음:** ③ DoD(PF≥1·보유일·MA20 청산 효율) — **PF 0.82로 미달**
+
+### 2026-06-03 (**v5.0** 20일선 변곡점 스나이퍼 — 전략 교체·① 재완료)
+- **`config/settings.yaml`:** `ma_inflection_sniper` · `lookback_window`/`exit_ma_window` 20 · 거래량 돌파 제거
+- **`portfolio_manager_v5.py`:** `_is_ma_inflection_turning_up`(어제≤MA20·오늘>20영업일전종가) · `ENTRY_MA_INFLECTION_20D`
+- **`v5_config.py`:** `exit_ma_window` SSOT · `volume_spike_ratio` 제거
+- **`run_v5_breakout.py`:** Tee Unicode(cp949) 방어
+
+### 2026-06-03 (**v5.0** 3단계 실행 로드맵 문서화)
+- **`docs/작업지시서-v5.0-3단계-실행로드맵.md`:** ① 소스/YAML · ② field_test 완주·`v5_run.log` · ③ DoD(PF·보유일·추세청산) 순차 SSOT
+- **`run_v5_breakout.py`:** `run_v5_portfolio` 래핑 + 로그 Tee
+- **다음:** ② `python run_v5_breakout.py`
+
+### 2026-06-03 (**v5.0** 20일 전고점 돌파 엔진 — 마스터 스펙 반영)
+- **`config/settings.yaml`:** `v5_0` 추세추종 단일 SSOT — `twenty_day_breakout` · lookback 20 · 거래량 2배 · field_test · 매수/매도 비용 분리
+- **`src/engine/portfolio_manager_v5.py`:** `PortfolioManagerV5` — 전고점+거래량 돌파 진입 · MA20 종가 이탈 청산 (Phase H/I·고정 SL/TP 제거)
+- **`src/v5_config.py`:** v4 어댑터 제거 · `V5Config` 전용 파서
+- **`run_v5_portfolio.py`:** v5 전용 러너
+- **다음:** `python run_v5_portfolio.py` 베이스라인
+
+### 2026-06-03 (**v5.0** 착수 — 브랜치·초기 커밋)
+- **브랜치:** `v5.0` (`v4.0` HEAD 분기) · `origin/v5.0` 푸시
+- **`docs/작업지시서-v5.0-Kosdaq-Sniper.md`** · `docs/money_management_principles.md`
 
 ### 2026-06-03 (**v4.0** Phase H — YAML SSOT 동결 · v4.0 검증 브랜치 마감)
 - **`config/settings.yaml`:** `engine.phase_mode=h` · field_test 10만/2슬롯/5만 · **SL 3% / TP 10% / emperor 20% / 5일 타임스탑 / 관망 5영업일** · deploy 45%
@@ -237,7 +260,7 @@
 - **과거 changelog 원문:** `docs/progress_archive.md` — 2026-05-21~05-20 · **2026-05-22~05-31**(Phase F, 2026-06-01)
 - **main/GUI:** 단일종목 다음봉 시가 체결 · 매수 AND / 매도 OR · `settings.yaml` · 스크리너·차트 패닝 캐시
 - **v4.0 브랜치:** `smart_money_cascade` + `portfolio_manager` · `v4_0.*` SSOT · `run_v4_tune.py` 튜닝 · Ruin 서면 `docs/v4_ruin_analysis.md` — **main 병합 없음** (동결)
-- **v5.0 브랜치:** 코스닥 스나이퍼 · `v5_0.*` SSOT · `run_v5_portfolio.py` · `docs/작업지시서-v5.0-Kosdaq-Sniper.md` · `docs/money_management_principles.md`
+- **v5.0 브랜치:** MA20 변곡점 스나이퍼 · `portfolio_manager_v5` · `run_v5_breakout.py` · ② 완주(③ DoD 대기)
 
 ---
 

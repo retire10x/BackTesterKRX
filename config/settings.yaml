@@ -116,38 +116,24 @@ v4_0:
     buy_fee: 0.00015
     sell_fee_tax: 0.0018
 
-# v5.0 코스닥 스나이퍼 (run_v5_portfolio.py · v5_config SSOT)
-# 원칙: docs/money_management_principles.md — 소액 SL -3% / TP +10% / 2만 원 이하
-# v4_0 Phase H·I와 분리 — main 병합 금지
+# v5.0 20일선 변곡점 스나이퍼 (run_v5_portfolio.py · v5_config SSOT)
+# 원칙: 20일선 하부 바닥권 → 20영업일 전 종가 돌파(변곡) 종가 진입 · MA20 이탈 청산
+# v4_0 Phase H/I·고정 손익비와 분리 — main 병합 금지
 v5_0:
   environment:
-    mode: "field_test"
+    mode: "field_test"                 # 10만 원 소액 실전 테스트 모드
     initial_cash: 100000
-  engine:
-    phase_mode: "kosdaq_sniper"
+
   portfolio:
-    initial_cash: 100000
-    max_slots: 2
+    max_slots: 2                      # 슬롯당 5만 원 단리 고정 베팅
+    slot_invest_amount: 50000
+    trading_costs:
+      buy_cost_ratio: 0.00015         # 매수 수수료 0.015%
+      sell_cost_ratio: 0.00195        # 매도 수수료 + 세금 약 0.195%
+
   strategy:
-    field_test_invest_amount: 50000
-    fixed_invest_amount: 10000000
-    stock_price_floor: 1000
-    stock_price_ceiling: 20000
-    max_track_days: 30
-    max_daily_cash_deploy_ratio: 1.0
-    nuliim_ratio: 0.04
-    stop_loss_ratio: 0.03
-    target_profit_ratio: 0.10
-    max_hold_days: 5
-    emperor_cap_ratio: 0.20
-    phase_h_min_wait_bdays: 5
-    min_invest_amount: 100000
-  kosdaq_universe:
-    min_mcap_krw: 70000000000
-    max_mcap_krw: 500000000000
-    min_anchor_trade_krw: 1000000000
-    anchor_top_n: 15
-    volume_dry_ratio: 0.15
-  costs:
-    buy_fee: 0.00015
-    sell_fee_tax: 0.0018
+    strategy_name: "ma_inflection_sniper"
+    lookback_window: 20               # 변곡점 판정·20영업일 전 종가 저항선
+    exit_ma_window: 20                  # 종가 < MA20 시 추세 붕괴 청산
+    price_ceiling: 20000              # 1주 2만 원 초과 진입 제한
+    price_floor: 1000                 # 동전주 배제

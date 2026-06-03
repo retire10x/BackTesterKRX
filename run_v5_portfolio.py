@@ -1,8 +1,8 @@
 """
-v5.0 코스닥 스나이퍼 포트폴리오 백테스트 진입점.
+v5.0 20일선 변곡점 스나이퍼 백테스트.
 
 SSOT: config/settings.yaml v5_0
-엔진: portfolio_manager Phase I (v4 경로 재사용)
+엔진: PortfolioManagerV5 (변곡 진입 · MA20 이탈 청산)
 """
 import os
 import sys
@@ -38,54 +38,45 @@ def _load_env_file(path: str) -> None:
 
 _load_env_file(os.path.join(project_root, ".env"))
 
-from run_v4_portfolio import (  # noqa: E402
-    PASS_LOG_TXT,
-    START_DATE,
-    END_DATE,
-    validate_phase_a_trades,
-)
-from src.engine.portfolio_manager import PortfolioManager, load_merged_market_day_frames
-from src.v5_config import load_v5_config, v5_to_v4_config
+from run_v4_portfolio import START_DATE, END_DATE, validate_phase_a_trades  # noqa: E402
+from src.engine.portfolio_manager import load_merged_market_day_frames  # noqa: E402
+from src.engine.portfolio_manager_v5 import PortfolioManagerV5  # noqa: E402
+from src.v5_config import load_v5_config  # noqa: E402
 
 EQUITY_CSV = os.path.join(project_root, "outputs", "v5_equity_curve.csv")
 TRADES_CSV = os.path.join(project_root, "outputs", "v5_trades.csv")
+PASS_LOG_TXT = os.path.join(project_root, "outputs", "v5_pass_log.txt")
 
 
 def run_v5_portfolio_backtest():
     v5 = load_v5_config()
-    v4 = v5_to_v4_config(v5)
-    s = v5.strategy
-    k = v5.kosdaq
-    p = v5.portfolio
-    bet = s.field_test_invest_amount if v5.environment_mode == "field_test" else s.fixed_invest_amount
+    env = v5.environment
+    port = v5.portfolio
+    strat = v5.strategy
+    costs = port.trading_costs
 
-    print("🚀 v5.0 코스닥 스나이퍼 백테스트 (settings.yaml v5_0 SSOT) — 벌크 로딩 중...")
+    print("🚀 v5.0 20일선 변곡점 스나이퍼 (settings.yaml v5_0 SSOT) — 벌크 로딩 중...")
     print(
-        f"   field_test={v5.environment_mode == 'field_test'} · 초기 {p.initial_cash:,.0f}원 · "
-        f"베팅 {bet:,.0f}원/슬롯 · SL -{s.stop_loss_ratio:.0%} · TP +{s.target_profit_ratio:.0%} · "
-        f"주가 {s.stock_price_floor:,.0f}~{s.stock_price_ceiling:,.0f}원"
+        f"   {strat.strategy_name} · field_test={env.mode == 'field_test'} · "
+        f"초기 {env.initial_cash:,.0f}원 · 슬롯 {port.max_slots} × {port.slot_invest_amount:,.0f}원"
     )
     print(
-        f"   유니버스 시총 {k.min_mcap_krw/1e8:.0f}억~{k.max_mcap_krw/1e8:.0f}억 · "
-        f"기준봉 거래대금 ≥{k.min_anchor_trade_krw/1e8:.0f}억 Top{k.anchor_top_n} · "
-        f"실종 {k.volume_dry_ratio:.0%}"
+        f"   진입 MA{strat.lookback_window} 변곡(어제≤MA · 오늘>20영업일전종가) · "
+        f"청산 MA{strat.exit_ma_window} 종가 이탈 · 주가 {strat.price_floor:,.0f}~{strat.price_ceiling:,.0f}원"
+    )
+    print(
+        f"   비용 매수 {costs.buy_cost_ratio:.4%} / 매도 {costs.sell_cost_ratio:.4%}"
     )
 
     day_frames, bdays = load_merged_market_day_frames(START_DATE, END_DATE, force_bulk=True)
     print(f"📊 벌크 로드 완료: {len(day_frames)} 영업일 × KOSPI+KOSDAQ")
 
-    manager = PortfolioManager(
+    manager = PortfolioManagerV5(
         day_frames,
         bdays,
         start_date=START_DATE,
         end_date=END_DATE,
-        phase_i_mode=True,
-        phase_h_sl_ratio=s.stop_loss_ratio,
-        phase_h_tp_ratio=s.target_profit_ratio,
-        phase_i_volume_dry_ratio=k.volume_dry_ratio,
-        phase_i_min_anchor_trade_krw=k.min_anchor_trade_krw,
-        phase_i_anchor_top_n=k.anchor_top_n,
-        v4_config=v4,
+        v5_config=v5,
     )
     result = manager.run()
 
@@ -93,9 +84,8 @@ def run_v5_portfolio_backtest():
     os.makedirs(out_dir, exist_ok=True)
     result.equity_curve.to_csv(EQUITY_CSV, index=False, encoding="utf-8-sig")
     result.trades_detail.to_csv(TRADES_CSV, index=False, encoding="utf-8-sig")
-    pass_path = PASS_LOG_TXT.replace("v4_", "v5_")
     if result.pass_logs:
-        with open(pass_path, "w", encoding="utf-8") as fh:
+        with open(PASS_LOG_TXT, "w", encoding="utf-8") as fh:
             fh.write("\n".join(result.pass_logs))
 
     phase_a = validate_phase_a_trades(result.trades_detail, result.trades)
@@ -104,10 +94,10 @@ def run_v5_portfolio_backtest():
     m = result.metrics
 
     print("\n========================================================")
-    print("📈 v5.0 코스닥 스나이퍼 최종 성적표")
+    print("📈 v5.0 20일선 변곡점 스나이퍼 최종 성적표")
     print("========================================================")
     print(f"기간              : {START_DATE} ~ {END_DATE}")
-    print(f"초기 자산         : {p.initial_cash:,.0f} 원")
+    print(f"초기 자산         : {env.initial_cash:,.0f} 원")
     print(f"최종 자산         : {m['final_equity']:,.0f} 원")
     print(f"누적 수익률       : {m['cumulative_return_pct']:.2f} %")
     print(f"총 거래 횟수      : {m['total_trades']} 회")
@@ -119,9 +109,9 @@ def run_v5_portfolio_backtest():
     print(f"Equity Curve CSV  : {EQUITY_CSV}")
     print(f"Trades Detail CSV : {TRADES_CSV}")
     print(f"  BUY {buy_count} / SELL {sell_count} 행")
-    print("--- Phase A 검증 (v4 공통) ---")
+    print("--- Phase A 검증 ---")
     if result.trades_detail.empty:
-        print("⚠️ 거래 0건 — 유니버스·진입 필터·히스토리 점검 필요")
+        print("⚠️ 거래 0건 — 변곡 조건·가격 캡·히스토리 점검 필요")
     elif phase_a["ok"]:
         print("✅ Phase A DoD 통과")
     else:
