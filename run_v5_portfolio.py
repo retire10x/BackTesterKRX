@@ -74,6 +74,21 @@ def _prompt_yes_no(question: str, *, default: str | None = None) -> bool:
         print("  → y 또는 n 으로 답해 주세요.")
 
 
+def _format_entry_plan(strat) -> str:
+    base = f"MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
+    mf = strat.macro_trend_filter
+    if mf is None or not mf.enabled:
+        return base
+    parts = [base]
+    if mf.uses_dual_slope:
+        parts.append(" AND ".join(f"MA{w}↑" for w in mf.dual_slope_alignment))
+        if mf.check_prices_above_ma:
+            parts.append(f"종가>MA{mf.check_prices_above_ma}")
+    elif mf.ma_window:
+        parts.append(f"종가>MA{mf.ma_window}")
+    return " AND ".join(parts)
+
+
 def _print_strategy_plan(v5, universe_codes: list[str] | None) -> None:
     env = v5.environment
     port = v5.portfolio
@@ -83,12 +98,7 @@ def _print_strategy_plan(v5, universe_codes: list[str] | None) -> None:
     print(f"  전략     : {strat.strategy_name}")
     print(f"  기간     : {START_DATE} ~ {END_DATE}")
     print(f"  자본     : {env.initial_cash:,.0f}원 · 슬롯 {port.max_slots} × {port.slot_invest_amount:,.0f}원")
-    entry = (
-        f"MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
-    )
-    mf = strat.macro_trend_filter
-    if mf is not None and mf.enabled:
-        entry += f" AND 종가>MA{mf.ma_window}"
+    entry = _format_entry_plan(strat)
     print(f"  진입     : {entry}")
     if strat.use_hit_and_run_exit:
         print(
@@ -236,7 +246,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--section",
         default=DEFAULT_V5_SECTION,
-        choices=("v5_0", "v5_1", "v5_2", "v5_3", "v5_4"),
+        choices=("v5_0", "v5_1", "v5_2", "v5_3", "v5_4", "v5_5"),
         help=f"YAML 섹션 (기본 {DEFAULT_V5_SECTION})",
     )
     p.add_argument(

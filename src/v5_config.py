@@ -1,7 +1,7 @@
 """
 v5.x 20일선 변곡점 스나이퍼 — SSOT.
 
-유일한 숫자 기본값: config/settings.yaml 의 v5_0 / v5_1 / v5_2 / v5_3 / v5_4 섹션.
+유일한 숫자 기본값: config/settings.yaml 의 v5_0 ~ v5_5 섹션.
 """
 from __future__ import annotations
 
@@ -57,8 +57,15 @@ class V5PortfolioConfig:
 
 @dataclass(frozen=True)
 class V5MacroTrendFilterConfig:
+    """v5.4: ma_window(종가>MA) · v5.5: dual_slope_alignment + check_prices_above_ma."""
     enabled: bool
-    ma_window: int
+    ma_window: int | None = None
+    check_prices_above_ma: int | None = None
+    dual_slope_alignment: tuple[int, ...] = ()
+
+    @property
+    def uses_dual_slope(self) -> bool:
+        return len(self.dual_slope_alignment) > 0
 
 
 @dataclass(frozen=True)
@@ -160,9 +167,17 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
     macro_raw = strategy.get("macro_trend_filter")
     macro_trend_filter: V5MacroTrendFilterConfig | None = None
     if isinstance(macro_raw, dict):
+        dual_raw = macro_raw.get("dual_slope_alignment")
+        dual_slope: tuple[int, ...] = ()
+        if isinstance(dual_raw, list):
+            dual_slope = tuple(int(x) for x in dual_raw)
+        check_above = macro_raw.get("check_prices_above_ma")
+        ma_w = macro_raw.get("ma_window")
         macro_trend_filter = V5MacroTrendFilterConfig(
             enabled=bool(macro_raw.get("enabled", False)),
-            ma_window=int(macro_raw.get("ma_window", 60)),
+            ma_window=int(ma_w) if ma_w is not None else None,
+            check_prices_above_ma=int(check_above) if check_above is not None else None,
+            dual_slope_alignment=dual_slope,
         )
 
     lock_raw = environment.get("universe_lock")
@@ -251,7 +266,8 @@ def v5_config_from_yaml_section(v5: dict, *, section: str = DEFAULT_V5_SECTION) 
 
 V53_SECTION = "v5_3"
 V54_SECTION = "v5_4"
-DEFAULT_V5_RELAY_SECTION = V54_SECTION
+V55_SECTION = "v5_5"  # v5.5.2 FROZEN — settings.yaml v5_5 수치 튜닝 종결
+DEFAULT_V5_RELAY_SECTION = V55_SECTION
 
 
 def load_v5_config(

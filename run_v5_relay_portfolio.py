@@ -86,9 +86,17 @@ def _entry_plan_line(strat) -> str:
         f"MA{strat.lookback_window} 변곡 (어제≤MA · 오늘>20영업일전종가)"
     )
     mf = strat.macro_trend_filter
-    if mf is not None and mf.enabled:
-        return f"{base} AND 종가>MA{mf.ma_window}"
-    return base
+    if mf is None or not mf.enabled:
+        return base
+    parts = [base]
+    if mf.uses_dual_slope:
+        slopes = " AND ".join(f"MA{w}↑" for w in mf.dual_slope_alignment)
+        parts.append(slopes)
+        if mf.check_prices_above_ma:
+            parts.append(f"종가>MA{mf.check_prices_above_ma}")
+    elif mf.ma_window:
+        parts.append(f"종가>MA{mf.ma_window}")
+    return " AND ".join(parts)
 
 
 def _print_relay_plan(v5, universe_dir: str) -> None:
@@ -273,7 +281,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--section",
         default=DEFAULT_V5_RELAY_SECTION,
-        choices=("v5_3", "v5_4"),
+        choices=("v5_3", "v5_4", "v5_5"),
         help=f"YAML 섹션 (기본 {DEFAULT_V5_RELAY_SECTION})",
     )
     p.add_argument(

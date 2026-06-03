@@ -88,7 +88,16 @@ class PortfolioManagerV5:
         self.target_universe = target_universe
         macro = strat.macro_trend_filter
         self.macro_trend_enabled = bool(macro.enabled) if macro is not None else False
-        self.macro_ma_window = int(macro.ma_window) if macro is not None and macro.enabled else 0
+        if macro is not None and macro.enabled:
+            self.macro_ma_window = int(macro.ma_window) if macro.ma_window is not None else 0
+            self.macro_price_above_ma = (
+                int(macro.check_prices_above_ma) if macro.check_prices_above_ma is not None else 0
+            )
+            self.macro_dual_slope_windows = tuple(int(w) for w in macro.dual_slope_alignment)
+        else:
+            self.macro_ma_window = 0
+            self.macro_price_above_ma = 0
+            self.macro_dual_slope_windows = ()
 
         self.cash = float(self.initial_equity)
         self.positions: dict[str, V5OpenPosition] = {}
@@ -152,13 +161,46 @@ class PortfolioManagerV5:
         else:
             self.stock_history[c6] = pd.concat([hist, pd.DataFrame([bar], index=[dt])]).sort_index()
 
+    def _macro_min_history_bars(self) -> int:
+        need = self.lookback_window + 1
+        if not self.macro_trend_enabled:
+            return need
+        if self.macro_ma_window > 0:
+            need = max(need, self.macro_ma_window)
+        if self.macro_price_above_ma > 0:
+            need = max(need, self.macro_price_above_ma)
+        for w in self.macro_dual_slope_windows:
+            need = max(need, w + 1)
+        return need
+
+    def _passes_macro_trend_filter(self, close_s: pd.Series, today_close: float) -> bool:
+        """v5.4 종가>MA · v5.5 듀얼 기울기(MA오늘>MA어제) + 종가>MA120."""
+        if not self.macro_trend_enabled:
+            return True
+
+        for w in self.macro_dual_slope_windows:
+            ma_s = close_s.rolling(window=w).mean()
+            ma_today = float(ma_s.iloc[-1])
+            ma_yesterday = float(ma_s.iloc[-2])
+            if not np.isfinite(ma_today) or not np.isfinite(ma_yesterday):
+                return False
+            if ma_today <= ma_yesterday:
+                return False
+
+        if self.macro_price_above_ma > 0:
+            ma_floor = float(close_s.rolling(window=self.macro_price_above_ma).mean().iloc[-1])
+            if not np.isfinite(ma_floor) or today_close <= ma_floor:
+                return False
+        elif self.macro_ma_window > 0:
+            ma_macro = float(close_s.rolling(window=self.macro_ma_window).mean().iloc[-1])
+            if not np.isfinite(ma_macro) or today_close <= ma_macro:
+                return False
+        return True
+
     def _is_ma_inflection_turning_up(self, ohlcv_df: pd.DataFrame) -> bool:
-        """20일선 변곡 + (선택) 오늘 종가 > MA60/120 장기 대세 필터."""
+        """20일선 변곡 + (선택) 장기 대세·듀얼 우상향 필터."""
         window = self.lookback_window
-        min_bars = window + 1
-        if self.macro_trend_enabled:
-            min_bars = max(min_bars, self.macro_ma_window)
-        if len(ohlcv_df) < min_bars:
+        if len(ohlcv_df) < self._macro_min_history_bars():
             return False
 
         close_s = pd.to_numeric(ohlcv_df["close"], errors="coerce")
@@ -181,13 +223,7 @@ class PortfolioManagerV5:
         if not (yesterday_close <= yesterday_ma and today_close > past_20_close):
             return False
 
-        if self.macro_trend_enabled:
-            ma_macro = float(
-                close_s.rolling(window=self.macro_ma_window).mean().iloc[-1]
-            )
-            if not np.isfinite(ma_macro) or today_close <= ma_macro:
-                return False
-        return True
+        return self._passes_macro_trend_filter(close_s, today_close)
 
     def _should_trend_exit_ma20(self, ohlcv_df: pd.DataFrame) -> bool:
         window = self.exit_ma_window

@@ -27,6 +27,7 @@ build/
 # 백테스트·스캔 실행 산출물 (재생성 가능, 커밋 제외)
 output/
 outputs/
+!outputs/v5_final_report.md
 
 # pykrx 벌크 OHLCV 로컬 캐시(재생성 가능, .gitkeep 만 추적)
 data/cache/**

@@ -91,10 +91,19 @@
 - [x] **v5.2** Hit & Run 청산(+6%/-3%/3일)·`ma_inflection_hit_and_run`·`v5_2` SSOT (백테스트 사용자 승인 후)
 - [x] **v5.3** 릴레이 7구간·`v5_relay_screener`·`run_v5_relay_portfolio`·PERIOD_RESET·자산 이월 (실행 사용자 승인 후)
 - [x] **v5.4** 장기 대세 필터(`macro_trend_filter` MA60/120)·`ma_inflection_with_macro_filter`·릴레이 기본 `v5_4`
-- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · 청산 효율 · `v5_dod_report.md` (v5_3 릴레이 field_test 승인 후)
-- [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
+- [x] **v5.5** 듀얼 우상향(MA60↑·MA120↑·종가>MA120)·`ma_inflection_with_dual_slope_filter`·릴레이 기본 `v5_5`
+- [x] **v5.5.2 FROZEN** SSOT `+8%/-3%/4일` · `outputs/v5_final_report.md` · v5 수치 튜닝 종결
+- [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v5.5.2** SSOT 동결 · v5 브랜치 마감)
+- **`v5_5`:** `target_profit_ratio: 0.08` · `stop_loss_ratio: 0.03` · `max_hold_days: 4` (수치 변경 금지)
+- **`outputs/v5_final_report.md`:** v5.0→v5.5.2 튜닝 여정·DoD·재현 명령 SSOT
+
+### 2026-06-03 (**v5.5** 듀얼 우상향 필터 — MA60↑ & MA120↑ & 종가>MA120)
+- **`dual_slope_alignment`:** MA오늘 > MA어제 · `check_prices_above_ma: 120`
+- **v5.4 호환:** `ma_window` 단독(종가>MA) 모드 유지
 
 ### 2026-06-03 (**v5.4** 장기 이평 대세 필터 — 변곡 + MA60)
 - **`macro_trend_filter`:** `enabled` · `ma_window` 60/120 — 진입 시 종가 > 장기 MA

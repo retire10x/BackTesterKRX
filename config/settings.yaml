@@ -259,7 +259,43 @@ v5_4:
       min_daily_volume_amt: 5000000000
       top_n_limit: 40
 
+# v5.5.2 FROZEN SSOT — 릴레이 + 듀얼 우상향 + Hit&Run 골든 파라미터 (수치 튜닝 종결)
+# 실행: python run_v5_relay_portfolio.py  (기본 섹션 v5_5)
+v5_5:
+  environment:
+    mode: "field_test"
+    initial_cash: 100000
+    relay_interval_months: 6
+    universe_dir: "config/relay_universes/"
+
+  portfolio:
+    max_slots: 2
+    slot_invest_amount: 50000
+    trading_costs:
+      buy_cost_ratio: 0.00015
+      sell_cost_ratio: 0.00195
+
+  strategy:
+    strategy_name: "ma_inflection_with_dual_slope_filter"
+    lookback_window: 20
+    target_profit_ratio: 0.08         # +8% 익절 (국장 주도주 임계점)
+    stop_loss_ratio: 0.03             # -3% 손절 (최적 숨구멍)
+    max_hold_days: 4                  # 4일 타임스탑 (골든 타임)
+    macro_trend_filter:
+      enabled: true
+      check_prices_above_ma: 120       # 종가 > MA120
+      dual_slope_alignment:            # MA오늘 > MA어제 (우상향)
+        - 60
+        - 120
+    screener:
+      market: "KOSDAQ"
+      min_market_cap: 70000000000
+      max_market_cap: 300000000000
+      min_daily_volume_amt: 5000000000
+      top_n_limit: 40
+
 # # 1) 7구간 유니버스만 박제 (수 분~수십 분, KRX/FDR)
+# .\venv\Scripts\python.exe run_v5_relay_portfolio.py --section v5_5
 # .\venv\Scripts\python.exe run_v5_relay_portfolio.py --section v5_4
 # .\venv\Scripts\python.exe run_v5_relay_portfolio.py --scan-only
 # # 2) 대화형: 스캔 Y/N → 백테스트 Y/N
