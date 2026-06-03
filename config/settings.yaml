@@ -115,3 +115,39 @@ v4_0:
   costs:
     buy_fee: 0.00015
     sell_fee_tax: 0.0018
+
+# v5.0 코스닥 스나이퍼 (run_v5_portfolio.py · v5_config SSOT)
+# 원칙: docs/money_management_principles.md — 소액 SL -3% / TP +10% / 2만 원 이하
+# v4_0 Phase H·I와 분리 — main 병합 금지
+v5_0:
+  environment:
+    mode: "field_test"
+    initial_cash: 100000
+  engine:
+    phase_mode: "kosdaq_sniper"
+  portfolio:
+    initial_cash: 100000
+    max_slots: 2
+  strategy:
+    field_test_invest_amount: 50000
+    fixed_invest_amount: 10000000
+    stock_price_floor: 1000
+    stock_price_ceiling: 20000
+    max_track_days: 30
+    max_daily_cash_deploy_ratio: 1.0
+    nuliim_ratio: 0.04
+    stop_loss_ratio: 0.03
+    target_profit_ratio: 0.10
+    max_hold_days: 5
+    emperor_cap_ratio: 0.20
+    phase_h_min_wait_bdays: 5
+    min_invest_amount: 100000
+  kosdaq_universe:
+    min_mcap_krw: 70000000000
+    max_mcap_krw: 500000000000
+    min_anchor_trade_krw: 1000000000
+    anchor_top_n: 15
+    volume_dry_ratio: 0.15
+  costs:
+    buy_fee: 0.00015
+    sell_fee_tax: 0.0018

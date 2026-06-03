@@ -85,7 +85,18 @@
 
 - [x] **v4.0** Phase H YAML SSOT 동결 (`h2_sl03_tp10_ec20` · field_test · Phase I 폐기)
 
+- [ ] **v5.0** 브랜치·`v5_0` SSOT·`run_v5_portfolio.py` 베이스라인 (Phase A DoD 대기)
+- [ ] **v5.0** 코스닥 스나이퍼 그리드 튜닝·PF≥1 DoD (`run_v5_tune.py` 예정)
+
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**v5.0** 착수 — 브랜치·SSOT·베이스라인 러너)
+- **브랜치:** `v5.0` (`v4.0` HEAD 분기) · main/v4 병합 없음
+- **`config/settings.yaml`:** `v5_0` — field_test 10만·2슬롯·5만 고정·SL -3%/TP +10%·코스닥 유니버스(기준봉 10억 Top15·실종 15%)
+- **`src/v5_config.py`:** `load_v5_config()` · `v5_to_v4_config()` (Phase I 엔진 주입)
+- **`run_v5_portfolio.py`:** `outputs/v5_equity_curve.csv` · `v5_trades.csv`
+- **`docs/작업지시서-v5.0-Kosdaq-Sniper.md`:** Phase A~C 로드맵
+- **다음:** `python run_v5_portfolio.py` 베이스라인 → Phase A DoD 기록
 
 ### 2026-06-03 (**v4.0** Phase H — YAML SSOT 동결 · v4.0 검증 브랜치 마감)
 - **`config/settings.yaml`:** `engine.phase_mode=h` · field_test 10만/2슬롯/5만 · **SL 3% / TP 10% / emperor 20% / 5일 타임스탑 / 관망 5영업일** · deploy 45%
@@ -225,7 +236,8 @@
 
 - **과거 changelog 원문:** `docs/progress_archive.md` — 2026-05-21~05-20 · **2026-05-22~05-31**(Phase F, 2026-06-01)
 - **main/GUI:** 단일종목 다음봉 시가 체결 · 매수 AND / 매도 OR · `settings.yaml` · 스크리너·차트 패닝 캐시
-- **v4.0 브랜치:** `smart_money_cascade` + `portfolio_manager` · `v4_0.*` SSOT · `run_v4_tune.py` 튜닝 · Ruin 서면 `docs/v4_ruin_analysis.md` — **main 병합 없음**
+- **v4.0 브랜치:** `smart_money_cascade` + `portfolio_manager` · `v4_0.*` SSOT · `run_v4_tune.py` 튜닝 · Ruin 서면 `docs/v4_ruin_analysis.md` — **main 병합 없음** (동결)
+- **v5.0 브랜치:** 코스닥 스나이퍼 · `v5_0.*` SSOT · `run_v5_portfolio.py` · `docs/작업지시서-v5.0-Kosdaq-Sniper.md` · `docs/money_management_principles.md`
 
 ---
 
