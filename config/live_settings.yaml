@@ -1,0 +1,33 @@
+# v5.5.2 코스닥 스나이퍼 — 실전 매매 SSOT (백테스트 settings.yaml v5_5 와 동기)
+live_trading:
+  account:
+    broker: "korea_investment"
+    mode: "real_money"                 # real_money | paper (API 키 없으면 dry_run)
+    max_slots: 2
+    bet_amount_per_slot: 50000
+    buy_cost_ratio: 0.00015
+    sell_cost_ratio: 0.00195
+
+  screener:
+    market: "KOSDAQ"
+    min_market_cap: 90000000000        # 900억 이상
+    max_market_cap: 400000000000       # 4,000억 이하
+    min_live_volume_amt: 5000000000  # 당일 거래대금 50억 이상
+    top_n: 40
+    screener_time: "15:15"             # 장마감 전 유니버스 스캔 (KST)
+    universe_output: "config/live_today_universe.json"
+
+  strategy:
+    lookback_window: 20
+    target_profit_ratio: 0.08          # +8% 익절
+    stop_loss_ratio: 0.03              # -3% 손절
+    max_hold_days: 4                   # 4일 타임스탑
+    entry_time: "15:20"                # 동시호가 전 진입 판정 (KST)
+    macro_filter:
+      ma_lines: [60, 120]              # 듀얼 우상향 + 종가 > MA120
+      price_above_ma: 120
+
+  watch:
+    poll_interval_sec: 0.5
+    market_open: "09:00"
+    market_close: "15:30"

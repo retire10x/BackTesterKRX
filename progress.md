@@ -93,9 +93,15 @@
 - [x] **v5.4** 장기 대세 필터(`macro_trend_filter` MA60/120)·`ma_inflection_with_macro_filter`·릴레이 기본 `v5_4`
 - [x] **v5.5** 듀얼 우상향(MA60↑·MA120↑·종가>MA120)·`ma_inflection_with_dual_slope_filter`·릴레이 기본 `v5_5`
 - [x] **v5.5.2 FROZEN** SSOT `+8%/-3%/4일` · `outputs/v5_final_report.md` · v5 수치 튜닝 종결
+- [x] **라이브 봇** `config/live_settings.yaml` · `src/live/*` · `run_live_bot.py` (KIS dry_run 기본)
 - [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (**라이브** v5.5.2 코스닥 스나이퍼 봇 3단계)
+- **`config/live_settings.yaml`:** 시총 900억~4,000억 · Hit&Run · 듀얼 MA
+- **`live_account`:** OAuth2·슬롯 락 · `LIVE_DRY_RUN`
+- **`live_screener`:** `live_today_universe.json` · **`live_engine`:** 15:20 진입·장중 감시
 
 ### 2026-06-03 (**v5.5.2** SSOT 동결 · v5 브랜치 마감)
 - **`v5_5`:** `target_profit_ratio: 0.08` · `stop_loss_ratio: 0.03` · `max_hold_days: 4` (수치 변경 금지)
