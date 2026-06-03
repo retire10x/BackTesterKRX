@@ -38,15 +38,15 @@ data/cache/**
 # GUI 마지막 세션(로컬)
 config/last_session.json
 
-# v5.3 릴레이 유니버스 스캔 산출물 (run_v5_relay_portfolio.py --scan-only)
+# v5.3 릴레이 유니버스 — 7구간·재스캔으로 재현 (커밋 X, settings.yaml 스펙이 SSOT)
 config/relay_universes/*
 !config/relay_universes/.gitkeep
+!config/relay_universes/README.md
 
-# v5.1 고정 유니버스 스캔 산출물 (run_v5_breakout.py --scan-universe)
-config/kosdaq_sniper_universe.json
-config/kosdaq_sniper_universe.meta.json
+# v5.1/v5_2 고정 유니버스 — lock_date 1회 박제본은 Git 추적 O (의도적 갱신 시 커밋)
+# → config/kosdaq_sniper_universe.json / .meta.json (run_v5_breakout.py --scan-universe)
 
-# v5.5.2 라이브 봇 당일 스캔·포지션 상태 (run_live_bot.py)
+# v5.5.2 라이브 — 당일·개인 계좌 상태 (커밋 X)
 config/live_today_universe.json
 config/live_today_universe.meta.json
 config/live_positions.json
