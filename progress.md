@@ -87,10 +87,37 @@
 
 - [x] **v5.0 ①** SSOT·`PortfolioManagerV5`·변곡점/MA20 청산 (`ma_inflection_sniper`)
 - [x] **v5.0 ②** field_test 920영업일 완주·`v5_run.log`·BUY 94/SELL 93 (Phase A PnL 검증식은 buy_fee 미반영으로 오탐)
-- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · `TREND_EXIT_MA20` 청산 효율 · `v5_dod_report.md`
+- [x] **v5.1** 고정 유니버스 JSON·`v5_1` SSOT·실행 전 스캔/백테스트 질문 러너
+- [ ] **v5.0 ③** DoD: PF≥1 · 평균보유일 · `TREND_EXIT_MA20` 청산 효율 · `v5_dod_report.md` (v5_1 유니버스로 재실행 시 사용자 승인 후)
 - [ ] **v5.0** (④ 예정) 파라미터 그리드 `run_v5_tune.py`
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-03 (Python venv 정합 — Cursor·의존성)
+- **`venv/`:** `pip install -r requirements.txt` 동기화 · `src.v5_config` import 검증
+- **`.vscode/settings.json`:** `python.terminal.activateEnvironment: true`
+- **`activate.ps1`:** 루트에서 `.\activate.ps1` 로 venv 활성화
+
+### 2026-06-03 (**v5.1** lock 스캔 Fix — pykrx 과거 0 · FDR 폴백)
+- **원인:** `get_market_cap/ohlcv_by_ticker(2022-12-30)` 가 종가·거래대금 0 반환
+- **Fix:** FDR per-ticker + `data/cache/v5_universe_lock/KOSDAQ_20221230.pkl` · 시총=종가×상장주식수
+- **검증:** 정예 **40종** 박제 가능 (`fdr_lock_day_snapshot`)
+
+### 2026-06-03 (**v5.1** meta.json 가독성 — 억 원·scanned_items_report)
+- **`kosdaq_sniper_universe.meta.json`:** `hard_filters`·`scanned_items_report`(rank/code/name/시총/거래대금) · `format_krw_eok`
+- **`min_trade_krw`:** 50억 원 SSOT · 조건 통과 종목만 박제(40 미만 가능)
+
+### 2026-06-03 (**v5.1** 유니버스 락 — Look-ahead 방지 박제)
+- **`universe_lock`:** `lock_date: 2022-12-30` · `backtest_start: 2023-01-01` · 코스닥 시총 700억~3,000억 · 거래대금 Top40
+- **`v5_universe.py`:** pykrx **당시** 시총·거래대금만 사용 · `.meta.json` 동반 저장 · lock≥start 차단
+- **스캔:** 사용자 실행 대기 — `python run_v5_breakout.py --scan-universe` (백테스트는 별도 승인)
+
+### 2026-06-03 (**v5.1** 고정 유니버스 SSOT · 실행 전 질문)
+- **`v5_1`:** `universe_profile` → `config/kosdaq_sniper_universe.json` · 가격 필터 제거
+- **`src/v5_universe.py`:** JSON 로드 · 코스닥 스캔 일회 저장
+- **`portfolio_manager_v5`:** `target_universe` 고정 풀만 순회
+- **`run_v5_portfolio` / `run_v5_breakout`:** 스캔 Y/N · 백테스트 Y/N 질문(기본 N) · `--yes`만 무질문 실행
+- **정책:** 전략 설계 단계 — **승인 없이 백테스트 자동 실행 금지**
 
 ### 2026-06-03 (**v5.0** 변곡점 스나이퍼 — 첫 field_test 시뮬레이션 점화)
 - **실행:** `python run_v5_breakout.py` (~8분) · 920영업일 · `outputs/v5_run.log`

@@ -1,7 +1,10 @@
 """
-v5.0 20일선 변곡점 스나이퍼 — 2단계 실행 별칭.
+v5.x 실행 별칭 — stdout/stderr를 outputs/v5_run.log에 Tee.
 
-`run_v5_portfolio.py`와 동일하며, stdout/stderr를 outputs/v5_run.log에 함께 남긴다.
+전략 설계 단계: run_v5_portfolio 와 동일하게 실행 전 질문한다.
+  python run_v5_breakout.py              # 대화형 (스캔·실행 각각 질문)
+  python run_v5_breakout.py --no-scan    # 기존 JSON · 실행만 질문
+  python run_v5_breakout.py --yes        # 질문 생략 (자동화 전용)
 """
 from __future__ import annotations
 
@@ -33,7 +36,7 @@ class _Tee:
             s.flush()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
     log_fh = open(LOG_PATH, "w", encoding="utf-8")
     orig_out, orig_err = sys.stdout, sys.stderr
@@ -46,9 +49,15 @@ def main() -> None:
     sys.stdout = _Tee(orig_out, log_fh)
     sys.stderr = _Tee(orig_err, log_fh)
     try:
-        from run_v5_portfolio import run_v5_portfolio_backtest
+        from run_v5_portfolio import _parse_args, run_v5_portfolio_backtest
 
-        run_v5_portfolio_backtest()
+        args = _parse_args(argv)
+        scan = True if args.scan_universe else (False if args.no_scan else None)
+        run_v5_portfolio_backtest(
+            section=args.section,
+            scan_universe=scan,
+            skip_prompts=args.yes,
+        )
     finally:
         sys.stdout, sys.stderr = orig_out, orig_err
         log_fh.close()

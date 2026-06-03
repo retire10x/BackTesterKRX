@@ -43,6 +43,7 @@ class PortfolioManagerV5:
         start_date: str,
         end_date: str,
         v5_config: V5Config | None = None,
+        target_universe: frozenset[str] | None = None,
     ):
         cfg = v5_config if v5_config is not None else load_v5_config()
         self.cfg = cfg
@@ -64,9 +65,11 @@ class PortfolioManagerV5:
 
         self.lookback_window = int(strat.lookback_window)
         self.exit_ma_window = int(strat.exit_ma_window)
-        self.price_ceiling = float(strat.price_ceiling)
-        self.price_floor = float(strat.price_floor)
+        self.use_price_filter = strat.price_ceiling is not None and strat.price_floor is not None
+        self.price_ceiling = float(strat.price_ceiling) if strat.price_ceiling is not None else float("inf")
+        self.price_floor = float(strat.price_floor) if strat.price_floor is not None else 0.0
         self.strategy_name = str(strat.strategy_name)
+        self.target_universe = target_universe
 
         self.cash = float(self.initial_equity)
         self.positions: dict[str, V5OpenPosition] = {}
@@ -135,7 +138,7 @@ class PortfolioManagerV5:
         today_close = float(close_s.iloc[-1])
         if not np.isfinite(today_close) or today_close <= 0:
             return False
-        if not (self.price_floor <= today_close <= self.price_ceiling):
+        if self.use_price_filter and not (self.price_floor <= today_close <= self.price_ceiling):
             return False
 
         past_20_close = float(close_s.iloc[-(window + 1)])
@@ -352,16 +355,22 @@ class PortfolioManagerV5:
 
     def _candidate_codes_ranked(self, day_idx: int) -> list[str]:
         day_frame = self.day_frames[day_idx]
+        index_by_c6 = {str(k).zfill(6): k for k in day_frame.index}
+        if self.target_universe is not None:
+            scan_codes = [c for c in self.target_universe if c in index_by_c6]
+        else:
+            scan_codes = list(index_by_c6.keys())
+
         rows: list[tuple[str, float]] = []
-        for code in day_frame.index:
-            c6 = str(code).zfill(6)
+        for c6 in scan_codes:
             if c6 in self.positions:
                 continue
-            close_px = float(day_frame.loc[code, "Close"])
-            vol = float(day_frame.loc[code, "Volume"])
+            key = index_by_c6[c6]
+            close_px = float(day_frame.loc[key, "Close"])
+            vol = float(day_frame.loc[key, "Volume"])
             if not np.isfinite(close_px) or not np.isfinite(vol):
                 continue
-            if not (self.price_floor <= close_px <= self.price_ceiling):
+            if self.use_price_filter and not (self.price_floor <= close_px <= self.price_ceiling):
                 continue
             rows.append((c6, close_px * vol))
         rows.sort(key=lambda x: x[1], reverse=True)
