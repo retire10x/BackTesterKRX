@@ -17,8 +17,10 @@ DEFAULT_LIVE_SETTINGS_REL = "config/live_settings.yaml"
 class LiveAccountConfig:
     broker: str
     mode: str
-    max_slots: int
     bet_amount_per_slot: float
+    min_slots_limit: int
+    max_slots_limit: int
+    minimum_operational_capital: float
     buy_cost_ratio: float
     sell_cost_ratio: float
 
@@ -104,8 +106,10 @@ def live_config_from_dict(raw: dict) -> LiveTradingConfig:
         account=LiveAccountConfig(
             broker=str(acct.get("broker", "korea_investment")),
             mode=str(acct.get("mode", "real_money")),
-            max_slots=int(acct["max_slots"]),
             bet_amount_per_slot=float(acct["bet_amount_per_slot"]),
+            min_slots_limit=int(acct.get("min_slots_limit", 1)),
+            max_slots_limit=int(acct.get("max_slots_limit", acct.get("max_slots", 5))),
+            minimum_operational_capital=float(acct.get("minimum_operational_capital", 50000)),
             buy_cost_ratio=float(acct.get("buy_cost_ratio", 0.00015)),
             sell_cost_ratio=float(acct.get("sell_cost_ratio", 0.00195)),
         ),
@@ -146,8 +150,9 @@ def resolve_live_paths(cfg: LiveTradingConfig, project_root: str | None = None) 
     root = Path(project_root or _project_root())
     uni_rel = cfg.screener.universe_output
     uni_path = Path(uni_rel) if Path(uni_rel).is_absolute() else root / uni_rel
+    meta_path = uni_path.with_suffix(".meta.json")
     return {
         "universe_json": str(uni_path),
-        "universe_meta": str(uni_path.with_suffix(".meta.json")),
+        "universe_meta": str(meta_path),
         "positions_json": str(root / "config" / "live_positions.json"),
     }

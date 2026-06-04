@@ -94,9 +94,45 @@
 - [x] **v5.5** 듀얼 우상향(MA60↑·MA120↑·종가>MA120)·`ma_inflection_with_dual_slope_filter`·릴레이 기본 `v5_5`
 - [x] **v5.5.2 FROZEN** SSOT `+8%/-3%/4일` · `outputs/v5_final_report.md` · v5 수치 튜닝 종결
 - [x] **라이브 봇** `config/live_settings.yaml` · `src/live/*` · `run_live_bot.py` (KIS dry_run 기본)
+- [x] **라이브 스크리너** `LiveScreener`(pykrx)·`live_today_universe.json`/`.meta.json` · `scripts/run_live_screener.py`
+- [x] **라이브 KIS** 모의 계좌 `50191458` · `KIS_PAPER_*` · `test_live_gateway.py --live` 잔고 1천만 검증
+- [x] **라이브 마스터** `run_live_bot.py`(기본=master) · `live_master.py` 15:15/15:20/장중0.5s 자동
+- [x] **라이브 SOP** `docs/live_SOP_guide.md` 하이브리드(08:30 마스터·15:10/16 수동·15:20 자동·15:40 종료)
 - [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-04 (**라이브** 동적 슬롯 1~5 · 마진콜 셧다운)
+- **`live_settings`:** `min_slots_limit`/`max_slots_limit`/`minimum_operational_capital` · 고정 `max_slots` 폐기
+- **`check_dynamic_slot_lock`:** 총자산=floor(equity/5만) 슬롯 · 5만 미만 매수 올스톱
+
+### 2026-06-04 (**라이브** KIS API 초당 한도 대응)
+- **`live_account`:** 호출 간격 0.5s·EGW00201 재시도 · 주문 후 `snapshot_after_local_fill`(잔고 재조회 생략)
+- **`live_engine`:** 체결 즉시 `live_positions.json` 저장
+
+### 2026-06-04 (**라이브** OHLCV pykrx 250일 lookback)
+- **`fetch_ohlcv_history`:** FDR 폐기 → `load_ohlcv`(pykrx by_date, target−250일) · MA120용 121봉+ 확보
+
+### 2026-06-04 (**라이브** entry 디버그 로그 · 재스캔 제거)
+- **`run_live_bot.py entry`:** `live_today_universe.json`만 로드(재스캔 없음)
+- **`explain_entry_signal`:** `[연산]`/`[탈락]`/`🔥 [진입 시그널 포착]` logger.info 사유 문자열
+
+### 2026-06-04 (**라이브** SOP 가이드북 · 하이브리드 운영)
+- **`docs/live_SOP_guide.md`:** 08:30 마스터 기동 · 15:10 screener · 15:16 entry dry-run · 15:40 watch --once · 절전 OFF
+- **로그 SSOT:** `[실시간 실전 감시 시작]` · `🔥 [진입 시그널 포착]` · `print_positions_snapshot`
+- **`live_daily_manual.md`:** SOP 링크 허브로 축소
+
+### 2026-06-04 (**라이브** 완전 자동 마스터 — 3단계 조립)
+- **`live_master.py`:** KST 스케줄 · 주말 대기 · `live_master_state.json` 당일 중복 방지
+- **`live_engine`:** `calculate_entry_signals` · `monitor_market_realtime`(1틱) · `LiveEngine` 별칭
+- **`run_live_bot.py`:** 기본 `python run_live_bot.py` = 종일 마스터 루프
+- **`docs/live_daily_manual.md`:** 수동 절차 폐기 → 출근 1줄 자동 운영 가이드
+
+### 2026-06-04 (**라이브** 일일 수동 절차 · 유니버스 스캐너) — superseded by 마스터 자동화
+- **`live_screener`:** `LiveScreener` + `run_live_screener`/`load_live_universe` 엔진 브릿지 · pykrx 컬럼 동적 매핑 · `.env` KRX_ID/PW
+- **`config/live_today_universe.json`:** 초기 `[]` · 스캔 후 Top40 코드 배열 · `live_today_universe.meta.json` 가독 리포트
+- **`docs/live_daily_manual.md`:** 15:15 스캔 / 15:20 진입 / 장중 watch 수동 체크리스트 (자동화 보류)
+- **`scripts/run_live_screener.py`:** `--date` · `--show` 수동 테스트 CLI
 
 ### 2026-06-03 (**라이브** v5.5.2 코스닥 스나이퍼 봇 3단계)
 - **`config/live_settings.yaml`:** 시총 900억~4,000억 · Hit&Run · 듀얼 MA
