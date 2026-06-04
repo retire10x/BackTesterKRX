@@ -102,6 +102,10 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-04 (**청소**) v4·구형 v5 러너 폐기 · 릴레이 SSOT 유지
+- **삭제:** `run_v4_*.py` · `run_v5_breakout.py` · `run_v5_portfolio.py` · `scripts/` 구형 테스트 4종
+- **보존:** `run_live_bot.py` · `run_v5_relay_portfolio.py` · `src/live/*` · `validate_phase_a_trades` → `src/v5_backtest_validate.py`
+
 ### 2026-06-04 (**라이브** 동적 슬롯 1~5 · 마진콜 셧다운)
 - **`live_settings`:** `min_slots_limit`/`max_slots_limit`/`minimum_operational_capital` · 고정 `max_slots` 폐기
 - **`check_dynamic_slot_lock`:** 총자산=floor(equity/5만) 슬롯 · 5만 미만 매수 올스톱

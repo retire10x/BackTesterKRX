@@ -43,7 +43,7 @@ def _load_env_file(path: str) -> None:
 
 _load_env_file(os.path.join(project_root, ".env"))
 
-from run_v4_portfolio import START_DATE, END_DATE, validate_phase_a_trades  # noqa: E402
+from src.v5_backtest_validate import validate_phase_a_trades  # noqa: E402
 from src.engine.portfolio_manager import (  # noqa: E402
     PortfolioManager as _PortfolioManagerV4,
     load_merged_market_day_frames,
@@ -165,8 +165,8 @@ def run_v5_relay_backtest(
             print("백테스트를 취소했습니다.")
             return
 
-    bulk_start = min(RELAY_BACKTEST_START, START_DATE)
-    bulk_end = max(RELAY_BACKTEST_END, END_DATE)
+    bulk_start = RELAY_BACKTEST_START
+    bulk_end = RELAY_BACKTEST_END
     print(f"🚀 v5.3 릴레이 벌크 로딩 ({bulk_start} ~ {bulk_end})…")
     day_frames, bdays = load_merged_market_day_frames(bulk_start, bulk_end, force_bulk=True)
     print(f"📊 벌크 로드 완료: {len(day_frames)} 영업일")
