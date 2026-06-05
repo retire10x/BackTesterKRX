@@ -1,7 +1,7 @@
 """
 v5.5.2 코스닥 스나이퍼 — 완전 자동 마스터 봇.
 
-  python run_live_bot.py              # 종일 자동 (15:15 스캔 · 15:20 진입 · 장중 감시)
+  python run_live_bot.py              # 종일 자동 (08:50 KIS동기화 · 15:15 스캔 · 15:20 진입 · 15:30 정산 · 장중 감시)
   python run_live_bot.py master       # 위와 동일
   python run_live_bot.py screener     # 스캔만 (수동·디버그)
   python run_live_bot.py entry        # 진입만
@@ -60,7 +60,7 @@ def main() -> None:
         "command",
         nargs="?",
         default="master",
-        choices=("master", "screener", "entry", "watch", "daily"),
+        choices=("master", "screener", "entry", "watch", "daily", "sync"),
         help="기본=master (완전 자동)",
     )
     p.add_argument("--dry-run", action="store_true", help="KIS 주문 없이 로그만")
@@ -80,7 +80,11 @@ def main() -> None:
         engine.run_screener_if_due(force=True)  # SOP 15:10 선제 스캔 (--force 호환)
     elif args.command == "entry":
         # SOP: 15:10 선제 스캔 후 저장된 유니버스만 사용 (entry 시 재스캔 금지)
-        engine.run_entry_scan(force=args.force)
+        result = engine.run_entry_scan(force=args.force)
+        if int(result.get("executed_count", 0)) > 0:
+            engine.save_daily_asset_snapshot()
+    elif args.command == "sync":
+        engine.sync_positions_from_kis()
     elif args.command == "watch":
         engine.run_watch_loop(once=args.once)
     elif args.command == "daily":

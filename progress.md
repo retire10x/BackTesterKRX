@@ -104,9 +104,15 @@
 - [x] **v6.0 [4단계]** Tailwind + Chart.js 대시보드 UI · `src/web/static/index.html`
 - [x] **v6.4** 실전 장외 격발 시 한투 API 거부 패킷 100% 노출 · `rt_cd != "0"` 장부·잔고 갱신 인터록 · 대시보드 danger 토스트
 - [x] **v6.5** 데이터 출처 이원화 — `/api/positions` KIS 직결 · `/api/summary`·차트·복기 DB 자체 연산
+- [x] **v6.6** `run_live_bot` 마스터 — 08:50 KIS→DB 동기화 · 15:20 rt_cd 인터록 · 15:30 hold_days 벌크업
 - [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-05 (**v6.6**) run_live_bot 코어 엔진 동기화
+- **`live_engine`:** `sync_positions_from_kis` · `execute_market_close_processing` · `execute_market_scanner` · `is_monitor_running`
+- **`live_master`:** 08:50 KIS동기화 · 15:30 hold_days 벌크업·정산 · 15:20 거부 인터록 · 틱당 hold_days 중복증가 제거
+- **`run_live_bot`:** `sync` 서브커맨드 · entry 체결 시에만 스냅샷
 
 ### 2026-06-05 (**v6.5**) 한투 잔고 동기화 · 자체 통계 이원화
 - **`live_account`:** `get_inquire_balance` — KIS 실시간 총자산·예수금·평가·보유종목

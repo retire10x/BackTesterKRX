@@ -29,6 +29,7 @@ from src.live.live_db import (
     ensure_db_ready,
     insert_trading_history,
     load_holding_positions,
+    persist_universe_candidates_from_meta,
     save_holding_positions,
     upsert_daily_snapshot,
     use_json_fallback,
@@ -62,18 +63,12 @@ def _norm_date_key(value: str) -> str:
 def _is_same_day_exit_protected(pos: LivePosition, today_s: str) -> bool:
     """
     익일 매도 원칙 인터록 — 당일 매수 종목은 장중 청산 감시 대상에서 제외.
-    매수일=오늘이거나 보유일수=0(당일 진입 직후)이면 패스.
-    ※ 호출 전 `_bump_hold_days_if_overnight` 로 익일 hold_days를 먼저 올려야 한다.
+    매수일=오늘이거나 hold_days==0(15:30 정산 전)이면 패스.
+    hold_days 증가는 `execute_market_close_processing` 15:30 일괄 벌크업 담당.
     """
     if _norm_date_key(pos.entry_date) == _norm_date_key(today_s):
         return True
     return int(pos.hold_days) == 0
-
-
-def _bump_hold_days_if_overnight(pos: LivePosition, today_s: str) -> None:
-    """진입일이 오늘 이전이면 보유일수 +1 (익일 감시 개시 조건)."""
-    if _norm_date_key(pos.entry_date) < _norm_date_key(today_s):
-        pos.hold_days += 1
 
 
 def _load_positions_json(path: str) -> list[LivePosition]:
@@ -198,6 +193,112 @@ class LiveTradingEngine:
         self.strat = self.cfg.strategy
         self.on_entry_filled: Callable[[LivePosition, str], None] | None = None
         self.on_exit_recorded: Callable[[LivePosition, str, float, str], None] | None = None
+        self._monitor_active = False
+
+    @property
+    def is_monitor_running(self) -> bool:
+        """장중 감시 루프 가동 여부 (마스터 스케줄러가 설정)."""
+        return self._monitor_active
+
+    def set_monitor_active(self, active: bool) -> None:
+        self._monitor_active = active
+
+    def sync_positions_from_kis(self) -> dict[str, Any]:
+        """한투 API 실잔고·보유종목 → 로컬 SQLite 장부 강제 동기화."""
+        logger.info("📡 [장개시 전 전산 동기화] 한투 잔고 조회 시작")
+        local = {p.code: p for p in _load_positions(self)}
+        names = self._load_universe_names()
+        today = _now_kst().strftime("%Y-%m-%d")
+
+        try:
+            balances = self.gateway.get_inquire_balance(list(local.values()))
+        except Exception as e:
+            logger.error("❌ [KIS 동기화 실패] %s", e)
+            return {"synced_count": 0, "error": str(e)}
+
+        synced: list[LivePosition] = []
+        for item in balances.get("positions") or []:
+            symbol = str(item.get("symbol", "")).zfill(6)
+            qty = int(item.get("quantity") or 0)
+            if qty <= 0:
+                continue
+            avg = float(item.get("entry_price") or 0)
+            prev = local.get(symbol)
+            if prev:
+                synced.append(
+                    LivePosition(
+                        code=symbol,
+                        qty=qty,
+                        entry_price=avg,
+                        entry_date=prev.entry_date,
+                        hold_days=prev.hold_days,
+                    )
+                )
+            else:
+                synced.append(
+                    LivePosition(
+                        code=symbol,
+                        qty=qty,
+                        entry_price=avg,
+                        entry_date=today,
+                        hold_days=0,
+                    )
+                )
+            item_name = str(item.get("name") or "").strip()
+            if item_name:
+                names[symbol] = item_name
+
+        _save_positions(self, synced, names=names)
+
+        if not use_json_fallback():
+            upsert_daily_snapshot(
+                self.db_path,
+                base_date=today,
+                available_cash=float(balances.get("available_cash") or 0),
+                total_evaluation=float(balances.get("total_evaluation") or 0),
+                total_asset=float(balances.get("total_asset") or 0),
+            )
+
+        logger.info(
+            "✅ [KIS 동기화 완료] 보유 %d종 · 총자산 %s원 · 예수금 %s원",
+            len(synced),
+            f"{float(balances.get('total_asset') or 0):,.0f}",
+            f"{float(balances.get('available_cash') or 0):,.0f}",
+        )
+        return {
+            "synced_count": len(synced),
+            "total_asset": balances.get("total_asset"),
+            "available_cash": balances.get("available_cash"),
+            "source": balances.get("source", "kis"),
+        }
+
+    def execute_market_scanner(self) -> list[str]:
+        """15:15 주도주 스캔 — 유니버스 JSON·DB 후보 저장."""
+        codes = run_live_screener(config=self.cfg, project_root=self.root)
+        if not use_json_fallback():
+            meta_path = self.paths.get("universe_meta") or str(
+                Path(self.paths["universe_json"]).with_suffix(".meta.json")
+            )
+            persist_universe_candidates_from_meta(self.db_path, meta_path)
+        logger.info("🔔 [스캔 마감] %d종 유니버스 확정", len(codes))
+        return codes
+
+    def execute_market_close_processing(self) -> dict[str, Any]:
+        """15:30 장마감 — hold_days 일괄 +1 · KIS 자산 스냅샷."""
+        logger.info("⏰ [스케줄러 트리거] 15:30 정규장 마감 정산")
+        positions = _load_positions(self)
+        names = self._load_universe_names()
+        bumped = 0
+        for pos in positions:
+            pos.hold_days += 1
+            bumped += 1
+        if positions:
+            _save_positions(self, positions, names=names)
+            logger.info("📅 [hold_days 벌크업] %d종 보유일수 +1 반영", bumped)
+
+        self.sync_positions_from_kis()
+        self.print_positions_snapshot()
+        return {"bumped_count": bumped, "position_count": len(positions)}
 
     def run_screener_if_due(self, *, force: bool = False) -> list[str]:
         now = _now_kst()
@@ -433,12 +534,12 @@ class LiveTradingEngine:
         return self.run_entry_scan(force=True)
 
     def save_daily_asset_snapshot(self) -> None:
-        """당일 자산 스냅샷을 daily_snapshots에 박제."""
+        """당일 자산 스냅샷 — KIS inquire_balance SSOT."""
         if use_json_fallback():
             return
         positions = _load_positions(self)
         try:
-            snap = self.gateway.get_snapshot(positions)
+            balances = self.gateway.get_inquire_balance(positions)
         except Exception as e:
             logger.warning("⚠️ 자산 스냅샷 생략(잔고 조회 실패): %s", e)
             return
@@ -446,14 +547,14 @@ class LiveTradingEngine:
         upsert_daily_snapshot(
             self.db_path,
             base_date=today,
-            available_cash=snap.cash,
-            total_evaluation=snap.stock_eval,
-            total_asset=snap.total_equity,
+            available_cash=float(balances.get("available_cash") or 0),
+            total_evaluation=float(balances.get("total_evaluation") or 0),
+            total_asset=float(balances.get("total_asset") or 0),
         )
         logger.info(
             "📸 [자산 스냅샷] %s — 총자산 %s원",
             today,
-            f"{snap.total_equity:,.0f}",
+            f"{float(balances.get('total_asset') or 0):,.0f}",
         )
 
     def monitor_market_realtime(self) -> int:
@@ -468,7 +569,6 @@ class LiveTradingEngine:
         remaining: list[LivePosition] = []
 
         for pos in positions:
-            _bump_hold_days_if_overnight(pos, today_s)
             if _is_same_day_exit_protected(pos, today_s):
                 remaining.append(pos)
                 continue
