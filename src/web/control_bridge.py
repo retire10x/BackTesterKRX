@@ -13,7 +13,13 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.live.live_account import LivePosition
-from src.live.live_db import DEFAULT_RESET_CASH, compute_profit_rate, reset_system_database
+from src.live.live_db import (
+    DEFAULT_RESET_CASH,
+    compute_profit_rate,
+    persist_universe_candidates_from_meta,
+    reset_system_database,
+    use_json_fallback,
+)
 from src.live.live_engine import LiveTradingEngine
 from src.live.live_screener import LiveScreener
 from src.overnight_parity import prime_project_dotenv_from_root
@@ -160,6 +166,8 @@ class ControlBridge:
         try:
             logger.info("⚡ [사령탑 격발] 웹 대시보드로부터 즉시 스캔 명령 하달.")
             codes = self.screener.execute_daily_scan()
+            if not use_json_fallback():
+                persist_universe_candidates_from_meta(self.engine.db_path, self.screener.meta_path)
             count = len(codes)
             ts = self._time_hms()
             self.scan_state.update(
@@ -238,11 +246,13 @@ class ControlBridge:
             self._task_lock.release()
 
     def run_reset_sync(self) -> dict[str, Any]:
-        """마스터 DB 전면 초기화 — 감시 중단 · 3테이블 세척 · 원금 스냅샷."""
+        """마스터 DB·유니버스 전면 초기화 — 감시 중단 · 장부·후보 세척 · 원금 스냅샷."""
         if not self._task_lock.acquire(blocking=False):
             return {"status": "busy", "message": "다른 명령 실행 중입니다.", "timestamp": self._time_hms()}
         try:
-            logger.critical("🚨 [사령탑 직접 개입] 시스템 데이터베이스 전면 초기화 명령 수신!")
+            logger.critical(
+                "🚨 [사령탑 직접 개입] 유니버스 후보군을 포함한 전산 전면 초기화 가동!"
+            )
             if self._watch.active:
                 self._watch.stop()
                 render_off = True
@@ -251,11 +261,21 @@ class ControlBridge:
             if render_off:
                 ws_broadcast({"event": "WATCH_STOPPED"})
 
-            reset_system_database(self.engine.db_path, initial_cash=DEFAULT_RESET_CASH)
+            paths = self.engine.paths
+            reset_system_database(
+                self.engine.db_path,
+                initial_cash=DEFAULT_RESET_CASH,
+                universe_json_path=paths["universe_json"],
+                universe_meta_path=paths.get("universe_meta")
+                or str(Path(paths["universe_json"]).with_suffix(".meta.json")),
+            )
             self.scan_state = self._idle_state("scan")
             self.entry_state = self._idle_state("entry")
 
-            msg = f"시스템이 원금 {DEFAULT_RESET_CASH:,.0f}원 상태로 완벽하게 초기화되었습니다."
+            msg = (
+                f"유니버스 후보군을 포함한 전 시스템이 원금 {DEFAULT_RESET_CASH:,.0f}원 "
+                "청정 상태로 포맷되었습니다."
+            )
             ts = self._time_hms()
             ws_broadcast(
                 {

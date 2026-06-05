@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.live.live_engine import LiveTradingEngine, _load_positions, _now_kst
+from src.live.live_db import persist_universe_candidates_from_meta, use_json_fallback
 from src.live.live_screener import LiveScreener
 from src.overnight_parity import prime_project_dotenv_from_root
 
@@ -89,6 +90,8 @@ class LiveMasterRunner:
             return
         logger.info("🔔 [ROUTINE 1] 15:15 주도주 스캔 자동 실행")
         codes = self.screener.execute_daily_scan()
+        if not use_json_fallback():
+            persist_universe_candidates_from_meta(self.engine.db_path, self.screener.meta_path)
         self._mark_ran("screener_date")
         logger.info("   스캔 완료 — %d종", len(codes))
         if not codes:

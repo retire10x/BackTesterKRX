@@ -53,6 +53,28 @@ def _at_or_after(now: datetime, hm: str) -> bool:
     return now.hour > h or (now.hour == h and now.minute >= m)
 
 
+def _norm_date_key(value: str) -> str:
+    """YYYY-MM-DD · YYYYMMDD → YYYYMMDD 비교 키."""
+    return str(value).strip().replace("-", "")[:8]
+
+
+def _is_same_day_exit_protected(pos: LivePosition, today_s: str) -> bool:
+    """
+    익일 매도 원칙 인터록 — 당일 매수 종목은 장중 청산 감시 대상에서 제외.
+    매수일=오늘이거나 보유일수=0(당일 진입 직후)이면 패스.
+    ※ 호출 전 `_bump_hold_days_if_overnight` 로 익일 hold_days를 먼저 올려야 한다.
+    """
+    if _norm_date_key(pos.entry_date) == _norm_date_key(today_s):
+        return True
+    return int(pos.hold_days) == 0
+
+
+def _bump_hold_days_if_overnight(pos: LivePosition, today_s: str) -> None:
+    """진입일이 오늘 이전이면 보유일수 +1 (익일 감시 개시 조건)."""
+    if _norm_date_key(pos.entry_date) < _norm_date_key(today_s):
+        pos.hold_days += 1
+
+
 def _load_positions_json(path: str) -> list[LivePosition]:
     if not os.path.isfile(path):
         return []
@@ -408,8 +430,10 @@ class LiveTradingEngine:
         remaining: list[LivePosition] = []
 
         for pos in positions:
-            if pos.entry_date < today_s:
-                pos.hold_days += 1
+            _bump_hold_days_if_overnight(pos, today_s)
+            if _is_same_day_exit_protected(pos, today_s):
+                remaining.append(pos)
+                continue
 
             bar = fetch_intraday_bar(pos.code)
             if bar is None:
@@ -448,7 +472,11 @@ class LiveTradingEngine:
         _save_positions(self, positions, names=names)
 
         if positions and _at_or_after(now, self.cfg.watch.market_close):
+            eod_remaining: list[LivePosition] = []
             for pos in positions:
+                if _is_same_day_exit_protected(pos, today_s):
+                    eod_remaining.append(pos)
+                    continue
                 bar = fetch_intraday_bar(pos.code)
                 exit_px = float(bar["close"]) if bar else pos.entry_price
                 self.gateway.sell_all(
@@ -464,8 +492,8 @@ class LiveTradingEngine:
                     exit_date=today_s,
                     name=self._display_name(pos.code, names),
                 )
-            _save_positions(self, [])
-            return 0
+            _save_positions(self, eod_remaining, names=names)
+            return len(eod_remaining)
 
         return len(positions)
 

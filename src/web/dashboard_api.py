@@ -217,7 +217,7 @@ def toggle_web_watch(req: WatchToggleRequest) -> dict[str, object]:
 
 @control_router.post("/reset")
 def reset_system_database() -> dict[str, object]:
-    """[마스터 시스템 초기화] SQLite 3대 테이블 세척 · 원금 5천만 원 스냅샷."""
+    """[마스터 시스템 초기화 v2] 장부·유니버스 후보 DB·JSON 세척 · 원금 5천만 원 스냅샷."""
     return get_control_bridge(_PROJECT_ROOT).run_reset_sync()
 
 

@@ -183,6 +183,15 @@
           <tbody id="positions-body">
             <tr><td colspan="7" class="py-8 text-center text-slate-500">로딩 중…</td></tr>
           </tbody>
+          <tfoot class="bg-ink-800/50 border-t-2 border-accent/25">
+            <tr>
+              <td colspan="2" class="px-4 py-4 font-bold text-right text-slate-300">⚡ 포트폴리오 총 매수 합계액:</td>
+              <td id="total-buy-amount" class="px-4 py-4 font-extrabold text-accent text-lg text-right">0원</td>
+              <td colspan="4" id="total-portfolio-status" class="px-4 py-4 text-sm text-slate-400 font-medium">
+                (가동 슬롯: <span id="active-slots-count" class="text-accent font-bold">0</span> / <span id="max-slots-count">5</span>개)
+              </td>
+            </tr>
+          </tfoot>
         </table>
       </div>
     </section>
@@ -424,9 +433,9 @@
           await bootstrapSilent();
           renderWatchToggle(false);
           document.getElementById("watch-toggle").checked = false;
-          setControlMsg("✨ 초기화 완료 — 원금 5,000만 원");
+          setControlMsg("✨ 초기화 완료 — 유니버스·원금 5,000만 원");
           showToast(
-            msg.message || "✨ 시스템이 원금 50,000,000원 상태로 완벽하게 초기화되었습니다.",
+            msg.message || "✨ 유니버스 후보군을 포함한 전 시스템이 원금 50,000,000원 청정 상태로 포맷되었습니다.",
             "warning"
           );
           break;
@@ -471,24 +480,24 @@
 
     async function handleSystemReset() {
       const ok1 = confirm(
-        "🚨 [경고] 현재 보유 종목, 과거 매매 복기 기록, 자산 성장 곡선이 모두 영구 삭제됩니다. 진행하시겠습니까?"
+        "🚨 [경고] 보유 종목, 매매 복기 기록, 자산 성장 곡선, 유니버스 후보 종목이 모두 영구 삭제됩니다. 진행하시겠습니까?"
       );
       if (!ok1) return;
       const ok2 = confirm(
-        "🛑 정말로 처음부터 다시 검증하기 위해 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다."
+        "🛑 정말로 유니버스 후보군까지 포함해 처음부터 다시 검증하시겠습니까? 이 작업은 되돌릴 수 없습니다."
       );
       if (!ok2) return;
 
       lockControlButtons(true);
       setControlMsg("🔥 시스템 초기화 진행 중…");
-      showToast("⏳ 데이터베이스 전면 세척 중…", "warning");
+      showToast("⏳ 장부·유니버스 후보 전면 세척 중…", "warning");
       try {
         const r = await postJson("/api/control/reset");
         if (r.status === "success") {
           await bootstrapSilent();
           renderWatchToggle(false);
           document.getElementById("watch-toggle").checked = false;
-          setControlMsg("✨ 초기화 완료 — 원금 5,000만 원");
+          setControlMsg("✨ 초기화 완료 — 유니버스·원금 5,000만 원");
           showToast(`✨ 초기화 성공: ${r.message}`, "warning");
         } else {
           setControlMsg(r.message, true);
@@ -577,15 +586,30 @@
       today.className = "text-xl font-bold mt-1 " + fmtPctClass(s.today_realized_profit_rate);
     }
 
+    const MAX_POSITION_SLOTS = 5;
+
+    function calculateTotalBuy(positions) {
+      const list = positions || [];
+      let totalSum = 0;
+      list.forEach((pos) => {
+        totalSum += Number(pos.entry_price) * Number(pos.quantity);
+      });
+      document.getElementById("total-buy-amount").textContent = fmtWon(totalSum);
+      document.getElementById("active-slots-count").textContent = String(list.length);
+      document.getElementById("max-slots-count").textContent = String(MAX_POSITION_SLOTS);
+    }
+
     function renderPositions(data) {
       const body = document.getElementById("positions-body");
       const updated = document.getElementById("pos-updated");
+      const positions = data.positions || [];
       updated.textContent = data.updated_at ? "갱신 " + data.updated_at.slice(0, 19) : "";
-      if (!data.positions?.length) {
+      calculateTotalBuy(positions);
+      if (!positions.length) {
         body.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500">보유 종목 없음</td></tr>';
         return;
       }
-      body.innerHTML = data.positions.map((p) => {
+      body.innerHTML = positions.map((p) => {
         const pnl = p.unrealized_pnl_rate;
         const name = p.name ? `${p.name} <span class="text-slate-500">(${p.symbol})</span>` : p.symbol;
         return `<tr>

@@ -36,3 +36,16 @@ CREATE TABLE IF NOT EXISTS daily_snapshots (
     total_evaluation   REAL NOT NULL,
     total_asset        REAL NOT NULL CHECK (total_asset >= 0)
 );
+
+CREATE TABLE IF NOT EXISTS universe_candidates (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_date    TEXT NOT NULL,
+    rank         INTEGER NOT NULL,
+    symbol       TEXT NOT NULL,
+    name         TEXT NOT NULL DEFAULT '',
+    market_cap   TEXT,
+    volume_amt   TEXT,
+    scan_time    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_candidates_scan_date ON universe_candidates(scan_date);

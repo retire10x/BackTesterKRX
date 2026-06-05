@@ -375,21 +375,85 @@ def fetch_trading_summary(db_path: str, *, today: str | None = None) -> dict[str
 DEFAULT_RESET_CASH = 50_000_000.0
 
 
+def replace_universe_candidates(
+    db_path: str,
+    *,
+    scan_date: str,
+    scan_time: str,
+    items: list[dict[str, object]],
+) -> int:
+    """당일 스캔 후보 종목을 universe_candidates에 전면 교체. 반환=저장 건수."""
+    scan_d = _to_db_date(scan_date)
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM universe_candidates")
+        for item in items:
+            conn.execute(
+                """
+                INSERT INTO universe_candidates
+                    (scan_date, rank, symbol, name, market_cap, volume_amt, scan_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    scan_d,
+                    int(item.get("rank") or 0),
+                    str(item.get("code", "")).zfill(6),
+                    str(item.get("name", "")),
+                    str(item.get("market_cap") or ""),
+                    str(item.get("volume_amt") or ""),
+                    scan_time,
+                ),
+            )
+    return len(items)
+
+
+def persist_universe_candidates_from_meta(db_path: str, meta_path: str) -> int:
+    """live_today_universe.meta.json → universe_candidates 동기화."""
+    if use_json_fallback() or not os.path.isfile(meta_path):
+        return 0
+    with open(meta_path, encoding="utf-8") as fh:
+        meta = json.load(fh)
+    items = meta.get("scanned_items_report") or []
+    return replace_universe_candidates(
+        db_path,
+        scan_date=str(meta.get("base_date_actual") or ""),
+        scan_time=str(meta.get("scan_time") or _now_kst_iso()),
+        items=items,
+    )
+
+
+def reset_universe_files(universe_json_path: str, universe_meta_path: str) -> None:
+    """당일 유니버스 JSON을 []로 초기화하고 메타 리포트 파일을 삭제."""
+    parent = os.path.dirname(universe_json_path) or "."
+    os.makedirs(parent, exist_ok=True)
+    with open(universe_json_path, "w", encoding="utf-8") as fh:
+        json.dump([], fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+    logger.info("📁 live_today_universe.json 후보 파일 초기화 완료 — %s", universe_json_path)
+    if os.path.isfile(universe_meta_path):
+        os.remove(universe_meta_path)
+        logger.info("📋 live_today_universe.meta.json 메타 파일 삭제 완료 — %s", universe_meta_path)
+
+
 def reset_system_database(
     db_path: str,
     *,
     initial_cash: float = DEFAULT_RESET_CASH,
+    universe_json_path: str | None = None,
+    universe_meta_path: str | None = None,
 ) -> str:
     """
-    holding_positions · trading_history · daily_snapshots 전면 삭제 후
-    VACUUM · 원금 스냅샷 1건 박제. 반환=base_date (YYYYMMDD).
+    holding_positions · trading_history · daily_snapshots · universe_candidates 전면 삭제 후
+    VACUUM · 원금 스냅샷 1건 박제 · 유니버스 JSON/메타 파일 세척.
+    반환=base_date (YYYYMMDD).
     """
+    init_schema(db_path)
     today = _to_db_date(datetime.now(KST).strftime("%Y-%m-%d"))
     cash = float(initial_cash)
     with _connect(db_path) as conn:
         conn.execute("DELETE FROM holding_positions")
         conn.execute("DELETE FROM trading_history")
         conn.execute("DELETE FROM daily_snapshots")
+        conn.execute("DELETE FROM universe_candidates")
         conn.execute(
             """
             INSERT INTO daily_snapshots
@@ -398,6 +462,8 @@ def reset_system_database(
             """,
             (today, cash, 0.0, cash),
         )
+    if universe_json_path and universe_meta_path:
+        reset_universe_files(universe_json_path, universe_meta_path)
     vac = sqlite3.connect(db_path)
     try:
         vac.execute("VACUUM")
@@ -405,7 +471,7 @@ def reset_system_database(
     finally:
         vac.close()
     logger.critical(
-        "🔥 [DB 전면 초기화] 원금 %s원 스냅샷 박제 — %s",
+        "🔥 [DB 전면 초기화] 유니버스 후보 포함 · 원금 %s원 스냅샷 박제 — %s",
         f"{cash:,.0f}",
         db_path,
     )
