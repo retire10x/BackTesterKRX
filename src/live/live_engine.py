@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +23,15 @@ from src.live.live_account import (
 )
 from src.overnight_parity import prime_project_dotenv_from_root
 from src.live.live_config import LiveTradingConfig, load_live_config, resolve_live_paths
+from src.live.live_db import (
+    compute_profit_rate,
+    ensure_db_ready,
+    insert_trading_history,
+    load_holding_positions,
+    save_holding_positions,
+    upsert_daily_snapshot,
+    use_json_fallback,
+)
 from src.live.live_signals import evaluate_hit_and_run_exit, explain_entry_signal
 from src.live.live_screener import load_live_universe, run_live_screener
 
@@ -43,7 +53,7 @@ def _at_or_after(now: datetime, hm: str) -> bool:
     return now.hour > h or (now.hour == h and now.minute >= m)
 
 
-def _load_positions(path: str) -> list[LivePosition]:
+def _load_positions_json(path: str) -> list[LivePosition]:
     if not os.path.isfile(path):
         return []
     with open(path, encoding="utf-8") as fh:
@@ -63,7 +73,7 @@ def _load_positions(path: str) -> list[LivePosition]:
     return out
 
 
-def _save_positions(path: str, positions: list[LivePosition]) -> None:
+def _save_positions_json(path: str, positions: list[LivePosition]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     payload = {
         "updated_at": _now_kst().isoformat(),
@@ -81,6 +91,24 @@ def _save_positions(path: str, positions: list[LivePosition]) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
         fh.write("\n")
+
+
+def _load_positions(engine: "LiveTradingEngine") -> list[LivePosition]:
+    if use_json_fallback():
+        return _load_positions_json(engine.paths["positions_json"])
+    return load_holding_positions(engine.db_path)
+
+
+def _save_positions(
+    engine: "LiveTradingEngine",
+    positions: list[LivePosition],
+    *,
+    names: dict[str, str] | None = None,
+) -> None:
+    if use_json_fallback():
+        _save_positions_json(engine.paths["positions_json"], positions)
+        return
+    save_holding_positions(engine.db_path, positions, names=names)
 
 
 def fetch_ohlcv_history(
@@ -138,8 +166,15 @@ class LiveTradingEngine:
         self.cfg = config if config is not None else load_live_config()
         self.root = project_root or str(Path(__file__).resolve().parents[2])
         self.paths = resolve_live_paths(self.cfg, self.root)
+        if use_json_fallback():
+            self.db_path = self.paths["db_path"]
+            logger.warning("⚠️ [JSON 장부] LIVE_USE_JSON_LEDGER=1 — DB 대신 JSON 사용")
+        else:
+            self.db_path = ensure_db_ready(self.root, self.paths["positions_json"])
         self.gateway = LiveAccountGateway(self.cfg.account, dry_run=dry_run)
         self.strat = self.cfg.strategy
+        self.on_entry_filled: Callable[[LivePosition, str], None] | None = None
+        self.on_exit_recorded: Callable[[LivePosition, str, float, str], None] | None = None
 
     def run_screener_if_due(self, *, force: bool = False) -> list[str]:
         now = _now_kst()
@@ -172,22 +207,61 @@ class LiveTradingEngine:
         c6 = str(code).zfill(6)
         return names.get(c6) or c6
 
-    def run_entry_scan(self, *, force: bool = False) -> None:
+    def _record_exit(
+        self,
+        pos: LivePosition,
+        *,
+        exit_price: float,
+        exit_type: str,
+        exit_date: str,
+        name: str = "",
+    ) -> None:
+        if use_json_fallback():
+            return
+        acct = self.cfg.account
+        profit_rate = compute_profit_rate(
+            entry_price=pos.entry_price,
+            exit_price=exit_price,
+            quantity=pos.qty,
+            buy_cost_ratio=acct.buy_cost_ratio,
+            sell_cost_ratio=acct.sell_cost_ratio,
+        )
+        insert_trading_history(
+            self.db_path,
+            symbol=pos.code,
+            name=name,
+            entry_date=pos.entry_date,
+            entry_price=pos.entry_price,
+            exit_date=exit_date,
+            exit_price=exit_price,
+            quantity=pos.qty,
+            profit_rate=profit_rate,
+            reason=exit_type,
+        )
+        if self.on_exit_recorded:
+            try:
+                self.on_exit_recorded(pos, name, exit_price, exit_type)
+            except Exception:
+                logger.exception("on_exit_recorded 콜백 오류")
+
+    def run_entry_scan(self, *, force: bool = False) -> int:
+        """진입 연산. 반환=이번 실행에서 신규 체결된 종목 수."""
         now = _now_kst()
         if not force and not _at_or_after(now, self.strat.entry_time):
             logger.info("⏳ 진입 시각 대기 (%s KST)", self.strat.entry_time)
-            return
+            return 0
 
         uni_path = self.paths["universe_json"]
         logger.info("📂 유니버스 로드 — %s (재스캔 없음)", uni_path)
         codes = load_live_universe(config=self.cfg, project_root=self.root)
         names = self._load_universe_names()
-        positions = _load_positions(self.paths["positions_json"])
+        positions = _load_positions(self)
+        executed = 0
         try:
             snap = self.gateway.get_snapshot(positions)
         except SlotLockError as e:
             logger.warning("🛡️ [안전장치 트리거] %s -> 금일 매수 진입을 종료합니다.", e)
-            return
+            return 0
 
         logger.info(
             "🎯 [진입 연산 시작] %d종 · 보유 %d/%d(동적) · 총자산 %s원 · dry_run=%s",
@@ -263,7 +337,8 @@ class LiveTradingEngine:
                     hold_days=0,
                 )
                 positions.append(new_pos)
-                _save_positions(self.paths["positions_json"], positions)
+                executed += 1
+                _save_positions(self, positions, names=names)
                 spent = qty * last_close * (1.0 + self.cfg.account.buy_cost_ratio)
                 snap = snapshot_after_local_fill(
                     snap, positions, cash_spent=spent, account=self.cfg.account
@@ -275,6 +350,11 @@ class LiveTradingEngine:
                     f"{last_close:,.0f}",
                     qty,
                 )
+                if self.on_entry_filled:
+                    try:
+                        self.on_entry_filled(new_pos, label)
+                    except Exception:
+                        logger.exception("on_entry_filled 콜백 오류")
             except SlotLockError as e:
                 logger.warning(
                     "🛡️ [안전장치 트리거] %s (%s) — %s -> 금일 매수 진입 종료",
@@ -284,21 +364,47 @@ class LiveTradingEngine:
                 )
                 break
 
-        logger.info("🏁 [진입 연산 종료] 최종 보유 %d종", len(positions))
-        _save_positions(self.paths["positions_json"], positions)
+        logger.info("🏁 [진입 연산 종료] 최종 보유 %d종 · 신규 체결 %d종", len(positions), executed)
+        _save_positions(self, positions, names=names)
+        return executed
 
-    def calculate_entry_signals(self) -> None:
+    def calculate_entry_signals(self) -> int:
         """마스터 ROUTINE 2 — 15:20 듀얼 MA·변곡 진입 및 KIS 종가 주문."""
-        self.run_entry_scan(force=True)
+        return self.run_entry_scan(force=True)
+
+    def save_daily_asset_snapshot(self) -> None:
+        """당일 자산 스냅샷을 daily_snapshots에 박제."""
+        if use_json_fallback():
+            return
+        positions = _load_positions(self)
+        try:
+            snap = self.gateway.get_snapshot(positions)
+        except Exception as e:
+            logger.warning("⚠️ 자산 스냅샷 생략(잔고 조회 실패): %s", e)
+            return
+        today = _now_kst().strftime("%Y-%m-%d")
+        upsert_daily_snapshot(
+            self.db_path,
+            base_date=today,
+            available_cash=snap.cash,
+            total_evaluation=snap.stock_eval,
+            total_asset=snap.total_equity,
+        )
+        logger.info(
+            "📸 [자산 스냅샷] %s — 총자산 %s원",
+            today,
+            f"{snap.total_equity:,.0f}",
+        )
 
     def monitor_market_realtime(self) -> int:
         """마스터 ROUTINE 3 — 장중 1틱(+8%/-3%/타임스탑) 감시. 반환=잔여 포지션 수."""
-        positions = _load_positions(self.paths["positions_json"])
+        positions = _load_positions(self)
         if not positions:
             return 0
 
         now = _now_kst()
         today_s = now.strftime("%Y-%m-%d")
+        names = self._load_universe_names()
         remaining: list[LivePosition] = []
 
         for pos in positions:
@@ -329,28 +435,43 @@ class LiveTradingEngine:
                 exit_type=exit_type,
                 dry_run_note=f"@ {exit_px:,.0f}",
             )
+            self._record_exit(
+                pos,
+                exit_price=exit_px,
+                exit_type=exit_type,
+                exit_date=today_s,
+                name=self._display_name(pos.code, names),
+            )
             logger.info("   청산 %s %s hold=%dd", pos.code, exit_type, pos.hold_days)
 
         positions = remaining
-        _save_positions(self.paths["positions_json"], positions)
+        _save_positions(self, positions, names=names)
 
         if positions and _at_or_after(now, self.cfg.watch.market_close):
             for pos in positions:
                 bar = fetch_intraday_bar(pos.code)
+                exit_px = float(bar["close"]) if bar else pos.entry_price
                 self.gateway.sell_all(
                     pos.code,
                     pos.qty,
                     exit_type="TIME_STOP_EOD",
                     dry_run_note="장마감",
                 )
-            _save_positions(self.paths["positions_json"], [])
+                self._record_exit(
+                    pos,
+                    exit_price=exit_px,
+                    exit_type="TIME_STOP_EOD",
+                    exit_date=today_s,
+                    name=self._display_name(pos.code, names),
+                )
+            _save_positions(self, [])
             return 0
 
         return len(positions)
 
     def print_positions_snapshot(self) -> None:
         """SOP 장마감 — 당일 포지션 스냅샷 1회 출력."""
-        positions = _load_positions(self.paths["positions_json"])
+        positions = _load_positions(self)
         if not positions:
             print("📭 보유 포지션 없음")
             return
@@ -370,7 +491,7 @@ class LiveTradingEngine:
         poll = self.cfg.watch.poll_interval_sec
         if once:
             self.print_positions_snapshot()
-        if not _load_positions(self.paths["positions_json"]):
+        if not _load_positions(self):
             if not once:
                 print("📭 감시할 보유 포지션 없음")
             return

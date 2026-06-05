@@ -98,9 +98,42 @@
 - [x] **라이브 KIS** 모의 계좌 `50191458` · `KIS_PAPER_*` · `test_live_gateway.py --live` 잔고 1천만 검증
 - [x] **라이브 마스터** `run_live_bot.py`(기본=master) · `live_master.py` 15:15/15:20/장중0.5s 자동
 - [x] **라이브 SOP** `docs/live_SOP_guide.md` 하이브리드(08:30 마스터·15:10/16 수동·15:20 자동·15:40 종료)
+- [x] **v6.0 [1단계]** SQLite 스키마 설계 · `src/live/schema.sql` · `docs/작업지시서-v6.0-DB-웹대시보드-로드맵.md`
+- [x] **v6.0 [2단계]** `live_db.py` · JSON→DB 장부 전환 · 청산 `trading_history` 기록
+- [x] **v6.0 [3단계]** FastAPI REST API · `run_live_dashboard.py` · `/api/*` 5종
+- [x] **v6.0 [4단계]** Tailwind + Chart.js 대시보드 UI · `src/web/static/index.html`
 - [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-05 (**v6.3**) 토스트 알림 · alert 전면 제거
+- **`showToast`:** success/info/danger/warning · 2.5초 자동 소멸 · 우상단 스택
+- **WS 연동:** SCAN/ENTRY/EXIT/RESET 이벤트별 색상 토스트
+
+### 2026-06-05 (**v6.3**) WebSocket 3대 모드 · 사령탑 제어 센터
+- **`ws_hub.py`:** `/ws` · `SCAN_COMPLETED` · `ENTRY_TRIGGERED` · `EXIT_TRIGGERED` 브로드캐스트
+- **`live_engine`:** `on_entry_filled` · `on_exit_recorded` 외곽 콜백
+- **`index.html`:** 마스터 콘트롤 패널 · Silent 정적 · WS 이벤트 시에만 1회 갱신
+
+### 2026-06-05 (**v6.1**) 대시보드 실시간 사령탑 · 수동 개입 연동
+- **`control_bridge.py`:** LiveScreener / LiveEngine 메모리 직접 호출 · 0.5s 감시 스레드
+- **`dashboard_api`:** `POST /api/control/scan|entry|watch/toggle` · `GET /api/universe`
+- **`index.html`:** 상단 사령탑 패널 · 유니버스 후보 테이블
+
+### 2026-06-05 (**v6.0**) Tailwind 대시보드 UI 4단계
+- **`index.html`:** 요약 카드 · 자산/청산 Chart.js · 보유·복기 테이블 · 8초 폴링
+- **`dashboard_api`:** `GET /` UI 서빙 · `/static` 마운트
+
+### 2026-06-05 (**v6.0**) FastAPI 대시보드 API 3단계
+- **`dashboard_api.py`:** `/api/positions` · `/history` · `/snapshots` · `/summary` · `/health`
+- **`run_live_dashboard.py`:** `127.0.0.1:8765` · OpenAPI `/docs` · DB 읽기 전용
+- **`live_db`:** `fetch_holding_rows` · `fetch_trading_history` · `fetch_daily_snapshots` · `fetch_trading_summary`
+
+### 2026-06-05 (**v6.0**) SQLite 장부 · JSON→DB 2단계
+- **`schema.sql`:** `holding_positions` · `trading_history` · `daily_snapshots` DDL 정본
+- **`live_db.py`:** `init_schema` · CRUD · `migrate_from_json` · `LIVE_USE_JSON_LEDGER` 폴백
+- **`live_engine`:** DB 장부 연동 · 청산 시 `_record_exit` → `trading_history` 누적
+- **`.gitignore`:** `data/live_trading.db` (+ WAL/SHM)
 
 ### 2026-06-04 (**청소**) v4·구형 v5 러너 폐기 · 릴레이 SSOT 유지
 - **삭제:** `run_v4_*.py` · `run_v5_breakout.py` · `run_v5_portfolio.py` · `scripts/` 구형 테스트 4종

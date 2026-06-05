@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>코스닥 스나이퍼 · 라이브 대시보드</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            ink: { 950: "#0b0f1a", 900: "#111827", 800: "#1a2235", 700: "#243049" },
+            gain: "#22c55e",
+            loss: "#ef4444",
+            accent: "#38bdf8",
+          },
+          fontFamily: { sans: ["Pretendard", "Segoe UI", "sans-serif"] },
+        },
+      },
+    };
+  </script>
+  <style>
+    body { background: radial-gradient(ellipse at top, #1a2235 0%, #0b0f1a 55%); }
+    .card { background: rgba(17, 24, 39, 0.85); border: 1px solid rgba(56, 189, 248, 0.12); }
+    .tbl th { color: #94a3b8; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .tbl td { border-top: 1px solid rgba(148, 163, 184, 0.12); }
+    .badge-tp { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+    .badge-sl { background: rgba(239, 68, 68, 0.15); color: #f87171; }
+    .badge-ts { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .btn-ctrl { transition: all 0.15s; }
+    .btn-ctrl:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 20px rgba(56,189,248,0.25); }
+    .btn-ctrl:disabled { opacity: 0.5; cursor: not-allowed; }
+    .toggle-track { transition: background 0.2s; }
+    .toggle-thumb { transition: transform 0.2s; }
+    #toast-container {
+      position: fixed; top: 20px; right: 20px; z-index: 9999;
+      display: flex; flex-direction: column; gap: 10px;
+      pointer-events: none; max-width: min(420px, calc(100vw - 40px));
+    }
+    .toast-item {
+      color: #fff; padding: 14px 24px; border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+      font-weight: 600; font-size: 14px; min-width: 280px;
+      opacity: 0; transition: opacity 0.3s ease-in-out;
+      border-left: 4px solid rgba(255,255,255,0.35);
+    }
+    .toast-success { background-color: #10B981; }
+    .toast-info { background-color: #3B82F6; }
+    .toast-danger { background-color: #EF4444; }
+    .toast-warning { background-color: #F59E0B; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-100 font-sans antialiased">
+  <div id="toast-container" aria-live="polite" aria-atomic="true"></div>
+  <div class="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8">
+    <!-- Master Control Center -->
+    <section class="card rounded-xl mb-8 border-accent/25 overflow-hidden">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-3 border-b border-accent/15 bg-ink-800/50">
+        <h1 class="text-lg sm:text-xl font-bold tracking-tight">
+          📊 v6.0 사령탑 실시간 매매 제어 센터
+        </h1>
+        <span class="flex items-center gap-2 text-sm">
+          <span id="ws-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+          <span id="ws-status" class="text-slate-400">WS 연결 중…</span>
+          <span class="text-slate-600">·</span>
+          <span id="dry-run-badge" class="text-accent text-xs">—</span>
+        </span>
+      </div>
+      <div class="flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4 px-4 sm:px-5 py-4">
+        <div class="flex flex-wrap items-center gap-3">
+          <button id="btn-scan" type="button"
+            class="btn-ctrl bg-accent/20 hover:bg-accent/30 text-accent font-bold px-5 py-2.5 rounded-lg border border-accent/40">
+            🚨 주도주 즉시 스캔
+          </button>
+          <button id="btn-entry" type="button"
+            class="btn-ctrl bg-gain/20 hover:bg-gain/30 text-gain font-bold px-5 py-2.5 rounded-lg border border-gain/40">
+            🚀 황금 타점 즉시 진입
+          </button>
+          <label class="flex items-center gap-3 cursor-pointer select-none card rounded-lg px-3 py-2">
+            <span class="text-sm text-slate-300 font-medium whitespace-nowrap">장중 매도 감시:</span>
+            <input id="watch-toggle" type="checkbox" class="sr-only" />
+            <span id="watch-track" class="toggle-track relative w-11 h-6 rounded-full bg-ink-700">
+              <span id="watch-thumb" class="toggle-thumb absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-slate-400"></span>
+            </span>
+            <span id="watch-label" class="text-sm font-mono text-slate-500">○ OFF</span>
+          </label>
+        </div>
+        <button id="btn-reset" type="button"
+          class="btn-ctrl bg-loss/25 hover:bg-loss/40 text-loss font-bold px-5 py-2.5 rounded-lg border border-loss/50 whitespace-nowrap">
+          🔥 시스템 초기화
+        </button>
+      </div>
+      <p id="control-msg" class="px-4 sm:px-5 pb-4 text-slate-500 text-sm">정적 대기 — 버튼·청산 이벤트 시에만 화면이 움직입니다.</p>
+    </section>
+
+    <!-- Universe -->
+    <section class="card rounded-xl p-4 sm:p-5 mb-8">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-lg font-semibold">유니버스 후보 종목</h2>
+          <p id="universe-meta" class="text-xs text-slate-500 mt-1">스캔 후 자동 갱신</p>
+        </div>
+        <span id="universe-count" class="text-accent text-sm font-medium">0종</span>
+      </div>
+      <div class="overflow-x-auto max-h-64 overflow-y-auto">
+        <table class="tbl w-full text-sm">
+          <thead class="sticky top-0 bg-ink-900/95">
+            <tr class="text-left">
+              <th class="pb-3 pr-4">순위</th>
+              <th class="pb-3 pr-4">종목</th>
+              <th class="pb-3 pr-4 text-right">시총</th>
+              <th class="pb-3 text-right">거래대금</th>
+            </tr>
+          </thead>
+          <tbody id="universe-body">
+            <tr><td colspan="4" class="py-6 text-center text-slate-500">스캔 전 — [주도주 스캔] 클릭</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Summary cards -->
+    <section class="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-8">
+      <div class="card rounded-xl p-4">
+        <p class="text-slate-400 text-xs">총자산 (최근)</p>
+        <p id="card-asset" class="text-xl font-bold mt-1">—</p>
+      </div>
+      <div class="card rounded-xl p-4">
+        <p class="text-slate-400 text-xs">보유 종목</p>
+        <p id="card-open" class="text-xl font-bold mt-1">—</p>
+      </div>
+      <div class="card rounded-xl p-4">
+        <p class="text-slate-400 text-xs">승률</p>
+        <p id="card-winrate" class="text-xl font-bold mt-1">—</p>
+      </div>
+      <div class="card rounded-xl p-4">
+        <p class="text-slate-400 text-xs">누적 실현 수익률</p>
+        <p id="card-cum" class="text-xl font-bold mt-1">—</p>
+      </div>
+      <div class="card rounded-xl p-4 col-span-2 lg:col-span-1">
+        <p class="text-slate-400 text-xs">오늘 실현 수익률</p>
+        <p id="card-today" class="text-xl font-bold mt-1">—</p>
+      </div>
+    </section>
+
+    <!-- Charts -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-8">
+      <div class="card rounded-xl p-4 sm:p-5">
+        <h2 class="text-lg font-semibold mb-1">자산 성장 곡선</h2>
+        <p class="text-slate-500 text-xs mb-4">daily_snapshots · 장마감 박제</p>
+        <div class="h-56 sm:h-64"><canvas id="chart-asset"></canvas></div>
+      </div>
+      <div class="card rounded-xl p-4 sm:p-5">
+        <h2 class="text-lg font-semibold mb-1">청산 수익률 추이</h2>
+        <p class="text-slate-500 text-xs mb-4">trading_history · 건별 확정 수익률</p>
+        <div class="h-56 sm:h-64"><canvas id="chart-trades"></canvas></div>
+      </div>
+    </section>
+
+    <!-- Positions -->
+    <section class="card rounded-xl p-4 sm:p-5 mb-8">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold">현재 보유</h2>
+        <span id="pos-updated" class="text-xs text-slate-500"></span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="tbl w-full text-sm">
+          <thead>
+            <tr class="text-left">
+              <th class="pb-3 pr-4">종목</th>
+              <th class="pb-3 pr-4">진입일</th>
+              <th class="pb-3 pr-4 text-right">평단</th>
+              <th class="pb-3 pr-4 text-right">현재가</th>
+              <th class="pb-3 pr-4 text-right">수량</th>
+              <th class="pb-3 pr-4 text-right">미실현</th>
+              <th class="pb-3 text-right">보유일</th>
+            </tr>
+          </thead>
+          <tbody id="positions-body">
+            <tr><td colspan="7" class="py-8 text-center text-slate-500">로딩 중…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- History -->
+    <section class="card rounded-xl p-4 sm:p-5 mb-8">
+      <h2 class="text-lg font-semibold mb-4">매매 복기 (최근 50건)</h2>
+      <div class="overflow-x-auto">
+        <table class="tbl w-full text-sm">
+          <thead>
+            <tr class="text-left">
+              <th class="pb-3 pr-4">청산일</th>
+              <th class="pb-3 pr-4">종목</th>
+              <th class="pb-3 pr-4">사유</th>
+              <th class="pb-3 pr-4 text-right">매수</th>
+              <th class="pb-3 pr-4 text-right">매도</th>
+              <th class="pb-3 text-right">수익률</th>
+            </tr>
+          </thead>
+          <tbody id="history-body">
+            <tr><td colspan="6" class="py-8 text-center text-slate-500">로딩 중…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="text-center text-slate-600 text-xs pb-6">
+      BackTesterKRX · WebSocket 3대 모드 · Silent 정적 유지 · v5.5.2 FROZEN
+    </footer>
+  </div>
+
+  <script>
+    const REASON_LABEL = {
+      TAKE_PROFIT: "익절",
+      STOP_LOSS: "손절",
+      TIME_STOP: "타임스탑",
+      TIME_STOP_EOD: "장마감",
+    };
+
+    let assetChart = null;
+    let tradeChart = null;
+    let ws = null;
+    let scanBtnOrig = "🚨 주도주 즉시 스캔";
+    let entryBtnOrig = "🚀 황금 타점 즉시 진입";
+    const BTN_SCAN = document.getElementById("btn-scan");
+    const BTN_ENTRY = document.getElementById("btn-entry");
+    scanBtnOrig = BTN_SCAN.innerHTML;
+    entryBtnOrig = BTN_ENTRY.innerHTML;
+
+    function fmtPct(v, digits = 2) {
+      if (v == null || Number.isNaN(v)) return "—";
+      const n = Number(v) * 100;
+      const s = (n >= 0 ? "+" : "") + n.toFixed(digits) + "%";
+      return s;
+    }
+
+    function fmtPctClass(v) {
+      if (v == null) return "text-slate-400";
+      return Number(v) >= 0 ? "text-gain" : "text-loss";
+    }
+
+    function fmtWon(v) {
+      if (v == null || Number.isNaN(v)) return "—";
+      return Math.round(Number(v)).toLocaleString("ko-KR") + "원";
+    }
+
+    function fmtReason(code) {
+      const label = REASON_LABEL[code] || code;
+      let cls = "badge-ts";
+      if (code === "TAKE_PROFIT") cls = "badge-tp";
+      else if (code === "STOP_LOSS") cls = "badge-sl";
+      return `<span class="text-xs px-2 py-0.5 rounded-full ${cls}">${label}</span>`;
+    }
+
+    async function fetchJson(path) {
+      const res = await fetch(path);
+      if (!res.ok) throw new Error(res.statusText);
+      return res.json();
+    }
+
+    async function postJson(path, body) {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      });
+      if (!res.ok) throw new Error(res.statusText);
+      return res.json();
+    }
+
+    const TOAST_CLASS = {
+      success: "toast-success",
+      info: "toast-info",
+      danger: "toast-danger",
+      warning: "toast-warning",
+    };
+
+    function showToast(message, type = "info") {
+      const container = document.getElementById("toast-container");
+      const toast = document.createElement("div");
+      toast.className = `toast-item ${TOAST_CLASS[type] || TOAST_CLASS.info}`;
+      toast.textContent = message;
+      container.appendChild(toast);
+      requestAnimationFrame(() => { toast.style.opacity = "1"; });
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => toast.remove(), 300);
+      }, 2500);
+    }
+
+    function exitToastMessage(msg) {
+      const label = msg.reason_label || REASON_LABEL[msg.reason] || msg.reason || "청산";
+      const name = msg.name || msg.symbol || "";
+      let pct = "";
+      if (msg.profit_rate != null) {
+        const n = Number(msg.profit_rate) * 100;
+        pct = (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+      }
+      const bracket = label.includes("완료") ? label : label + " 완료";
+      return `🚨 [${bracket}] ${name}${pct ? " " + pct : ""} 청산되었습니다.`;
+    }
+
+    function setControlMsg(text, isError) {
+      const el = document.getElementById("control-msg");
+      el.textContent = text;
+      el.className = "text-sm mt-1 " + (isError ? "text-loss" : "text-slate-400");
+    }
+
+    function renderWatchToggle(active) {
+      const track = document.getElementById("watch-track");
+      const thumb = document.getElementById("watch-thumb");
+      const label = document.getElementById("watch-label");
+      const cb = document.getElementById("watch-toggle");
+      cb.checked = active;
+      if (active) {
+        track.className = "toggle-track relative w-11 h-6 rounded-full bg-gain/40";
+        thumb.className = "toggle-thumb absolute top-0.5 left-5 w-5 h-5 rounded-full bg-gain";
+        label.textContent = "● ON";
+        label.className = "text-sm font-mono text-gain";
+      } else {
+        track.className = "toggle-track relative w-11 h-6 rounded-full bg-ink-700";
+        thumb.className = "toggle-thumb absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-slate-400";
+        label.textContent = "○ OFF";
+        label.className = "text-sm font-mono text-slate-500";
+      }
+    }
+
+    function setWsStatus(connected) {
+      const dot = document.getElementById("ws-dot");
+      const txt = document.getElementById("ws-status");
+      if (connected) {
+        dot.className = "w-2.5 h-2.5 rounded-full bg-gain";
+        txt.textContent = "● 시스템 연결됨 (WS)";
+        txt.className = "text-gain text-sm";
+      } else {
+        dot.className = "w-2.5 h-2.5 rounded-full bg-loss";
+        txt.textContent = "WS 끊김";
+        txt.className = "text-loss text-sm";
+      }
+    }
+
+    function connectWebSocket() {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onopen = () => setWsStatus(true);
+      ws.onclose = () => {
+        setWsStatus(false);
+        setTimeout(connectWebSocket, 3000);
+      };
+      ws.onerror = () => setWsStatus(false);
+      ws.onmessage = (ev) => handleWsEvent(JSON.parse(ev.data));
+    }
+
+    async function fetchUniverseOnly() {
+      const universe = await fetchJson("/api/universe");
+      renderUniverse(universe);
+    }
+
+    async function fetchPositionsOnly() {
+      const positions = await fetchJson("/api/positions");
+      renderPositions(positions);
+      const summary = await fetchJson("/api/summary");
+      renderSummary(summary);
+    }
+
+    async function fetchHistoryOnly() {
+      const history = await fetchJson("/api/history");
+      renderHistory(history);
+      if (history.trades?.length) renderTradeChart(history.trades);
+    }
+
+    async function handleWsEvent(msg) {
+      const ev = msg.event === "POSITION_CLEARED" ? "EXIT_TRIGGERED" : msg.event;
+      switch (ev) {
+        case "SCAN_COMPLETED":
+          await fetchUniverseOnly();
+          BTN_SCAN.innerHTML = scanBtnOrig;
+          lockControlButtons(false);
+          setControlMsg(`✅ 스캔 마감 ${msg.count}종 (${msg.timestamp})`);
+          showToast(`코스닥 주도주 ${msg.count}종 스캔 및 UI 반영 완료!`, "success");
+          break;
+        case "SCAN_FAILED":
+          BTN_SCAN.innerHTML = scanBtnOrig;
+          lockControlButtons(false);
+          setControlMsg("⚠️ " + msg.message, true);
+          showToast("스캔 실패: " + msg.message, "warning");
+          break;
+        case "ENTRY_TRIGGERED":
+          await fetchPositionsOnly();
+          setControlMsg(`🔥 체결 — ${msg.name}(${msg.symbol}) x${msg.quantity} @ ${fmtWon(msg.entry_price)}`);
+          showToast(`🔥 체결 — ${msg.name} x${msg.quantity}`, "info");
+          break;
+        case "ENTRY_COMPLETED":
+          BTN_ENTRY.innerHTML = entryBtnOrig;
+          lockControlButtons(false);
+          const snaps = await fetchJson("/api/snapshots");
+          if (snaps.series?.length) renderAssetChart(snaps.series);
+          setControlMsg(`✅ 진입 마감 ${msg.executed_count}종 (${msg.timestamp})`);
+          showToast(
+            msg.executed_count > 0
+              ? `황금 필터 타점 연산 및 주문 마감 완료! (${msg.executed_count}종 체결)`
+              : "황금 필터 타점 연산 및 주문 마감 완료! (체결 0종)",
+            "info"
+          );
+          break;
+        case "ENTRY_FAILED":
+          BTN_ENTRY.innerHTML = entryBtnOrig;
+          lockControlButtons(false);
+          setControlMsg("⚠️ " + msg.message, true);
+          showToast("진입 실패: " + msg.message, "warning");
+          break;
+        case "EXIT_TRIGGERED":
+          await fetchPositionsOnly();
+          await fetchHistoryOnly();
+          setControlMsg(exitToastMessage(msg));
+          showToast(exitToastMessage(msg), "danger");
+          break;
+        case "RESET_COMPLETE":
+          await bootstrapSilent();
+          renderWatchToggle(false);
+          document.getElementById("watch-toggle").checked = false;
+          setControlMsg("✨ 초기화 완료 — 원금 5,000만 원");
+          showToast(
+            msg.message || "✨ 시스템이 원금 50,000,000원 상태로 완벽하게 초기화되었습니다.",
+            "warning"
+          );
+          break;
+        case "WATCH_STARTED":
+          renderWatchToggle(true);
+          setControlMsg("👁️ 0.5초 매도 감시 레이더 가동");
+          break;
+        case "WATCH_STOPPED":
+          renderWatchToggle(false);
+          setControlMsg("👁️ 매도 감시 레이더 정지");
+          break;
+        default:
+          break;
+      }
+    }
+
+    function renderUniverse(data) {
+      document.getElementById("universe-count").textContent = (data.count || 0) + "종";
+      const meta = document.getElementById("universe-meta");
+      meta.textContent = data.scan_time
+        ? `스캔 ${data.scan_time} · 기준일 ${data.base_date || "—"}`
+        : "스캔 후 자동 갱신";
+      const body = document.getElementById("universe-body");
+      const items = data.items || [];
+      if (!items.length) {
+        body.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-500">유니버스 없음 — [주도주 스캔] 클릭</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((u) => `<tr>
+        <td class="py-2 pr-4 text-slate-500">${u.rank ?? "—"}</td>
+        <td class="py-2 pr-4 font-medium">${u.name || u.code} <span class="text-slate-600 text-xs">${u.code}</span></td>
+        <td class="py-2 pr-4 text-right text-slate-400">${u.market_cap || "—"}</td>
+        <td class="py-2 text-right text-slate-400">${u.volume_amt || "—"}</td>
+      </tr>`).join("");
+    }
+
+    function lockControlButtons(locked) {
+      document.getElementById("btn-scan").disabled = locked;
+      document.getElementById("btn-entry").disabled = locked;
+      document.getElementById("btn-reset").disabled = locked;
+    }
+
+    async function handleSystemReset() {
+      const ok1 = confirm(
+        "🚨 [경고] 현재 보유 종목, 과거 매매 복기 기록, 자산 성장 곡선이 모두 영구 삭제됩니다. 진행하시겠습니까?"
+      );
+      if (!ok1) return;
+      const ok2 = confirm(
+        "🛑 정말로 처음부터 다시 검증하기 위해 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다."
+      );
+      if (!ok2) return;
+
+      lockControlButtons(true);
+      setControlMsg("🔥 시스템 초기화 진행 중…");
+      showToast("⏳ 데이터베이스 전면 세척 중…", "warning");
+      try {
+        const r = await postJson("/api/control/reset");
+        if (r.status === "success") {
+          await bootstrapSilent();
+          renderWatchToggle(false);
+          document.getElementById("watch-toggle").checked = false;
+          setControlMsg("✨ 초기화 완료 — 원금 5,000만 원");
+          showToast(`✨ 초기화 성공: ${r.message}`, "warning");
+        } else {
+          setControlMsg(r.message, true);
+          showToast(r.message, "danger");
+        }
+      } catch (e) {
+        setControlMsg("초기화 오류: " + e.message, true);
+        showToast("초기화 통신 오류", "danger");
+      } finally {
+        lockControlButtons(false);
+      }
+    }
+
+    function handleScanClick() {
+      BTN_SCAN.innerHTML = "⏳ 스캔 연산 중…";
+      lockControlButtons(true);
+      setControlMsg("📡 스캔 연산 중… WS 완료 신호 대기 (화면 고요)");
+      showToast("⏳ 코스닥 주도주 스캔을 즉시 시작합니다…", "info");
+      postJson("/api/control/scan")
+        .then((r) => {
+          if (r.status === "busy") {
+            BTN_SCAN.innerHTML = scanBtnOrig;
+            lockControlButtons(false);
+            setControlMsg(r.message, true);
+            showToast(r.message, "warning");
+          }
+        })
+        .catch((e) => {
+          BTN_SCAN.innerHTML = scanBtnOrig;
+          lockControlButtons(false);
+          setControlMsg("⚠️ 스캔 요청 오류: " + e.message, true);
+          showToast("스캔 통신 오류", "danger");
+        });
+    }
+
+    function handleEntryClick() {
+      BTN_ENTRY.innerHTML = "⏳ 황금 필터 연산 중…";
+      lockControlButtons(true);
+      setControlMsg("🚀 진입 연산 중… WS 체결·완료 신호 대기 (화면 고요)");
+      showToast("⏳ 황금 필터 연산을 즉시 시작합니다…", "info");
+      postJson("/api/control/entry")
+        .then((r) => {
+          if (r.status === "busy") {
+            BTN_ENTRY.innerHTML = entryBtnOrig;
+            lockControlButtons(false);
+            setControlMsg(r.message, true);
+            showToast(r.message, "warning");
+          }
+        })
+        .catch((e) => {
+          BTN_ENTRY.innerHTML = entryBtnOrig;
+          lockControlButtons(false);
+          setControlMsg("⚠️ 진입 요청 오류: " + e.message, true);
+          showToast("진입 통신 오류", "danger");
+        });
+    }
+
+    BTN_SCAN.addEventListener("click", handleScanClick);
+    BTN_ENTRY.addEventListener("click", handleEntryClick);
+    document.getElementById("btn-reset").addEventListener("click", handleSystemReset);
+
+    document.getElementById("watch-toggle").addEventListener("change", async (ev) => {
+      const active = ev.target.checked;
+      try {
+        const r = await postJson("/api/control/watch/toggle", { active });
+        setControlMsg(r.message);
+        renderWatchToggle(r.status === "active");
+      } catch (e) {
+        renderWatchToggle(!active);
+        ev.target.checked = !active;
+        setControlMsg("감시 토글 실패: " + e.message, true);
+      }
+    });
+
+    function renderSummary(s) {
+      document.getElementById("card-asset").textContent =
+        s.latest_total_asset != null ? fmtWon(s.latest_total_asset) : "—";
+      document.getElementById("card-open").textContent = String(s.open_positions ?? 0) + "종";
+      document.getElementById("card-winrate").textContent =
+        s.total_trades ? fmtPct(s.win_rate, 1) : "—";
+      const cum = document.getElementById("card-cum");
+      cum.textContent = fmtPct(s.cumulative_profit_rate);
+      cum.className = "text-xl font-bold mt-1 " + fmtPctClass(s.cumulative_profit_rate);
+      const today = document.getElementById("card-today");
+      today.textContent = fmtPct(s.today_realized_profit_rate);
+      today.className = "text-xl font-bold mt-1 " + fmtPctClass(s.today_realized_profit_rate);
+    }
+
+    function renderPositions(data) {
+      const body = document.getElementById("positions-body");
+      const updated = document.getElementById("pos-updated");
+      updated.textContent = data.updated_at ? "갱신 " + data.updated_at.slice(0, 19) : "";
+      if (!data.positions?.length) {
+        body.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500">보유 종목 없음</td></tr>';
+        return;
+      }
+      body.innerHTML = data.positions.map((p) => {
+        const pnl = p.unrealized_pnl_rate;
+        const name = p.name ? `${p.name} <span class="text-slate-500">(${p.symbol})</span>` : p.symbol;
+        return `<tr>
+          <td class="py-3 pr-4 font-medium">${name}</td>
+          <td class="py-3 pr-4 text-slate-400">${p.entry_date}</td>
+          <td class="py-3 pr-4 text-right">${fmtWon(p.entry_price)}</td>
+          <td class="py-3 pr-4 text-right">${fmtWon(p.current_price)}</td>
+          <td class="py-3 pr-4 text-right">${p.quantity}주</td>
+          <td class="py-3 pr-4 text-right ${fmtPctClass(pnl)}">${fmtPct(pnl)}</td>
+          <td class="py-3 text-right text-slate-400">${p.hold_days}일</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function renderHistory(data) {
+      const body = document.getElementById("history-body");
+      const trades = (data.trades || []).slice(0, 50);
+      if (!trades.length) {
+        body.innerHTML = '<tr><td colspan="6" class="py-8 text-center text-slate-500">청산 기록 없음</td></tr>';
+        return;
+      }
+      body.innerHTML = trades.map((t) => {
+        const name = t.name ? `${t.name}` : t.symbol;
+        return `<tr>
+          <td class="py-3 pr-4 text-slate-400">${t.exit_date}</td>
+          <td class="py-3 pr-4">${name} <span class="text-slate-600 text-xs">${t.symbol}</span></td>
+          <td class="py-3 pr-4">${fmtReason(t.reason)}</td>
+          <td class="py-3 pr-4 text-right text-slate-400">${fmtWon(t.entry_price)}</td>
+          <td class="py-3 pr-4 text-right">${fmtWon(t.exit_price)}</td>
+          <td class="py-3 text-right font-medium ${fmtPctClass(t.profit_rate)}">${fmtPct(t.profit_rate)}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    function upsertChart(chartRef, canvasId, cfg) {
+      const ctx = document.getElementById(canvasId).getContext("2d");
+      if (chartRef) {
+        chartRef.data = cfg.data;
+        chartRef.options = cfg.options;
+        chartRef.update();
+        return chartRef;
+      }
+      return new Chart(ctx, cfg);
+    }
+
+    const chartDefaults = {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: "#94a3b8" } } },
+      scales: {
+        x: { ticks: { color: "#64748b", maxRotation: 0 }, grid: { color: "rgba(148,163,184,0.08)" } },
+        y: { ticks: { color: "#64748b" }, grid: { color: "rgba(148,163,184,0.08)" } },
+      },
+    };
+
+    function renderAssetChart(series) {
+      const labels = series.map((s) => s.base_date);
+      const values = series.map((s) => s.total_asset);
+      assetChart = upsertChart(assetChart, "chart-asset", {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{
+            label: "총자산",
+            data: values,
+            borderColor: "#38bdf8",
+            backgroundColor: "rgba(56,189,248,0.12)",
+            fill: true,
+            tension: 0.3,
+            pointRadius: series.length <= 1 ? 4 : 2,
+          }],
+        },
+        options: {
+          ...chartDefaults,
+          plugins: {
+            ...chartDefaults.plugins,
+            legend: { display: false },
+          },
+          scales: {
+            ...chartDefaults.scales,
+            y: {
+              ...chartDefaults.scales.y,
+              ticks: {
+                color: "#64748b",
+                callback: (v) => (v / 10000).toFixed(0) + "만",
+              },
+            },
+          },
+        },
+      });
+    }
+
+    function renderTradeChart(trades) {
+      const ordered = [...(trades || [])].reverse().slice(-30);
+      const labels = ordered.map((t) => t.exit_date);
+      const values = ordered.map((t) => Number(t.profit_rate) * 100);
+      const colors = values.map((v) => (v >= 0 ? "rgba(34,197,94,0.7)" : "rgba(239,68,68,0.7)"));
+      tradeChart = upsertChart(tradeChart, "chart-trades", {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{
+            label: "수익률 %",
+            data: values,
+            backgroundColor: colors,
+            borderRadius: 4,
+          }],
+        },
+        options: {
+          ...chartDefaults,
+          plugins: { ...chartDefaults.plugins, legend: { display: false } },
+          scales: {
+            ...chartDefaults.scales,
+            y: {
+              ...chartDefaults.scales.y,
+              ticks: { color: "#64748b", callback: (v) => v + "%" },
+            },
+          },
+        },
+      });
+    }
+
+    /** 최초 1회 부트스트랩만 — 이후 WS 이벤트로만 갱신 */
+    async function bootstrapSilent() {
+      try {
+        const [health, summary, positions, history, snapshots, universe] = await Promise.all([
+          fetchJson("/api/health"),
+          fetchJson("/api/summary"),
+          fetchJson("/api/positions"),
+          fetchJson("/api/history"),
+          fetchJson("/api/snapshots"),
+          fetchJson("/api/universe"),
+        ]);
+        document.getElementById("dry-run-badge").textContent = health.dry_run ? "DRY-RUN" : "LIVE";
+        renderWatchToggle(health.watch_active);
+        renderSummary(summary);
+        renderUniverse(universe);
+        renderPositions(positions);
+        renderHistory(history);
+        if (snapshots.series?.length) renderAssetChart(snapshots.series);
+        if (history.trades?.length) renderTradeChart(history.trades);
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    connectWebSocket();
+    bootstrapSilent();
+  </script>
+</body>
+</html>

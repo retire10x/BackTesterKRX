@@ -82,7 +82,7 @@ class LiveMasterRunner:
         _save_state(self.state_path, self._state)
 
     def _has_positions(self) -> bool:
-        return bool(_load_positions(self.engine.paths["positions_json"]))
+        return bool(_load_positions(self.engine))
 
     def _run_screener_routine(self) -> None:
         if self._already_ran("screener_date"):
@@ -133,7 +133,7 @@ class LiveMasterRunner:
         return 1.0
 
     def _log_startup_watch_status(self) -> None:
-        positions = _load_positions(self.engine.paths["positions_json"])
+        positions = _load_positions(self.engine)
         codes = [p.code for p in positions]
         if not self.engine.gateway.dry_run:
             try:

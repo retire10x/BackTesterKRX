@@ -51,5 +51,10 @@ config/live_today_universe.json
 config/live_today_universe.meta.json
 config/live_positions.json
 
+# v6.0 라이브 SQLite 장부 (개인 계좌·매매 기록)
+data/live_trading.db
+data/live_trading.db-wal
+data/live_trading.db-shm
+
 backtest_signal_debug.txt
 

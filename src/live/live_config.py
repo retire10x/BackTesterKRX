@@ -155,4 +155,5 @@ def resolve_live_paths(cfg: LiveTradingConfig, project_root: str | None = None) 
         "universe_json": str(uni_path),
         "universe_meta": str(meta_path),
         "positions_json": str(root / "config" / "live_positions.json"),
+        "db_path": str(root / "data" / "live_trading.db"),
     }
