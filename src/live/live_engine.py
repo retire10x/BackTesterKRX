@@ -115,7 +115,7 @@ def fetch_ohlcv_history(
 
 def fetch_intraday_bar(code: str) -> dict[str, float] | None:
     """당일 봉 근사 — FDR 최신 일봉(실시간은 KIS 시세 API로 교체 가능)."""
-    df = fetch_ohlcv_history(code, days=5)
+    df = fetch_ohlcv_history(code, lookback_calendar_days=5)
     if df.empty:
         return None
     row = df.iloc[-1]
