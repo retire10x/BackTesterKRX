@@ -314,6 +314,96 @@ class LiveAccountGateway:
             raise RuntimeError(f"유효하지 않은 현재가: {c6}")
         return price
 
+    @staticmethod
+    def _parse_money(value: object) -> float:
+        if value is None or value == "":
+            return 0.0
+        try:
+            return float(str(value).replace(",", ""))
+        except ValueError:
+            return 0.0
+
+    def get_inquire_balance(
+        self,
+        local_positions: list[LivePosition] | None = None,
+    ) -> dict[str, Any]:
+        """KIS 잔고조회 — 총자산·예수금·평가금액·보유종목 실시간 SSOT."""
+        if self.dry_run:
+            snap = self.get_snapshot(local_positions)
+            positions: list[dict[str, Any]] = []
+            for pos in snap.positions:
+                positions.append(
+                    {
+                        "symbol": str(pos.code).zfill(6),
+                        "name": str(pos.code).zfill(6),
+                        "entry_price": float(pos.entry_price),
+                        "quantity": int(pos.qty),
+                        "current_price": float(pos.entry_price),
+                        "profit_rate": 0.0,
+                    }
+                )
+            return {
+                "total_asset": float(snap.total_equity),
+                "available_cash": float(snap.cash),
+                "total_evaluation": float(snap.stock_eval),
+                "positions": positions,
+                "source": "dry_run",
+                "updated_at": datetime.now(KST).isoformat(),
+            }
+
+        data = self._raw_balance()
+        out2 = (data.get("output2") or [{}])[0]
+        cash = max(
+            self._parse_money(out2.get("ord_psbl_cash")),
+            self._parse_money(out2.get("prvs_rcdl_excc_amt")),
+            self._parse_money(out2.get("dnca_tot_amt")),
+            self._parse_money(out2.get("nxdy_excc_amt")),
+        )
+
+        positions = []
+        stock_eval = 0.0
+        for item in data.get("output1") or []:
+            qty = int(item.get("hldg_qty") or item.get("ccld_qty") or 0)
+            if qty <= 0:
+                continue
+            symbol = str(item.get("pdno") or item.get("pd_no") or "").zfill(6)
+            entry_price = float(item.get("pchs_avg_pric") or item.get("avg_prvs") or 0)
+            current_price = float(item.get("prpr") or 0)
+            evlu_erng_rt = self._parse_money(item.get("evlu_erng_rt"))
+            evlu_amt = self._parse_money(item.get("evlu_amt") or item.get("evlu_pfls_amt"))
+            if evlu_amt <= 0 and entry_price > 0:
+                evlu_amt = entry_price * qty
+            stock_eval += evlu_amt
+            positions.append(
+                {
+                    "symbol": symbol,
+                    "name": str(item.get("prdt_name") or symbol),
+                    "entry_price": entry_price,
+                    "quantity": qty,
+                    "current_price": current_price,
+                    "profit_rate": evlu_erng_rt / 100.0,
+                }
+            )
+
+        total_asset = max(
+            self._parse_money(out2.get("tot_evlu_amt")),
+            self._parse_money(out2.get("nass_amt")),
+            cash + stock_eval,
+        )
+        if total_asset <= 0:
+            total_asset = cash + stock_eval
+
+        return {
+            "total_asset": total_asset,
+            "available_cash": cash,
+            "total_evaluation": stock_eval,
+            "positions": positions,
+            "source": "kis",
+            "updated_at": datetime.now(KST).isoformat(),
+            "rt_cd": str(data.get("rt_cd", "")),
+            "msg1": str(data.get("msg1", "")),
+        }
+
     def _raw_balance(self) -> dict[str, Any]:
         tr_id = "TTTC8434R" if self.mode == "real_money" else "VTTC8434R"
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
@@ -484,6 +574,33 @@ class LiveAccountGateway:
                 f"🚫 [예수금 부족] 신규 1슬롯 진입을 위한 가용 예수금({min_bet:,.0f}원)이 모자랍니다."
             )
         return True
+
+    def place_market_order(self, code: str, qty: int) -> dict[str, Any]:
+        """시장가 매수 — KIS 원본 응답 패킷 반환 (rt_cd 인터록은 호출측)."""
+        c6 = str(code).zfill(6)
+        if self.dry_run:
+            logger.info("🧪 [DRY-RUN] place_market_order %s x%d", c6, qty)
+            return {"rt_cd": "0", "msg1": "DRY-RUN simulated order", "dry_run": True}
+
+        tr_id = "TTTC0012U" if self.mode == "real_money" else "VTTC0012U"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        payload = {
+            "CANO": self.account_number,
+            "ACNT_PRDT_CD": self.account_code,
+            "PDNO": c6,
+            "ORD_DVSN": "01",
+            "ORD_QTY": str(qty),
+            "ORD_UNPR": "0",
+        }
+        try:
+            return self._post_json_with_retry(
+                url,
+                headers=self._api_headers(tr_id),
+                payload=payload,
+                label="매수 주문",
+            )
+        except RuntimeError as e:
+            return {"rt_cd": "1", "msg1": str(e)}
 
     def buy_close_price(
         self,

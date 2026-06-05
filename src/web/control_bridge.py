@@ -207,9 +207,41 @@ class ControlBridge:
         self.entry_state["last_error"] = None
         try:
             logger.info("⚡ [사령탑 격발] 웹 대시보드로부터 즉시 진입 명령 하달.")
-            executed_count = self.engine.calculate_entry_signals()
-            self.engine.save_daily_asset_snapshot()
+            result = self.engine.calculate_entry_signals()
+            executed_count = int(result.get("executed_count", 0))
+            rejected_count = int(result.get("rejected_count", 0))
+            rejection_msg = str(
+                result.get("last_rejection_msg") or "한투 정규 매매시간이 아닙니다."
+            )
             ts = self._time_hms()
+
+            if executed_count == 0 and rejected_count > 0:
+                self.entry_state.update(
+                    running=False,
+                    last_at=self._now_iso(),
+                    last_count=0,
+                    message=f"한투 주문 거부 — {rejection_msg}",
+                    last_error=rejection_msg,
+                )
+                ws_broadcast(
+                    {
+                        "event": "ENTRY_REJECTED",
+                        "message": rejection_msg,
+                        "rejected_count": rejected_count,
+                        "timestamp": ts,
+                    }
+                )
+                return {
+                    "status": "rejected",
+                    "message": rejection_msg,
+                    "executed_count": 0,
+                    "rejected_count": rejected_count,
+                    "timestamp": ts,
+                }
+
+            if executed_count > 0:
+                self.engine.save_daily_asset_snapshot()
+
             self.entry_state.update(
                 running=False,
                 last_at=self._now_iso(),

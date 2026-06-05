@@ -102,9 +102,22 @@
 - [x] **v6.0 [2단계]** `live_db.py` · JSON→DB 장부 전환 · 청산 `trading_history` 기록
 - [x] **v6.0 [3단계]** FastAPI REST API · `run_live_dashboard.py` · `/api/*` 5종
 - [x] **v6.0 [4단계]** Tailwind + Chart.js 대시보드 UI · `src/web/static/index.html`
+- [x] **v6.4** 실전 장외 격발 시 한투 API 거부 패킷 100% 노출 · `rt_cd != "0"` 장부·잔고 갱신 인터록 · 대시보드 danger 토스트
+- [x] **v6.5** 데이터 출처 이원화 — `/api/positions` KIS 직결 · `/api/summary`·차트·복기 DB 자체 연산
 - [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-05 (**v6.5**) 한투 잔고 동기화 · 자체 통계 이원화
+- **`live_account`:** `get_inquire_balance` — KIS 실시간 총자산·예수금·평가·보유종목
+- **`dashboard_api`:** `/api/positions` 한투 직결 · `/api/summary` DB 자체 연산(승률·누적·오늘)
+- **`index.html`:** 총자산 카드 KIS SSOT · 보유 테이블 `profit_rate` 반영
+
+### 2026-06-05 (**v6.4**) 한투 API 거부 로그 노출 · 장부 인터록
+- **`live_account`:** `place_market_order` — KIS 원본 응답 패킷 반환
+- **`live_engine`:** `send_order_kis` · `rt_cd != "0"` 시 SQLite 저장·잔고 갱신 차단 · `calculate_entry_signals` dict 반환
+- **`control_bridge`/`dashboard_api`:** 거부 시 `status: rejected` · `ENTRY_REJECTED` WS
+- **`index.html`:** 거부 토스트 danger(빨간색) · HTTP rejected 응답 처리
 
 ### 2026-06-05 (**v6.3**) 토스트 알림 · alert 전면 제거
 - **`showToast`:** success/info/danger/warning · 2.5초 자동 소멸 · 우상단 스택

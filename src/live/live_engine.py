@@ -10,6 +10,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -229,6 +230,15 @@ class LiveTradingEngine:
         c6 = str(code).zfill(6)
         return names.get(c6) or c6
 
+    def send_order_kis(self, code: str, qty: int, price: float) -> dict[str, Any]:
+        """KIS 시장가 주문 — 실전(LIVE_DRY_RUN=0) 시 원본 응답 패킷 100% 노출."""
+        logger.info("🚀 [주문 전송] %s x%d @ 시장가 (%s)", code, qty, f"{price:,.0f}")
+        response = self.gateway.place_market_order(code=code, qty=qty)
+        logger.info("📡 [한투 API Response Raw Data] -> %s", response)
+        if isinstance(response, dict):
+            return response
+        return {"rt_cd": "1", "msg1": str(response)}
+
     def _record_exit(
         self,
         pos: LivePosition,
@@ -266,12 +276,12 @@ class LiveTradingEngine:
             except Exception:
                 logger.exception("on_exit_recorded 콜백 오류")
 
-    def run_entry_scan(self, *, force: bool = False) -> int:
-        """진입 연산. 반환=이번 실행에서 신규 체결된 종목 수."""
+    def run_entry_scan(self, *, force: bool = False) -> dict[str, Any]:
+        """진입 연산. 반환=체결·거부 집계 dict."""
         now = _now_kst()
         if not force and not _at_or_after(now, self.strat.entry_time):
             logger.info("⏳ 진입 시각 대기 (%s KST)", self.strat.entry_time)
-            return 0
+            return {"executed_count": 0, "rejected_count": 0, "last_rejection_msg": None}
 
         uni_path = self.paths["universe_json"]
         logger.info("📂 유니버스 로드 — %s (재스캔 없음)", uni_path)
@@ -279,11 +289,13 @@ class LiveTradingEngine:
         names = self._load_universe_names()
         positions = _load_positions(self)
         executed = 0
+        rejected = 0
+        last_rejection_msg: str | None = None
         try:
             snap = self.gateway.get_snapshot(positions)
         except SlotLockError as e:
             logger.warning("🛡️ [안전장치 트리거] %s -> 금일 매수 진입을 종료합니다.", e)
-            return 0
+            return {"executed_count": 0, "rejected_count": 0, "last_rejection_msg": None}
 
         logger.info(
             "🎯 [진입 연산 시작] %d종 · 보유 %d/%d(동적) · 총자산 %s원 · dry_run=%s",
@@ -347,10 +359,26 @@ class LiveTradingEngine:
 
             try:
                 self.gateway.check_dynamic_slot_lock(snapshot=snap, local_positions=positions)
-                ok = self.gateway.buy_close_price(c6, snapshot=snap)
-                if ok is False:
-                    logger.info("[탈락] %s (%s) — 주문 거부(게이트웨이)", c6, label)
+                if not self.gateway.dry_run and snap.cash < qty * last_close:
+                    raise SlotLockError(
+                        f"예수금 부족 (필요 {qty * last_close:,} / 보유 {snap.cash:,.0f})"
+                    )
+
+                res_packet = self.send_order_kis(c6, qty, last_close)
+                rt_cd = str(res_packet.get("rt_cd", "1"))
+                msg_text = str(res_packet.get("msg1", "장외 주문 차단"))
+
+                if rt_cd != "0":
+                    rejected += 1
+                    last_rejection_msg = msg_text
+                    logger.error(
+                        "❌ [장부 차단] 한투 전산 거부 (코드: %s) | 사유: %s",
+                        rt_cd,
+                        msg_text,
+                    )
+                    logger.warning("⚠️ 실제 잔고 변동 없음 -> SQLite 저장 취소")
                     continue
+
                 new_pos = LivePosition(
                     code=c6,
                     qty=qty,
@@ -365,6 +393,7 @@ class LiveTradingEngine:
                 snap = snapshot_after_local_fill(
                     snap, positions, cash_spent=spent, account=self.cfg.account
                 )
+                logger.info("✅ [체결 완료] %s 장부 동기화 완료.", label)
                 logger.info(
                     "   ✅ [체결 기록] %s (%s) @ %s x%d (로컬 장부 저장·잔고 API 생략)",
                     c6,
@@ -386,11 +415,20 @@ class LiveTradingEngine:
                 )
                 break
 
-        logger.info("🏁 [진입 연산 종료] 최종 보유 %d종 · 신규 체결 %d종", len(positions), executed)
+        logger.info(
+            "🏁 [진입 연산 종료] 최종 보유 %d종 · 신규 체결 %d종 · 거부 %d건",
+            len(positions),
+            executed,
+            rejected,
+        )
         _save_positions(self, positions, names=names)
-        return executed
+        return {
+            "executed_count": executed,
+            "rejected_count": rejected,
+            "last_rejection_msg": last_rejection_msg,
+        }
 
-    def calculate_entry_signals(self) -> int:
+    def calculate_entry_signals(self) -> dict[str, Any]:
         """마스터 ROUTINE 2 — 15:20 듀얼 MA·변곡 진입 및 KIS 종가 주문."""
         return self.run_entry_scan(force=True)
 

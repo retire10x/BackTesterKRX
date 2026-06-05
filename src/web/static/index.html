@@ -126,7 +126,7 @@
     <!-- Summary cards -->
     <section class="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-8">
       <div class="card rounded-xl p-4">
-        <p class="text-slate-400 text-xs">총자산 (최근)</p>
+        <p class="text-slate-400 text-xs">총자산 (한투 실시간)</p>
         <p id="card-asset" class="text-xl font-bold mt-1">—</p>
       </div>
       <div class="card rounded-xl p-4">
@@ -371,10 +371,12 @@
     }
 
     async function fetchPositionsOnly() {
-      const positions = await fetchJson("/api/positions");
+      const [positions, summary] = await Promise.all([
+        fetchJson("/api/positions"),
+        fetchJson("/api/summary"),
+      ]);
       renderPositions(positions);
-      const summary = await fetchJson("/api/summary");
-      renderSummary(summary);
+      renderSummary(summary, positions);
     }
 
     async function fetchHistoryOnly() {
@@ -416,6 +418,12 @@
               : "황금 필터 타점 연산 및 주문 마감 완료! (체결 0종)",
             "info"
           );
+          break;
+        case "ENTRY_REJECTED":
+          BTN_ENTRY.innerHTML = entryBtnOrig;
+          lockControlButtons(false);
+          setControlMsg("🚨 " + msg.message, true);
+          showToast(msg.message, "danger");
           break;
         case "ENTRY_FAILED":
           BTN_ENTRY.innerHTML = entryBtnOrig;
@@ -545,6 +553,13 @@
             lockControlButtons(false);
             setControlMsg(r.message, true);
             showToast(r.message, "warning");
+            return;
+          }
+          if (r.status === "rejected") {
+            BTN_ENTRY.innerHTML = entryBtnOrig;
+            lockControlButtons(false);
+            setControlMsg("🚨 " + r.message, true);
+            showToast(r.message, "danger");
           }
         })
         .catch((e) => {
@@ -572,18 +587,22 @@
       }
     });
 
-    function renderSummary(s) {
+    function renderSummary(s, positionsData) {
+      const totalAsset = positionsData?.total_asset;
       document.getElementById("card-asset").textContent =
-        s.latest_total_asset != null ? fmtWon(s.latest_total_asset) : "—";
-      document.getElementById("card-open").textContent = String(s.open_positions ?? 0) + "종";
+        totalAsset != null ? fmtWon(totalAsset) : "—";
+      document.getElementById("card-open").textContent =
+        String(positionsData?.count ?? 0) + "종";
       document.getElementById("card-winrate").textContent =
         s.total_trades ? fmtPct(s.win_rate, 1) : "—";
+      const cumRate = s.total_profit_rate ?? s.cumulative_profit_rate ?? 0;
       const cum = document.getElementById("card-cum");
-      cum.textContent = fmtPct(s.cumulative_profit_rate);
-      cum.className = "text-xl font-bold mt-1 " + fmtPctClass(s.cumulative_profit_rate);
+      cum.textContent = fmtPct(cumRate);
+      cum.className = "text-xl font-bold mt-1 " + fmtPctClass(cumRate);
+      const todayRate = s.today_profit_rate ?? s.today_realized_profit_rate ?? 0;
       const today = document.getElementById("card-today");
-      today.textContent = fmtPct(s.today_realized_profit_rate);
-      today.className = "text-xl font-bold mt-1 " + fmtPctClass(s.today_realized_profit_rate);
+      today.textContent = fmtPct(todayRate);
+      today.className = "text-xl font-bold mt-1 " + fmtPctClass(todayRate);
     }
 
     const MAX_POSITION_SLOTS = 5;
@@ -610,16 +629,18 @@
         return;
       }
       body.innerHTML = positions.map((p) => {
-        const pnl = p.unrealized_pnl_rate;
+        const pnl = p.profit_rate ?? p.unrealized_pnl_rate;
         const name = p.name ? `${p.name} <span class="text-slate-500">(${p.symbol})</span>` : p.symbol;
+        const entryDate = p.entry_date || "—";
+        const holdDays = p.hold_days != null ? `${p.hold_days}일` : "—";
         return `<tr>
           <td class="py-3 pr-4 font-medium">${name}</td>
-          <td class="py-3 pr-4 text-slate-400">${p.entry_date}</td>
+          <td class="py-3 pr-4 text-slate-400">${entryDate}</td>
           <td class="py-3 pr-4 text-right">${fmtWon(p.entry_price)}</td>
           <td class="py-3 pr-4 text-right">${fmtWon(p.current_price)}</td>
           <td class="py-3 pr-4 text-right">${p.quantity}주</td>
           <td class="py-3 pr-4 text-right ${fmtPctClass(pnl)}">${fmtPct(pnl)}</td>
-          <td class="py-3 text-right text-slate-400">${p.hold_days}일</td>
+          <td class="py-3 text-right text-slate-400">${holdDays}</td>
         </tr>`;
       }).join("");
     }
@@ -745,7 +766,7 @@
         ]);
         document.getElementById("dry-run-badge").textContent = health.dry_run ? "DRY-RUN" : "LIVE";
         renderWatchToggle(health.watch_active);
-        renderSummary(summary);
+        renderSummary(summary, positions);
         renderUniverse(universe);
         renderPositions(positions);
         renderHistory(history);

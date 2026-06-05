@@ -341,34 +341,45 @@ def fetch_daily_snapshots(
 
 
 def fetch_trading_summary(db_path: str, *, today: str | None = None) -> dict[str, object]:
-    """승률·누적 수익·오늘 실현 손익 요약."""
+    """한투 미제공 통계 — trading_history 자체 연산 (승률·누적·오늘 실현)."""
     today_db = _to_db_date(today or datetime.now(KST).strftime("%Y-%m-%d"))
     with _connect(db_path) as conn:
         all_rows = conn.execute(
             "SELECT profit_rate, exit_date FROM trading_history"
         ).fetchall()
-        open_count = conn.execute("SELECT COUNT(*) FROM holding_positions").fetchone()[0]
-        snap = conn.execute(
-            "SELECT total_asset FROM daily_snapshots ORDER BY base_date DESC LIMIT 1"
-        ).fetchone()
 
     total = len(all_rows)
+    if not total:
+        return {
+            "source": "db",
+            "total_trades": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "win_rate": 0.0,
+            "total_profit_rate": 0.0,
+            "today_trade_count": 0,
+            "today_profit_rate": 0.0,
+            "cumulative_profit_rate": 0.0,
+            "today_realized_profit_rate": 0.0,
+        }
+
     wins = sum(1 for r in all_rows if float(r["profit_rate"]) > 0)
-    losses = sum(1 for r in all_rows if float(r["profit_rate"]) <= 0)
+    losses = total - wins
     cumulative = sum(float(r["profit_rate"]) for r in all_rows)
     today_rows = [r for r in all_rows if str(r["exit_date"]) == today_db]
     today_pnl = sum(float(r["profit_rate"]) for r in today_rows)
 
     return {
+        "source": "db",
         "total_trades": total,
         "win_count": wins,
         "loss_count": losses,
-        "win_rate": (wins / total) if total else 0.0,
-        "cumulative_profit_rate": cumulative,
+        "win_rate": round(wins / total, 4),
+        "total_profit_rate": round(cumulative, 4),
         "today_trade_count": len(today_rows),
-        "today_realized_profit_rate": today_pnl,
-        "open_positions": int(open_count),
-        "latest_total_asset": float(snap["total_asset"]) if snap else None,
+        "today_profit_rate": round(today_pnl, 4),
+        "cumulative_profit_rate": round(cumulative, 4),
+        "today_realized_profit_rate": round(today_pnl, 4),
     }
 
 

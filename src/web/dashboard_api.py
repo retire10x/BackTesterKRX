@@ -19,7 +19,6 @@ from pydantic import BaseModel
 from src.live.live_db import (
     default_db_path,
     fetch_daily_snapshots,
-    fetch_holding_rows,
     fetch_trading_history,
     fetch_trading_summary,
     init_schema,
@@ -33,8 +32,8 @@ _DB_PATH = os.getenv("LIVE_DB_PATH", "").strip() or default_db_path(_PROJECT_ROO
 
 app = FastAPI(
     title="BackTesterKRX Live Dashboard API",
-    version="6.3.0",
-    description="v5.5.2 라이브 매매 대시보드 · DB 조회 + 실시간 사령탑 제어",
+    version="6.5.0",
+    description="v5.5.2 라이브 매매 대시보드 · KIS 실시간 잔고 + DB 자체 통계",
 )
 
 app.add_middleware(
@@ -49,36 +48,6 @@ control_router = APIRouter(prefix="/api/control", tags=["control"])
 
 class WatchToggleRequest(BaseModel):
     active: bool
-
-
-def _enrich_positions(rows: list[dict[str, object]]) -> list[dict[str, object]]:
-    """미실현 손익 — pykrx 일봉 근사(실패 시 null)."""
-    try:
-        from src.live.live_engine import fetch_intraday_bar
-    except Exception:
-        return [{**r, "current_price": None, "unrealized_pnl_rate": None} for r in rows]
-
-    enriched: list[dict[str, object]] = []
-    for row in rows:
-        item = dict(row)
-        symbol = str(item["symbol"])
-        entry_price = float(item["entry_price"])
-        bar = None
-        try:
-            bar = fetch_intraday_bar(symbol)
-        except Exception:
-            pass
-        if bar and entry_price > 0:
-            close = float(bar["close"])
-            item["current_price"] = close
-            item["unrealized_pnl_rate"] = close / entry_price - 1.0
-            item["unrealized_pnl_amount"] = (close - entry_price) * int(item["quantity"])
-        else:
-            item["current_price"] = None
-            item["unrealized_pnl_rate"] = None
-            item["unrealized_pnl_amount"] = None
-        enriched.append(item)
-    return enriched
 
 
 def _load_universe_report() -> dict[str, object]:
@@ -162,11 +131,20 @@ def health() -> dict[str, object]:
 
 
 @app.get("/api/positions")
-def api_positions() -> dict[str, object]:
-    rows = fetch_holding_rows(_DB_PATH)
-    positions = _enrich_positions(rows)
-    updated_at = max((str(p["updated_at"]) for p in rows), default=None)
-    return {"count": len(positions), "updated_at": updated_at, "positions": positions}
+def get_live_kis_positions() -> dict[str, object]:
+    """총자산·예수금·평가금액·보유종목 — 한투 API 직결 SSOT."""
+    bridge = get_control_bridge(_PROJECT_ROOT)
+    balances = bridge.engine.gateway.get_inquire_balance()
+    positions = balances.get("positions") or []
+    return {
+        "source": balances.get("source", "kis"),
+        "total_asset": balances.get("total_asset"),
+        "available_cash": balances.get("available_cash"),
+        "total_evaluation": balances.get("total_evaluation"),
+        "count": len(positions),
+        "updated_at": balances.get("updated_at"),
+        "positions": positions,
+    }
 
 
 @app.get("/api/history")
@@ -188,7 +166,8 @@ def api_snapshots(
 
 
 @app.get("/api/summary")
-def api_summary() -> dict[str, object]:
+def get_custom_trading_summary() -> dict[str, object]:
+    """한투 미제공 통계 — trading_history 자체 연산."""
     return fetch_trading_summary(_DB_PATH)
 
 
@@ -206,7 +185,16 @@ def force_web_scan() -> dict[str, object]:
 @control_router.post("/entry")
 def force_web_entry() -> dict[str, object]:
     """[황금 타점 즉시 진입] 연산·주문·DB 저장 마감까지 동기식 수행 후 완료 콜백."""
-    return get_control_bridge(_PROJECT_ROOT).run_entry_sync()
+    result = get_control_bridge(_PROJECT_ROOT).run_entry_sync()
+    if result.get("executed_count", 0) == 0 and result.get("status") == "rejected":
+        return {
+            "status": "rejected",
+            "message": result.get("message", "한투 정규 매매시간이 아닙니다."),
+            "executed_count": 0,
+            "rejected_count": result.get("rejected_count", 0),
+            "timestamp": result.get("timestamp"),
+        }
+    return result
 
 
 @control_router.post("/watch/toggle")
