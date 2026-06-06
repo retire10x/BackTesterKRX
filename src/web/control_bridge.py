@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.automation.telegram_client import build_reset_message, tg_client
 from src.live.live_account import LivePosition
 from src.live.live_db import (
     DEFAULT_RESET_CASH,
@@ -317,6 +318,7 @@ class ControlBridge:
                     "timestamp": ts,
                 }
             )
+            tg_client.send_message(build_reset_message(initial_cash=DEFAULT_RESET_CASH))
             return {"status": "success", "message": msg, "timestamp": ts}
         except Exception as e:
             logger.exception("❌ [사령탑] 초기화 실패")

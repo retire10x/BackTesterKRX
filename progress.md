@@ -109,6 +109,11 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-07 (**v6.9.2**) 대시보드 초기화 시 텔레그램 알림 추가
+- **트리거 5** `control_bridge.run_reset_sync`: 대시보드 `/api/control/reset` 실행 성공 시 텔레그램 알림 전송
+- **`build_reset_message`:** 초기화 완료 시각·원금·세척 완료 메시지 빌더 (`src/automation/telegram_client.py`)
+- **변경 파일:** `src/automation/telegram_client.py`, `src/web/control_bridge.py`
+
 ### 2026-06-06 (**v6.9.1**) 청산 기록 수익률 순수 호가 기준으로 통일
 - **원인:** `_record_exit`가 `compute_profit_rate`(수수료 포함)로 저장 → 손절 트리거(-3.00% 가격) 대비 기록은 -3.21%로 표시돼 오해 유발
 - **수정:** `profit_rate = (exit_price - entry_price) / entry_price` 순수 가격 등락률로 교체

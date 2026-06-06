@@ -151,3 +151,13 @@ def build_close_message(
         f"📦 이월 보유종목: {position_count}개\n"
         f"💓 오늘 하루 엔진 정상 가동 완결."
     )
+
+
+def build_reset_message(*, initial_cash: float) -> str:
+    return (
+        f"🔄 <b>[대시보드 초기화 완료]</b>\n"
+        f"⏰ {_now_kst_str()}\n"
+        f"💰 원금: {initial_cash:,.0f}원\n"
+        f"🗑️ 장부·유니버스 후보군 전면 세척 완료.\n"
+        f"⚠️ 새 유니버스를 스캔하고 운영을 재개하십시오."
+    )
