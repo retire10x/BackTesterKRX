@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 import asyncio
+from datetime import datetime
 
 from fastapi import APIRouter, FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,11 +96,22 @@ def _load_universe_report() -> dict[str, object]:
     }
 
 
+async def _heartbeat_loop() -> None:
+    """1초마다 대시보드 서버 생존 신호를 WS 클라이언트에 브로드캐스트."""
+    _KST = __import__("zoneinfo").ZoneInfo("Asia/Seoul")
+    while True:
+        await asyncio.sleep(1.0)
+        if ws_hub.client_count > 0:
+            ts = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S.%f")[:-4]
+            await ws_hub._broadcast_async({"event": "HEARTBEAT", "timestamp": ts})
+
+
 @app.on_event("startup")
 async def _startup() -> None:
     ws_hub.set_loop(asyncio.get_running_loop())
     init_schema(_DB_PATH)
     get_control_bridge(_PROJECT_ROOT)
+    asyncio.create_task(_heartbeat_loop())
 
 
 @app.websocket("/ws")
@@ -132,33 +144,64 @@ def health() -> dict[str, object]:
 
 
 @app.get("/api/positions")
-def get_live_kis_positions() -> dict[str, object]:
-    """총자산·예수금·평가금액·보유종목.
-    실전(KIS): 한투 API 직결 SSOT.
-    dry_run: DB holding_positions 직접 조회 (KIS 미연결 시 장부 기준).
+def get_dashboard_positions() -> dict[str, object]:
+    """DB 독자 장부 마스터 + KIS 잔고 참조 패널.
+
+    보유 종목은 dry_run·실전 여부와 무관하게 SQLite holding_positions가 SSOT.
+    실전 모드에서는 KIS 잔고를 추가 조회해 현재가·평가손익을 보강하고,
+    kis_snapshot 필드에 증권사 잔고 원본을 담아 교차 검증에 활용한다.
     """
+    # ── 1. DB 독자 장부 (항상 마스터) ──────────────────────────────────
+    rows = fetch_holding_rows(_DB_PATH)
+
+    # ── 2. KIS 현재가 보강 (실전 모드, 실패 시 무시) ───────────────────
+    kis_price_map: dict[str, dict[str, object]] = {}
+    kis_snapshot: dict[str, object] | None = None
     bridge = get_control_bridge(_PROJECT_ROOT)
-    if bridge.engine.gateway.dry_run:
-        rows = fetch_holding_rows(_DB_PATH)
-        return {
-            "source": "db_dry_run",
-            "total_asset": None,
-            "available_cash": None,
-            "total_evaluation": None,
-            "count": len(rows),
-            "updated_at": rows[0]["updated_at"] if rows else None,
-            "positions": rows,
-        }
-    balances = bridge.engine.gateway.get_inquire_balance()
-    positions = balances.get("positions") or []
+    if not bridge.engine.gateway.dry_run:
+        try:
+            balances = bridge.engine.gateway.get_inquire_balance()
+            for p in balances.get("positions") or []:
+                sym = str(p.get("symbol", "")).zfill(6)
+                kis_price_map[sym] = {
+                    "current_price": p.get("current_price"),
+                    "profit_rate": p.get("profit_rate"),
+                }
+            kis_snapshot = {
+                "total_asset": balances.get("total_asset"),
+                "available_cash": balances.get("available_cash"),
+                "total_evaluation": balances.get("total_evaluation"),
+                "stock_count": len(balances.get("positions") or []),
+                "source": balances.get("source", "kis"),
+                "updated_at": balances.get("updated_at"),
+            }
+        except Exception:
+            pass
+
+    # ── 3. DB 행 + KIS 현재가 병합 ─────────────────────────────────────
+    positions: list[dict[str, object]] = []
+    for r in rows:
+        sym = str(r["symbol"]).zfill(6)
+        kis_info = kis_price_map.get(sym, {})
+        entry_price = float(r["entry_price"])
+        current_price = float(kis_info.get("current_price") or entry_price)
+        profit_rate = kis_info.get("profit_rate")
+        if profit_rate is None and entry_price > 0:
+            profit_rate = (current_price - entry_price) / entry_price
+        positions.append(
+            {
+                **r,
+                "current_price": current_price,
+                "profit_rate": float(profit_rate or 0.0),
+            }
+        )
+
     return {
-        "source": balances.get("source", "kis"),
-        "total_asset": balances.get("total_asset"),
-        "available_cash": balances.get("available_cash"),
-        "total_evaluation": balances.get("total_evaluation"),
+        "source": "db_master",
         "count": len(positions),
-        "updated_at": balances.get("updated_at"),
+        "updated_at": positions[0]["updated_at"] if positions else None,
         "positions": positions,
+        "kis_snapshot": kis_snapshot,
     }
 
 

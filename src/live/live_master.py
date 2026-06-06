@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+_HEARTBEAT_INTERVAL_SEC = 600  # 10분
+
 from src.live.live_engine import LiveTradingEngine, _load_positions, _now_kst
 from src.live.live_screener import LiveScreener
 from src.overnight_parity import prime_project_dotenv_from_root
@@ -71,6 +73,7 @@ class LiveMasterRunner:
         self.screener = screener or LiveScreener(engine.cfg, project_root=engine.root)
         self.state_path = str(Path(engine.root) / STATE_REL)
         self._state = _load_state(self.state_path)
+        self._last_heartbeat_ts = 0.0  # monotonic
 
     def _today_key(self) -> str:
         return _now_kst().strftime("%Y-%m-%d")
@@ -136,10 +139,21 @@ class LiveMasterRunner:
         self.engine.execute_market_close_processing()
         self._mark_ran("close_settlement_date")
 
+    def _emit_heartbeat_if_due(self) -> None:
+        """10분마다 터미널·로그파일에 엔진 생존 로그 1줄 강제 기록."""
+        mono = time.monotonic()
+        if mono - self._last_heartbeat_ts >= _HEARTBEAT_INTERVAL_SEC:
+            self._last_heartbeat_ts = mono
+            logger.info(
+                "💓 [Engine Heartbeat] %s | 봇 엔진 이상 없음 (구동 중)",
+                datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+            )
+
     def tick(self) -> float:
         """
         마스터 루프 1회. 반환값 = 다음 sleep 초.
         """
+        self._emit_heartbeat_if_due()
         now = _now_kst()
 
         if now.weekday() >= 5:

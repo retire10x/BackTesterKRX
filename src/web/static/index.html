@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>코스닥 스나이퍼 · 라이브 대시보드</title>
+  <title>Angguri Studio · 코스닥 스나이퍼</title>
+  <link rel="icon" type="image/png" href="/static/favicon.png" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script>
@@ -52,6 +53,15 @@
     .toast-info { background-color: #3B82F6; }
     .toast-danger { background-color: #EF4444; }
     .toast-warning { background-color: #F59E0B; }
+    #hb-led {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #475569; flex-shrink: 0;
+      transition: background 0.1s, box-shadow 0.1s;
+    }
+    #hb-led.alive {
+      background: #22c55e;
+      box-shadow: 0 0 8px #22c55e, 0 0 2px #22c55e;
+    }
   </style>
 </head>
 <body class="min-h-screen text-slate-100 font-sans antialiased">
@@ -60,12 +70,21 @@
     <!-- Master Control Center -->
     <section class="card rounded-xl mb-8 border-accent/25 overflow-hidden">
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-4 sm:px-5 py-3 border-b border-accent/15 bg-ink-800/50">
-        <h1 class="text-lg sm:text-xl font-bold tracking-tight">
-          📊 v6.0 사령탑 실시간 매매 제어 센터
+        <h1 class="flex items-center gap-3 text-lg sm:text-xl font-bold tracking-tight">
+          <img src="/static/favicon.png" alt="Angguri Studio" class="h-8 w-8 rounded object-contain" />
+          <span>Angguri Studio · 코스닥 스나이퍼 사령탑</span>
         </h1>
-        <span class="flex items-center gap-2 text-sm">
-          <span id="ws-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
-          <span id="ws-status" class="text-slate-400">WS 연결 중…</span>
+        <span class="flex items-center gap-3 text-sm flex-wrap justify-end">
+          <!-- 하트비트 LED + 시계 -->
+          <span class="flex items-center gap-1.5 bg-ink-800/60 rounded-lg px-3 py-1.5">
+            <span id="hb-led"></span>
+            <span id="hb-clock" class="text-xs font-mono text-slate-500 tracking-tight">대기 중…</span>
+          </span>
+          <!-- WS 상태 -->
+          <span class="flex items-center gap-2">
+            <span id="ws-dot" class="w-2.5 h-2.5 rounded-full bg-slate-600"></span>
+            <span id="ws-status" class="text-slate-400">WS 연결 중…</span>
+          </span>
           <span class="text-slate-600">·</span>
           <span id="dry-run-badge" class="text-accent text-xs">—</span>
         </span>
@@ -126,7 +145,7 @@
     <!-- Summary cards -->
     <section class="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4 mb-8">
       <div class="card rounded-xl p-4">
-        <p class="text-slate-400 text-xs">총자산 (한투 실시간)</p>
+        <p class="text-slate-400 text-xs">총자산 (증권사)</p>
         <p id="card-asset" class="text-xl font-bold mt-1">—</p>
       </div>
       <div class="card rounded-xl p-4">
@@ -161,11 +180,15 @@
       </div>
     </section>
 
-    <!-- Positions -->
-    <section class="card rounded-xl p-4 sm:p-5 mb-8">
+    <!-- Positions (DB Master) -->
+    <section class="card rounded-xl p-4 sm:p-5 mb-4">
       <div class="flex items-center justify-between mb-4">
-        <h2 class="text-lg font-semibold">현재 보유</h2>
-        <span id="pos-updated" class="text-xs text-slate-500"></span>
+        <div>
+          <h2 class="text-lg font-semibold">현재 보유
+            <span class="text-xs font-normal text-accent/70 ml-1">DB 독자 장부</span>
+          </h2>
+          <p id="pos-updated" class="text-xs text-slate-500 mt-0.5"></p>
+        </div>
       </div>
       <div class="overflow-x-auto">
         <table class="tbl w-full text-sm">
@@ -173,7 +196,7 @@
             <tr class="text-left">
               <th class="pb-3 pr-4">종목</th>
               <th class="pb-3 pr-4">진입일</th>
-              <th class="pb-3 pr-4 text-right">평단</th>
+              <th class="pb-3 pr-4 text-right">평단가</th>
               <th class="pb-3 pr-4 text-right">현재가</th>
               <th class="pb-3 pr-4 text-right">수량</th>
               <th class="pb-3 pr-4 text-right">미실현</th>
@@ -193,6 +216,35 @@
             </tr>
           </tfoot>
         </table>
+      </div>
+    </section>
+
+    <!-- KIS 잔고 참조 패널 -->
+    <section id="kis-ref-panel" class="card rounded-xl p-4 sm:p-5 mb-8 border-slate-700/60" style="display:none">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="text-base font-semibold text-slate-300">
+          📡 증권사 잔고 현황
+          <span class="text-xs font-normal text-slate-500 ml-1">참조용 · DB와 교차 검증</span>
+        </h2>
+        <span id="kis-ref-updated" class="text-xs text-slate-600"></span>
+      </div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
+        <div class="bg-ink-800/50 rounded-lg px-4 py-3">
+          <p class="text-slate-500 text-xs mb-1">총자산</p>
+          <p id="kis-total-asset" class="text-base font-bold text-slate-200">—</p>
+        </div>
+        <div class="bg-ink-800/50 rounded-lg px-4 py-3">
+          <p class="text-slate-500 text-xs mb-1">예수금</p>
+          <p id="kis-available-cash" class="text-base font-bold text-slate-200">—</p>
+        </div>
+        <div class="bg-ink-800/50 rounded-lg px-4 py-3">
+          <p class="text-slate-500 text-xs mb-1">주식 평가액</p>
+          <p id="kis-total-evaluation" class="text-base font-bold text-slate-200">—</p>
+        </div>
+        <div class="bg-ink-800/50 rounded-lg px-4 py-3">
+          <p class="text-slate-500 text-xs mb-1">증권사 보유 종목</p>
+          <p id="kis-stock-count" class="text-base font-bold text-slate-200">—</p>
+        </div>
       </div>
     </section>
 
@@ -218,8 +270,9 @@
       </div>
     </section>
 
-    <footer class="text-center text-slate-600 text-xs pb-6">
-      BackTesterKRX · WebSocket 3대 모드 · Silent 정적 유지 · v5.5.2 FROZEN
+    <footer class="flex items-center justify-center gap-2 text-slate-600 text-xs pb-6">
+      <img src="/static/favicon.png" alt="" class="h-4 w-4 rounded opacity-50" />
+      Angguri Studio · BackTesterKRX · v5.5.2 FROZEN
     </footer>
   </div>
 
@@ -234,6 +287,7 @@
     let assetChart = null;
     let tradeChart = null;
     let ws = null;
+    let _hbTimer = null;
     let scanBtnOrig = "🚨 주도주 즉시 스캔";
     let entryBtnOrig = "🚀 황금 타점 즉시 진입";
     const BTN_SCAN = document.getElementById("btn-scan");
@@ -385,7 +439,23 @@
       if (history.trades?.length) renderTradeChart(history.trades);
     }
 
+    function handleHeartbeat(ts) {
+      const led = document.getElementById("hb-led");
+      const clock = document.getElementById("hb-clock");
+      clock.textContent = "LIVE " + ts;
+      clock.className = "text-xs font-mono text-gain tracking-tight";
+      led.classList.add("alive");
+      if (_hbTimer) clearTimeout(_hbTimer);
+      // 3초간 응답 없으면 LED 소등 (연결 끊김 시각화)
+      _hbTimer = setTimeout(() => {
+        led.classList.remove("alive");
+        clock.textContent = "신호 없음";
+        clock.className = "text-xs font-mono text-slate-500 tracking-tight";
+      }, 3000);
+    }
+
     async function handleWsEvent(msg) {
+      if (msg.event === "HEARTBEAT") { handleHeartbeat(msg.timestamp); return; }
       const ev = msg.event === "POSITION_CLEARED" ? "EXIT_TRIGGERED" : msg.event;
       switch (ev) {
         case "SCAN_COMPLETED":
@@ -587,8 +657,22 @@
       }
     });
 
+    function renderKisSnapshot(snap) {
+      const panel = document.getElementById("kis-ref-panel");
+      if (!snap) { panel.style.display = "none"; return; }
+      panel.style.display = "";
+      document.getElementById("kis-total-asset").textContent = fmtWon(snap.total_asset);
+      document.getElementById("kis-available-cash").textContent = fmtWon(snap.available_cash);
+      document.getElementById("kis-total-evaluation").textContent = fmtWon(snap.total_evaluation);
+      document.getElementById("kis-stock-count").textContent =
+        (snap.stock_count != null ? snap.stock_count : "—") + "종";
+      const upd = document.getElementById("kis-ref-updated");
+      upd.textContent = snap.updated_at ? "갱신 " + String(snap.updated_at).slice(0, 19) : "";
+    }
+
     function renderSummary(s, positionsData) {
-      const totalAsset = positionsData?.total_asset;
+      // 총자산: KIS 스냅샷 우선, 없으면 포트폴리오 매수 합계
+      const totalAsset = positionsData?.kis_snapshot?.total_asset ?? positionsData?.total_asset;
       document.getElementById("card-asset").textContent =
         totalAsset != null ? fmtWon(totalAsset) : "—";
       document.getElementById("card-open").textContent =
@@ -622,7 +706,10 @@
       const body = document.getElementById("positions-body");
       const updated = document.getElementById("pos-updated");
       const positions = data.positions || [];
-      updated.textContent = data.updated_at ? "갱신 " + data.updated_at.slice(0, 19) : "";
+      updated.textContent = data.updated_at
+        ? "장부 기준 " + String(data.updated_at).slice(0, 19)
+        : "DB 독자 장부";
+      renderKisSnapshot(data.kis_snapshot ?? null);
       calculateTotalBuy(positions);
       if (!positions.length) {
         body.innerHTML = '<tr><td colspan="7" class="py-8 text-center text-slate-500">보유 종목 없음</td></tr>';

@@ -109,6 +109,18 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-06 (**v6.8**) 하트비트 모니터링 — LED 깜빡이 + 10분 봇 생존 로그
+- **`dashboard_api`:** FastAPI startup async task → 1초마다 WS `HEARTBEAT` 브로드캐스트 (타임스탬프 ms 포함)
+- **`live_master`:** `_emit_heartbeat_if_due()` → `tick()` 마다 경과 체크, 10분마다 `💓 [Engine Heartbeat]` logger.info 강제 출력
+- **`index.html`:** 사령탑 헤더 녹색 LED + 밀리초 시계 추가 · HEARTBEAT 수신 시 LED 점등·시계 갱신 · 3초 무신호 시 LED 소등
+- **변경 파일:** `src/web/dashboard_api.py`, `src/live/live_master.py`, `src/web/static/index.html`
+
+### 2026-06-06 (**v6.7**) DB 독자 장부 마스터 + KIS 잔고 참조 패널 분리
+- **원칙:** dry_run·실전 모드 무관, `holding_positions` SQLite가 보유 종목 SSOT
+- **`/api/positions`:** DB 장부 전량 조회 → 실전 모드 시 KIS 현재가 보강(심볼 매칭) → `kis_snapshot` 참조 필드 포함
+- **`index.html`:** 보유 종목 테이블 `DB 독자 장부` 레이블 · `📡 증권사 잔고 현황` 참조 패널(총자산·예수금·평가액·종목수) 추가
+- **변경 파일:** `src/web/dashboard_api.py`, `src/web/static/index.html`
+
 ### 2026-06-06 (**대시보드**) dry_run 모드 보유 종목 UI 미표시 수정
 - **원인:** `/api/positions` → `get_inquire_balance(local_positions=None)` → `dry_run` 시 `get_snapshot(None)` → 빈 리스트 반환
 - **수정:** `dry_run=True` 시 `fetch_holding_rows(DB)` 직접 조회로 대체 (`source: "db_dry_run"`)
