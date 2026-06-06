@@ -173,7 +173,7 @@ class LiveAccountGateway:
             return True
         return not (self.app_key and self.app_secret)
 
-    def _issue_oauth_token(self) -> None:
+    def _issue_oauth_token(self, *, _retry: int = 0) -> None:
         logger.info("📡 KIS OAuth2 토큰 발급 (%s)", self.mode)
         url = f"{self.base_url}/oauth2/tokenP"
         payload = {
@@ -189,7 +189,16 @@ class LiveAccountGateway:
                 timeout=15,
             )
             if response.status_code != 200:
-                logger.error("❌ 토큰 발급 실패: %s", response.text)
+                err_body = response.text
+                # EGW00133: 1분당 1회 발급 제한 — 65초 대기 후 1회 재시도
+                if "EGW00133" in err_body and _retry == 0:
+                    logger.warning(
+                        "⏳ KIS 토큰 발급 한도(1분/1회) 초과 — 65초 대기 후 재시도..."
+                    )
+                    import time
+                    time.sleep(65)
+                    return self._issue_oauth_token(_retry=1)
+                logger.error("❌ 토큰 발급 실패: %s", err_body)
                 raise ConnectionError("증권사 API 인증 실패 — 키·모드(paper/real)를 확인하세요.")
             res_data = response.json()
             self.access_token = str(res_data.get("access_token", ""))

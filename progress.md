@@ -109,6 +109,22 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-06 (**대시보드**) dry_run 모드 보유 종목 UI 미표시 수정
+- **원인:** `/api/positions` → `get_inquire_balance(local_positions=None)` → `dry_run` 시 `get_snapshot(None)` → 빈 리스트 반환
+- **수정:** `dry_run=True` 시 `fetch_holding_rows(DB)` 직접 조회로 대체 (`source: "db_dry_run"`)
+- **변경 파일:** `src/web/dashboard_api.py`
+
+### 2026-06-06 (**라이브 계좌**) KIS OAuth2 EGW00133 자동 재시도
+- **원인:** KIS 토큰은 1분/1회 발급 제한 — 대시보드·봇 연속 실행 시 `EGW00133` 으로 즉시 크래시
+- **수정:** `_issue_oauth_token`에 `EGW00133` 감지 시 65초 대기 후 1회 재시도 (`_retry` 파라미터)
+- **변경 파일:** `src/live/live_account.py`
+
+### 2026-06-06 (**라이브 스크리너**) 휴일·주말 스캔 0건 수정
+- **원인:** `execute_daily_scan`이 `datetime.now(KST)`를 그대로 사용 → 토/일/공휴일에 pykrx 거래 데이터 없어 0건 반환
+- **수정:** 기존 `resolve_overnight_scan_anchor` (`src/utils/date_helper.py`) 재사용 → `anchor_date`(마지막 영업일) 자동 결정
+- **정책:** `force_date` 명시 시 그대로 사용, 미지정 시 `anchor_policy_reason` 로그 출력 후 최근 거래일 기준 스캔
+- **변경 파일:** `src/live/live_screener.py`
+
 ### 2026-06-05 (**v6.6**) run_live_bot 코어 엔진 동기화
 - **`live_engine`:** `sync_positions_from_kis` · `execute_market_close_processing` · `execute_market_scanner` · `is_monitor_running`
 - **`live_master`:** 08:50 KIS동기화 · 15:30 hold_days 벌크업·정산 · 15:20 거부 인터록 · 틱당 hold_days 중복증가 제거

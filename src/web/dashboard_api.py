@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from src.live.live_db import (
     default_db_path,
     fetch_daily_snapshots,
+    fetch_holding_rows,
     fetch_trading_history,
     fetch_trading_summary,
     init_schema,
@@ -132,8 +133,22 @@ def health() -> dict[str, object]:
 
 @app.get("/api/positions")
 def get_live_kis_positions() -> dict[str, object]:
-    """총자산·예수금·평가금액·보유종목 — 한투 API 직결 SSOT."""
+    """총자산·예수금·평가금액·보유종목.
+    실전(KIS): 한투 API 직결 SSOT.
+    dry_run: DB holding_positions 직접 조회 (KIS 미연결 시 장부 기준).
+    """
     bridge = get_control_bridge(_PROJECT_ROOT)
+    if bridge.engine.gateway.dry_run:
+        rows = fetch_holding_rows(_DB_PATH)
+        return {
+            "source": "db_dry_run",
+            "total_asset": None,
+            "available_cash": None,
+            "total_evaluation": None,
+            "count": len(rows),
+            "updated_at": rows[0]["updated_at"] if rows else None,
+            "positions": rows,
+        }
     balances = bridge.engine.gateway.get_inquire_balance()
     positions = balances.get("positions") or []
     return {

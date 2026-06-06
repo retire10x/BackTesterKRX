@@ -21,6 +21,7 @@ from src.live.live_config import (
     load_live_settings_yaml,
     resolve_live_paths,
 )
+from src.utils.date_helper import resolve_overnight_scan_anchor
 
 KST = ZoneInfo("Asia/Seoul")
 
@@ -78,9 +79,22 @@ class LiveScreener:
     def execute_daily_scan(self, force_date: str | None = None) -> list[str]:
         """
         매일 오후 3시 15분(KST) 전후 가동.
-        force_date: 테스트용 YYYYMMDD (미지정 시 당일)
+        force_date: 테스트용 YYYYMMDD (미지정 시 마지막 영업일 자동 결정)
         """
-        target_date = force_date or datetime.now(KST).strftime("%Y%m%d")
+        if force_date:
+            target_date = force_date
+        else:
+            now_kst = datetime.now(KST)
+            anchor = resolve_overnight_scan_anchor(now_kst.date(), reference_now=now_kst)
+            target_date = pd.Timestamp(anchor.anchor_date).strftime("%Y%m%d")
+            today_str = now_kst.strftime("%Y%m%d")
+            if target_date != today_str:
+                logger.info(
+                    "📅 오늘(%s) 비영업일 → 마지막 거래일 %s 로 스캔 (policy: %s)",
+                    today_str,
+                    target_date,
+                    anchor.anchor_policy_reason,
+                )
         logger.info("📡 [실전 스캐너] %s %s 주도주 스캔 시작", target_date, self.market)
 
         try:
