@@ -109,6 +109,20 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-06 (**v6.9.1**) 청산 기록 수익률 순수 호가 기준으로 통일
+- **원인:** `_record_exit`가 `compute_profit_rate`(수수료 포함)로 저장 → 손절 트리거(-3.00% 가격) 대비 기록은 -3.21%로 표시돼 오해 유발
+- **수정:** `profit_rate = (exit_price - entry_price) / entry_price` 순수 가격 등락률로 교체
+- **불변:** `evaluate_hit_and_run_exit` 손절 트리거는 순수 가격 비교 유지, `compute_profit_rate` 함수 자체는 `live_db.py`에서 삭제하지 않음
+- **변경 파일:** `src/live/live_engine.py`
+
+### 2026-06-06 (**v6.9**) 텔레그램 비동기 알림 모듈 + 4대 트리거
+- **`src/automation/telegram_client.py`:** `TelegramClient` daemon-Thread 비동기 전송 · 메시지 빌더 4종(sync/entry/exit/close)
+- **트리거 1** `live_master._run_startup_sync_routine`: 장전 동기화 후 예수금·이월종목 브리핑
+- **트리거 2** `live_engine.run_entry_scan`: 매수 체결(`rt_cd=="0"`) 즉시 종목·수량·투입금 알림
+- **트리거 3** `live_engine._record_exit`: 청산(익절/손절/타임스탑) 즉시 손익률·확정손익 알림
+- **트리거 4** `live_master._run_close_routine`: 15:30 정산 후 총자산·이월종목 일일 마감 보고
+- **변경 파일:** `src/automation/__init__.py`, `src/automation/telegram_client.py`, `src/live/live_engine.py`, `src/live/live_master.py`
+
 ### 2026-06-06 (**v6.8**) 하트비트 모니터링 — LED 깜빡이 + 10분 봇 생존 로그
 - **`dashboard_api`:** FastAPI startup async task → 1초마다 WS `HEARTBEAT` 브로드캐스트 (타임스탬프 ms 포함)
 - **`live_master`:** `_emit_heartbeat_if_due()` → `tick()` 마다 경과 체크, 10분마다 `💓 [Engine Heartbeat]` logger.info 강제 출력

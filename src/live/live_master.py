@@ -16,6 +16,7 @@ _HEARTBEAT_INTERVAL_SEC = 600  # 10분
 from src.live.live_engine import LiveTradingEngine, _load_positions, _now_kst
 from src.live.live_screener import LiveScreener
 from src.overnight_parity import prime_project_dotenv_from_root
+from src.automation.telegram_client import tg_client, build_sync_message, build_close_message
 
 KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger("LiveMaster")
@@ -92,8 +93,16 @@ class LiveMasterRunner:
         if self._already_ran("kis_sync_date"):
             return
         logger.info("🔔 [ROUTINE 0] %s 장개시 전 한투 잔고 동기화", STARTUP_SYNC_TIME)
-        self.engine.sync_positions_from_kis()
+        result = self.engine.sync_positions_from_kis()
         self._mark_ran("kis_sync_date")
+        # 📱 트리거 1: 장전 브리핑 텔레그램 알림
+        tg_client.send_message(
+            build_sync_message(
+                available_cash=float(result.get("available_cash") or 0),
+                position_count=int(result.get("synced_count") or 0),
+                total_asset=float(result.get("total_asset") or 0) or None,
+            )
+        )
 
     def _ensure_kis_sync_catchup(self, now: datetime) -> None:
         """08:50 이후 늦게 기동된 봇 — 당일 미동기화 시 즉시 1회 보정."""
@@ -136,8 +145,24 @@ class LiveMasterRunner:
     def _run_close_routine(self) -> None:
         if self._already_ran("close_settlement_date"):
             return
-        self.engine.execute_market_close_processing()
+        result = self.engine.execute_market_close_processing()
         self._mark_ran("close_settlement_date")
+        # 📱 트리거 4: 장마감 종합 정산 텔레그램 알림
+        positions = _load_positions(self.engine)
+        try:
+            balances = self.engine.gateway.get_inquire_balance(positions)
+            total_asset = float(balances.get("total_asset") or 0) or None
+            available_cash = float(balances.get("available_cash") or 0) or None
+        except Exception:
+            total_asset = None
+            available_cash = None
+        tg_client.send_message(
+            build_close_message(
+                total_asset=total_asset,
+                position_count=int(result.get("position_count") or len(positions)),
+                available_cash=available_cash,
+            )
+        )
 
     def _emit_heartbeat_if_due(self) -> None:
         """10분마다 터미널·로그파일에 엔진 생존 로그 1줄 강제 기록."""

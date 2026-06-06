@@ -25,7 +25,6 @@ from src.live.live_account import (
 from src.overnight_parity import prime_project_dotenv_from_root
 from src.live.live_config import LiveTradingConfig, load_live_config, resolve_live_paths
 from src.live.live_db import (
-    compute_profit_rate,
     ensure_db_ready,
     insert_trading_history,
     load_holding_positions,
@@ -36,6 +35,11 @@ from src.live.live_db import (
 )
 from src.live.live_signals import evaluate_hit_and_run_exit, explain_entry_signal
 from src.live.live_screener import load_live_universe, run_live_screener
+from src.automation.telegram_client import (
+    tg_client,
+    build_entry_message,
+    build_exit_message,
+)
 
 KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger("LiveEngine")
@@ -351,14 +355,12 @@ class LiveTradingEngine:
     ) -> None:
         if use_json_fallback():
             return
-        acct = self.cfg.account
-        profit_rate = compute_profit_rate(
-            entry_price=pos.entry_price,
-            exit_price=exit_price,
-            quantity=pos.qty,
-            buy_cost_ratio=acct.buy_cost_ratio,
-            sell_cost_ratio=acct.sell_cost_ratio,
-        )
+        # 순수 호가 수익률: 손절 트리거(-3.00%)와 기록값이 일치하도록 수수료 미반영.
+        # evaluate_hit_and_run_exit 도 순수 가격 비교로 발화하므로 동일 기준 유지.
+        if pos.entry_price > 0:
+            profit_rate = (exit_price - pos.entry_price) / pos.entry_price
+        else:
+            profit_rate = 0.0
         insert_trading_history(
             self.db_path,
             symbol=pos.code,
@@ -370,6 +372,18 @@ class LiveTradingEngine:
             quantity=pos.qty,
             profit_rate=profit_rate,
             reason=exit_type,
+        )
+        # 📱 트리거 3: 청산 텔레그램 알림
+        tg_client.send_message(
+            build_exit_message(
+                code=pos.code,
+                name=name or pos.code,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                quantity=pos.qty,
+                profit_rate=profit_rate,
+                reason=exit_type,
+            )
         )
         if self.on_exit_recorded:
             try:
@@ -501,6 +515,15 @@ class LiveTradingEngine:
                     label,
                     f"{last_close:,.0f}",
                     qty,
+                )
+                # 📱 트리거 2: 매수 체결 텔레그램 알림
+                tg_client.send_message(
+                    build_entry_message(
+                        code=c6,
+                        name=label,
+                        entry_price=last_close,
+                        quantity=qty,
+                    )
                 )
                 if self.on_entry_filled:
                     try:
