@@ -62,7 +62,7 @@ class LiveScreener:
         )
         self.top_n = int(getattr(scr, "top_n", None) or scr.get("top_n", 40))
         self.min_history_bars = int(
-            getattr(scr, "min_history_bars", None) or scr.get("min_history_bars", 120)
+            getattr(scr, "min_history_bars", None) or scr.get("min_history_bars", 122)
         )
 
         root = Path(project_root or Path(__file__).resolve().parents[2])
@@ -83,13 +83,14 @@ class LiveScreener:
     @staticmethod
     def _verify_strict_pre_filter(df: pd.DataFrame, min_bars: int) -> tuple[bool, str]:
         """
-        스캐너 2단계 프리필터 — .iloc[:-1] 확정 데이터 기준.
+        스캐너 2단계 프리필터 — .iloc[:-1] 확정 데이터 기준. (v6.17 5대 추세 철벽 필터)
 
         통과 조건 (전부 AND):
-          1. 일봉 수 >= min_bars (신규 상장주·데이터 부족 차단)
-          2. MA60 우상향: MA60[-1] > MA60[-2]
-          3. MA120 우상향: MA120[-1] > MA120[-2]
-          4. 종가 > MA60 (60·120일선 정배열 통합 판정)
+          1. 일봉 수 >= min_bars (신규 상장주·데이터 부족 차단, 최소 122)
+          2. MA20 우상향: MA20[-1] > MA20[-2]  ★단기 추세 방어 복원
+          3. MA60 우상향: MA60[-1] > MA60[-2]  중기 추세 방어
+          4. MA120 우상향: MA120[-1] > MA120[-2]  장기 추세 방어
+          5. 종가 > MA60 (역배열 매물대 방어)
 
         반환: (통과 여부, 탈락 사유 문자열)
         """
@@ -108,18 +109,26 @@ class LiveScreener:
         if len(confirmed) < 121:
             return False, f"확정 일봉 {len(confirmed)}개 < MA120 연산 최소 121개"
 
+        ma20 = confirmed.rolling(20).mean()
         ma60 = confirmed.rolling(60).mean()
         ma120 = confirmed.rolling(120).mean()
 
+        ma20_now = float(ma20.iloc[-1])
+        ma20_prev = float(ma20.iloc[-2])
         ma60_now = float(ma60.iloc[-1])
         ma60_prev = float(ma60.iloc[-2])
         ma120_now = float(ma120.iloc[-1])
         ma120_prev = float(ma120.iloc[-2])
         last_close = float(confirmed.iloc[-1])
 
-        if not all(np.isfinite(v) for v in (ma60_now, ma60_prev, ma120_now, ma120_prev, last_close)):
-            return False, "MA60·MA120 산출 불가 (NaN)"
+        if not all(
+            np.isfinite(v)
+            for v in (ma20_now, ma20_prev, ma60_now, ma60_prev, ma120_now, ma120_prev, last_close)
+        ):
+            return False, "MA20·MA60·MA120 산출 불가 (NaN)"
 
+        if ma20_now <= ma20_prev:
+            return False, f"MA20 우상향 미충족 ({ma20_prev:,.0f} → {ma20_now:,.0f})"
         if ma60_now <= ma60_prev:
             return False, f"MA60 우상향 미충족 ({ma60_prev:,.0f} → {ma60_now:,.0f})"
         if ma120_now <= ma120_prev:

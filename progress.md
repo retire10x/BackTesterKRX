@@ -109,6 +109,12 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-08 (**v6.17**) 스캐너 5대 추세 철벽 필터 복원 (MA20 우상향 긴급 복원)
+- **`_verify_strict_pre_filter`:** MA20 우상향(`ma20[-1] > ma20[-2]`) 조건 추가 — 3대 이평선(MA20·MA60·MA120) 동시 우상향 릴레이 검증 완성
+- **`min_history_bars` 기본값:** 120 → 122 (신규 상장주 방어 강화, `.iloc[:-1]` 확정 기준)
+- **5대 조건 AND 체인:** ①`len >= 122` ②MA20↑ ③MA60↑ ④MA120↑ ⑤`종가 > MA60`
+- **변경 파일:** `src/live/live_screener.py`
+
 ### 2026-06-07 (**v6.9.2**) 대시보드 초기화 시 텔레그램 알림 추가
 - **트리거 5** `control_bridge.run_reset_sync`: 대시보드 `/api/control/reset` 실행 성공 시 텔레그램 알림 전송
 - **`build_reset_message`:** 초기화 완료 시각·원금·세척 완료 메시지 빌더 (`src/automation/telegram_client.py`)
