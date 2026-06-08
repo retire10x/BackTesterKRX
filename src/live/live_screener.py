@@ -80,20 +80,65 @@ class LiveScreener:
             self.output_path = str(out)
             self.meta_path = str(out.with_suffix(".meta.json"))
 
-    def _filter_by_min_history(
+    @staticmethod
+    def _verify_strict_pre_filter(df: pd.DataFrame, min_bars: int) -> tuple[bool, str]:
+        """
+        스캐너 2단계 프리필터 — .iloc[:-1] 확정 데이터 기준.
+
+        통과 조건 (전부 AND):
+          1. 일봉 수 >= min_bars (신규 상장주·데이터 부족 차단)
+          2. MA60 우상향: MA60[-1] > MA60[-2]
+          3. MA120 우상향: MA120[-1] > MA120[-2]
+          4. 종가 > MA60 (60·120일선 정배열 통합 판정)
+
+        반환: (통과 여부, 탈락 사유 문자열)
+        """
+        import numpy as np
+
+        bars = len(df)
+        if bars < min_bars:
+            return False, f"일봉 {bars}개 < 최소 {min_bars}개 (신규 상장·데이터 부족)"
+
+        # 당일 미완성 캔들 제외 확정 시리즈
+        col = "close" if "close" in df.columns else ("Close" if "Close" in df.columns else None)
+        if col is None:
+            return False, "종가 컬럼 없음"
+
+        confirmed = pd.to_numeric(df[col], errors="coerce").iloc[:-1]
+        if len(confirmed) < 121:
+            return False, f"확정 일봉 {len(confirmed)}개 < MA120 연산 최소 121개"
+
+        ma60 = confirmed.rolling(60).mean()
+        ma120 = confirmed.rolling(120).mean()
+
+        ma60_now = float(ma60.iloc[-1])
+        ma60_prev = float(ma60.iloc[-2])
+        ma120_now = float(ma120.iloc[-1])
+        ma120_prev = float(ma120.iloc[-2])
+        last_close = float(confirmed.iloc[-1])
+
+        if not all(np.isfinite(v) for v in (ma60_now, ma60_prev, ma120_now, ma120_prev, last_close)):
+            return False, "MA60·MA120 산출 불가 (NaN)"
+
+        if ma60_now <= ma60_prev:
+            return False, f"MA60 우상향 미충족 ({ma60_prev:,.0f} → {ma60_now:,.0f})"
+        if ma120_now <= ma120_prev:
+            return False, f"MA120 우상향 미충족 ({ma120_prev:,.0f} → {ma120_now:,.0f})"
+        if last_close <= ma60_now:
+            return False, f"종가({last_close:,.0f}) ≤ MA60({ma60_now:,.0f}) — 역배열"
+
+        return True, "OK"
+
+    def _apply_screener_pre_filter(
         self,
         codes: list[str],
         target_date: str,
     ) -> list[str]:
         """
-        신규 상장주 및 데이터 부족 종목 원천 차단 프리필터.
+        스캐너 2단계 프리필터 실행기.
 
-        MA120 연산에 필요한 최소 일봉(self.min_history_bars)보다 적은 종목을
-        유니버스 최종 확정 전에 제거한다.
-        - 상장 1일 차: OHLCV 1봉 → 즉시 탈락
-        - 상장 6개월 미만: MA120 NaN 연산 노이즈 원천 차단
-        lookback을 250 calendar days(≈ 120 영업일 충분)로 고정하여
-        한 번의 pykrx 호출로 충분성을 판정하고 추가 API 부하를 최소화.
+        각 종목의 OHLCV를 조회(250 calendar days)하여 _verify_strict_pre_filter를 적용.
+        신규 상장주 + 중장기 역배열 종목을 유니버스 확정 전에 원천 차단.
         """
         if self.min_history_bars <= 0:
             return codes
@@ -106,20 +151,20 @@ class LiveScreener:
         for code in codes:
             try:
                 df = load_ohlcv(code, start_iso, end_iso)
-                bars = len(df) if df is not None and not df.empty else 0
-                if bars >= self.min_history_bars:
+                if df is None or df.empty:
+                    logger.warning("⛔ [OHLCV 없음 차단] %s", code)
+                    continue
+                ok, reason = self._verify_strict_pre_filter(df, self.min_history_bars)
+                if ok:
                     passed.append(code)
                 else:
-                    logger.warning(
-                        "⛔ [신규상장·데이터부족 차단] %s — 일봉 %d개 < 최소 %d개 (MA%d 연산 불가)",
-                        code, bars, self.min_history_bars, self.min_history_bars,
-                    )
+                    logger.warning("⛔ [프리필터 탈락] %s — %s", code, reason)
             except Exception as e:
                 logger.warning("⛔ [OHLCV 조회 오류 차단] %s — %s", code, e)
 
         removed = len(codes) - len(passed)
         if removed:
-            logger.info("🔒 [프리필터] %d종 신규상장·데이터부족 제거 → 잔여 %d종", removed, len(passed))
+            logger.info("🔒 [2단계 프리필터] %d종 탈락 → 잔여 %d종", removed, len(passed))
         return passed
 
     def execute_daily_scan(self, force_date: str | None = None) -> list[str]:
@@ -194,9 +239,9 @@ class LiveScreener:
             scanned_codes = top_df["code"].tolist()
             logger.info("✅ 1차 필터 통과 %d종 (거래대금·시총 Top %d)", len(scanned_codes), self.top_n)
 
-            # [프리필터] 신규 상장주·데이터 부족 종목 사전 차단 (MA120 NaN 노이즈 원천 봉쇄)
-            scanned_codes = self._filter_by_min_history(scanned_codes, target_date)
-            logger.info("✅ 2차 필터 통과 %d종 (최소 일봉 %d개 이상)", len(scanned_codes), self.min_history_bars)
+            # [2단계 프리필터] 신규 상장주·역배열 종목 사전 차단 (데이터 수·MA60/120 우상향·종가>MA60)
+            scanned_codes = self._apply_screener_pre_filter(scanned_codes, target_date)
+            logger.info("✅ 2차 필터 통과 %d종 (데이터 수·MA 추세 검증 완료)", len(scanned_codes))
 
             # top_df도 scanned_codes 기준으로 재필터하여 메타 리포트 정합성 유지
             top_df = top_df[top_df["code"].isin(scanned_codes)]
