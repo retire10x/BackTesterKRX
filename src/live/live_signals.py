@@ -91,18 +91,16 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
     """
     진입 가능 여부 + 탈락/통과 사유 (SOP 수동 검증용).
 
-    조건 (전부 AND):
-      1. 당일 종가 ≤ 확정 MA20  — 20일선 아래 바닥권 진입 확인
-      2. 확정 MA20 우상향        — MA20[-1] > MA20[-2] (단기 추세 인터록)
+    조건 (전부 AND) — v6.16 3대 단기 트리거:
+      1. 당일 종가 ≤ 확정 MA20  — 20일선 아래 단기 눌림목 확보
+      2. 확정 MA20 우상향        — MA20[-1] > MA20[-2] (급락주 인터록)
       3. 변곡 돌파               — 당일 종가 > 20영업일 전(확정) 종가
-      4. 매크로 필터             — MA60/120 듀얼 우상향 · 종가 > price_above_ma 선
 
-    [인터록] close_s_confirmed = close_s.iloc[:-1]
-    당일 미완성 캔들을 제외한 확정 종가 기준으로 모든 MA를 산출한다.
-    today_close는 별도 보관하여 조건 1·3에 사용한다.
+    MA60/120 중복 연산 제거: 스캐너 15:15 프리필터에서 이미 검증 완료.
+    [인터록] close_s_confirmed = close_s.iloc[:-1] — 당일 미완성 캔들 제외.
     """
     window = strat.lookback_window
-    need = min_history_bars(strat)
+    need = window + 2  # MA20 우상향(ma[-1]·ma[-2]) 보장 최솟값
     if len(ohlcv_df) < need:
         return False, f"일봉 부족 ({len(ohlcv_df)}봉 < 필요 {need}봉)"
 
@@ -126,7 +124,7 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
     if not np.isfinite(ma_now) or not np.isfinite(ma_prev):
         return False, f"MA{window} 산출 불가"
 
-    # 조건 1: 당일 종가 ≤ 확정 MA20 (20일선 아래 바닥권)
+    # 조건 1: 당일 종가 ≤ 확정 MA20 (20일선 아래 눌림목)
     if today_close > ma_now:
         return (
             False,
@@ -134,7 +132,7 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
             f"MA{window}({ma_now:,.0f}) 위에 있음(이미 이격)",
         )
 
-    # 조건 2: 확정 MA20 우상향 (단기 추세 인터록)
+    # 조건 2: 확정 MA20 우상향 (급락주 인터록)
     if ma_now <= ma_prev:
         return (
             False,
@@ -152,14 +150,7 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
             f"{window}일 전 종가({past_close:,.0f})",
         )
 
-    # 조건 4: 매크로 필터 (MA60/120 듀얼 우상향 · 종가 > price_above_ma선)
-    macro_fail = _macro_filter_failure_reason(close_s_confirmed, today_close, strat)
-    if macro_fail:
-        return False, macro_fail
-
-    return True, (
-        f"통과 — MA{window} 반전·우상향·변곡·듀얼 MA·종가>MA{strat.macro_filter.price_above_ma}"
-    )
+    return True, f"통과 — MA{window} 눌림·우상향·변곡 돌파"
 
 
 def is_ma_inflection_entry(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> bool:

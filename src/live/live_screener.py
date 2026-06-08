@@ -120,18 +120,11 @@ class LiveScreener:
         if not all(np.isfinite(v) for v in (ma60_now, ma60_prev, ma120_now, ma120_prev, last_close)):
             return False, "MA60·MA120 산출 불가 (NaN)"
 
-        ma20 = confirmed.rolling(20).mean()
-        ma20_now = float(ma20.iloc[-1])
-        ma20_prev = float(ma20.iloc[-2])
-        if not (np.isfinite(ma20_now) and np.isfinite(ma20_prev)):
-            return False, "MA20 산출 불가 (NaN)"
-
-        if ma20_now <= ma20_prev:
-            return False, f"MA20 우상향 미충족 ({ma20_prev:,.0f} → {ma20_now:,.0f})"
         if ma60_now <= ma60_prev:
             return False, f"MA60 우상향 미충족 ({ma60_prev:,.0f} → {ma60_now:,.0f})"
         if ma120_now <= ma120_prev:
             return False, f"MA120 우상향 미충족 ({ma120_prev:,.0f} → {ma120_now:,.0f})"
+        # 종가 > MA60 → 정배열(MA60 > MA120)이면 종가 > MA120 자동 충족 (중복 필터 통합)
         if last_close <= ma60_now:
             return False, f"종가({last_close:,.0f}) ≤ MA60({ma60_now:,.0f}) — 역배열"
 
