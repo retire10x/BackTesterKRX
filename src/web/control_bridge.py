@@ -278,6 +278,37 @@ class ControlBridge:
             self.entry_state["running"] = False
             self._task_lock.release()
 
+    def run_kis_sync(self) -> dict[str, Any]:
+        """비상 수동 동기화 — KIS 실잔고 → 로컬 DB 장부 강제 이식."""
+        if not self._task_lock.acquire(blocking=False):
+            return {"status": "busy", "message": "다른 명령 실행 중입니다.", "timestamp": self._time_hms()}
+        try:
+            logger.info("⚡ [사령탑] 수동 KIS 잔고 동기화 명령 하달.")
+            result = self.engine.sync_positions_from_kis()
+            ts = self._time_hms()
+            if result.get("error"):
+                ws_broadcast({"event": "SYNC_FAILED", "message": result["error"], "timestamp": ts})
+                return {"status": "error", "message": result["error"], "timestamp": ts}
+            count = int(result.get("synced_count") or 0)
+            msg = (
+                f"KIS 잔고 동기화 완료 — {count}종 보유 이식 · "
+                f"총자산 {float(result.get('total_asset') or 0):,.0f}원"
+            )
+            ws_broadcast({"event": "KIS_SYNC_COMPLETED", "synced_count": count, "timestamp": ts})
+            return {
+                "status": "success",
+                "message": msg,
+                "synced_count": count,
+                "total_asset": result.get("total_asset"),
+                "available_cash": result.get("available_cash"),
+                "timestamp": ts,
+            }
+        except Exception as e:
+            logger.exception("❌ [사령탑] KIS 동기화 실패")
+            return {"status": "error", "message": f"동기화 실패: {e}", "timestamp": self._time_hms()}
+        finally:
+            self._task_lock.release()
+
     def run_reset_sync(self) -> dict[str, Any]:
         """마스터 DB·유니버스 전면 초기화 — 감시 중단 · 장부·후보 세척 · 원금 스냅샷."""
         if not self._task_lock.acquire(blocking=False):

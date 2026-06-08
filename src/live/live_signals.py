@@ -80,6 +80,11 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
     """
     진입 가능 여부 + 탈락/통과 사유 (SOP 수동 검증용).
     어제≤MA20 · 오늘>20영업일전종가 · 듀얼 MA 우상향 · 종가>MA120.
+
+    [인터록] 15:15~15:30 스캔 시점에 당일 캔들은 아직 미확정 장중 데이터이므로
+    MA 계산 시리즈에서 당일 행을 제외(close_s_confirmed = close_s.iloc[:-1])하여
+    전일 확정 종가 기준으로 이평선을 산출한다.
+    당일 종가(today_close)는 별도로 보관하여 변곡 돌파 및 price_above_ma 비교에 사용한다.
     """
     window = strat.lookback_window
     need = min_history_bars(strat)
@@ -95,13 +100,18 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
     if not np.isfinite(today_close) or today_close <= 0:
         return False, "당일 종가 무효"
 
-    past_close = float(close_s.iloc[-(window + 1)])
+    # [인터록] 당일 미완성 캔들을 제외한 확정 종가 시리즈
+    close_s_confirmed = close_s.iloc[:-1]
+    if len(close_s_confirmed) < window + 1:
+        return False, f"확정 일봉 부족 ({len(close_s_confirmed)}봉 < 필요 {window + 1}봉)"
+
+    past_close = float(close_s_confirmed.iloc[-window])
     if not np.isfinite(past_close):
         return False, f"{window}영업일 전 종가 산출 불가"
 
-    ma_s = close_s.rolling(window=window).mean()
-    yesterday_close = float(close_s.iloc[-2])
-    yesterday_ma = float(ma_s.iloc[-2])
+    ma_s = close_s_confirmed.rolling(window=window).mean()
+    yesterday_close = float(close_s_confirmed.iloc[-1])
+    yesterday_ma = float(ma_s.iloc[-1])
     if not np.isfinite(yesterday_close) or not np.isfinite(yesterday_ma):
         return False, f"MA{window}·전일 종가 산출 불가"
 
@@ -118,7 +128,8 @@ def explain_entry_signal(ohlcv_df: pd.DataFrame, strat: LiveStrategyConfig) -> t
             f"{window}일 전 종가({past_close:,.0f})",
         )
 
-    macro_fail = _macro_filter_failure_reason(close_s, today_close, strat)
+    # [인터록] 확정 종가 시리즈로 매크로 필터 산출 (당일 미완성 캔들 배제)
+    macro_fail = _macro_filter_failure_reason(close_s_confirmed, today_close, strat)
     if macro_fail:
         return False, macro_fail
 

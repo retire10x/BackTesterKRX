@@ -108,10 +108,16 @@
             <span id="watch-label" class="text-sm font-mono text-slate-500">○ OFF</span>
           </label>
         </div>
-        <button id="btn-reset" type="button"
-          class="btn-ctrl bg-loss/25 hover:bg-loss/40 text-loss font-bold px-5 py-2.5 rounded-lg border border-loss/50 whitespace-nowrap">
-          🔥 시스템 초기화
-        </button>
+        <div class="flex flex-wrap items-center gap-3">
+          <button id="btn-sync" type="button"
+            class="btn-ctrl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 font-bold px-5 py-2.5 rounded-lg border border-emerald-500/40 whitespace-nowrap">
+            🔄 증권사 잔고 동기화
+          </button>
+          <button id="btn-reset" type="button"
+            class="btn-ctrl bg-loss/25 hover:bg-loss/40 text-loss font-bold px-5 py-2.5 rounded-lg border border-loss/50 whitespace-nowrap">
+            🔥 시스템 초기화
+          </button>
+        </div>
       </div>
       <p id="control-msg" class="px-4 sm:px-5 pb-4 text-slate-500 text-sm">정적 대기 — 버튼·청산 이벤트 시에만 화면이 움직입니다.</p>
     </section>
@@ -439,6 +445,11 @@
       if (history.trades?.length) renderTradeChart(history.trades);
     }
 
+    async function fetchSnapshotsOnly() {
+      const snapshots = await fetchJson("/api/snapshots");
+      if (snapshots.series?.length) renderAssetChart(snapshots.series);
+    }
+
     function handleHeartbeat(ts) {
       const led = document.getElementById("hb-led");
       const clock = document.getElementById("hb-clock");
@@ -511,9 +522,9 @@
           await bootstrapSilent();
           renderWatchToggle(false);
           document.getElementById("watch-toggle").checked = false;
-          setControlMsg("✨ 초기화 완료 — 유니버스·원금 5,000만 원");
+          setControlMsg("✨ 초기화 완료 — 유니버스·원금 1,000만 원");
           showToast(
-            msg.message || "✨ 유니버스 후보군을 포함한 전 시스템이 원금 50,000,000원 청정 상태로 포맷되었습니다.",
+            msg.message || "✨ 유니버스 후보군을 포함한 전 시스템이 원금 10,000,000원 청정 상태로 포맷되었습니다.",
             "warning"
           );
           break;
@@ -553,7 +564,37 @@
     function lockControlButtons(locked) {
       document.getElementById("btn-scan").disabled = locked;
       document.getElementById("btn-entry").disabled = locked;
+      document.getElementById("btn-sync").disabled = locked;
       document.getElementById("btn-reset").disabled = locked;
+    }
+
+    async function handleKisSync() {
+      const BTN_SYNC = document.getElementById("btn-sync");
+      const orig = BTN_SYNC.innerHTML;
+      lockControlButtons(true);
+      BTN_SYNC.innerHTML = "⏳ 동기화 중…";
+      setControlMsg("🔄 KIS 잔고 조회 및 로컬 장부 이식 중…");
+      showToast("⏳ 증권사 실잔고 동기화를 시작합니다…", "info");
+      try {
+        const r = await postJson("/api/control/sync");
+        if (r.status === "success") {
+          await Promise.all([fetchPositionsOnly(), fetchSnapshotsOnly()]);
+          setControlMsg(`✅ ${r.message}`);
+          showToast(`✅ ${r.message}`, "success");
+        } else if (r.status === "busy") {
+          setControlMsg(r.message, true);
+          showToast(r.message, "warning");
+        } else {
+          setControlMsg("❌ " + r.message, true);
+          showToast("동기화 실패: " + r.message, "danger");
+        }
+      } catch (e) {
+        setControlMsg("동기화 통신 오류: " + e.message, true);
+        showToast("동기화 통신 오류", "danger");
+      } finally {
+        BTN_SYNC.innerHTML = orig;
+        lockControlButtons(false);
+      }
     }
 
     async function handleSystemReset() {
@@ -575,7 +616,7 @@
           await bootstrapSilent();
           renderWatchToggle(false);
           document.getElementById("watch-toggle").checked = false;
-          setControlMsg("✨ 초기화 완료 — 유니버스·원금 5,000만 원");
+          setControlMsg("✨ 초기화 완료 — 유니버스·원금 1,000만 원");
           showToast(`✨ 초기화 성공: ${r.message}`, "warning");
         } else {
           setControlMsg(r.message, true);
@@ -642,6 +683,7 @@
 
     BTN_SCAN.addEventListener("click", handleScanClick);
     BTN_ENTRY.addEventListener("click", handleEntryClick);
+    document.getElementById("btn-sync").addEventListener("click", handleKisSync);
     document.getElementById("btn-reset").addEventListener("click", handleSystemReset);
 
     document.getElementById("watch-toggle").addEventListener("change", async (ev) => {
