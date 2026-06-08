@@ -383,7 +383,7 @@ def fetch_trading_summary(db_path: str, *, today: str | None = None) -> dict[str
     }
 
 
-DEFAULT_RESET_CASH = 50_000_000.0
+DEFAULT_RESET_CASH = 10_000_000.0
 
 
 def replace_universe_candidates(
