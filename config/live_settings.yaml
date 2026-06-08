@@ -14,10 +14,11 @@ live_trading:
     market: "KOSDAQ"
     min_market_cap: 90000000000        # 900억 이상
     max_market_cap: 400000000000       # 4,000억 이하
-    min_live_volume_amt: 5000000000  # 당일 거래대금 50억 이상
+    min_live_volume_amt: 5000000000    # 당일 거래대금 50억 이상
     top_n: 40
     screener_time: "15:15"             # 장마감 전 유니버스 스캔 (KST)
     universe_output: "config/live_today_universe.json"
+    min_history_bars: 122              # 신규 상장주 차단 — MA120 듀얼 슬로프(ma[-1]·ma[-2]) 보장 최소 일봉 수
 
   strategy:
     lookback_window: 20

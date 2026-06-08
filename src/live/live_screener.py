@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from pykrx import stock
 
+from src.data_loader import load_ohlcv
 from src.live.live_config import (
     LiveScreenerConfig,
     LiveTradingConfig,
@@ -60,6 +61,9 @@ class LiveScreener:
             getattr(scr, "min_live_volume_amt", None) or scr.get("min_live_volume_amt", 5_000_000_000)
         )
         self.top_n = int(getattr(scr, "top_n", None) or scr.get("top_n", 40))
+        self.min_history_bars = int(
+            getattr(scr, "min_history_bars", None) or scr.get("min_history_bars", 120)
+        )
 
         root = Path(project_root or Path(__file__).resolve().parents[2])
         if self.cfg is not None:
@@ -75,6 +79,48 @@ class LiveScreener:
             out = Path(rel) if Path(rel).is_absolute() else root / rel
             self.output_path = str(out)
             self.meta_path = str(out.with_suffix(".meta.json"))
+
+    def _filter_by_min_history(
+        self,
+        codes: list[str],
+        target_date: str,
+    ) -> list[str]:
+        """
+        신규 상장주 및 데이터 부족 종목 원천 차단 프리필터.
+
+        MA120 연산에 필요한 최소 일봉(self.min_history_bars)보다 적은 종목을
+        유니버스 최종 확정 전에 제거한다.
+        - 상장 1일 차: OHLCV 1봉 → 즉시 탈락
+        - 상장 6개월 미만: MA120 NaN 연산 노이즈 원천 차단
+        lookback을 250 calendar days(≈ 120 영업일 충분)로 고정하여
+        한 번의 pykrx 호출로 충분성을 판정하고 추가 API 부하를 최소화.
+        """
+        if self.min_history_bars <= 0:
+            return codes
+
+        end_dt = pd.Timestamp(target_date)
+        start_iso = (end_dt - pd.Timedelta(days=250)).strftime("%Y-%m-%d")
+        end_iso = end_dt.strftime("%Y-%m-%d")
+
+        passed: list[str] = []
+        for code in codes:
+            try:
+                df = load_ohlcv(code, start_iso, end_iso)
+                bars = len(df) if df is not None and not df.empty else 0
+                if bars >= self.min_history_bars:
+                    passed.append(code)
+                else:
+                    logger.warning(
+                        "⛔ [신규상장·데이터부족 차단] %s — 일봉 %d개 < 최소 %d개 (MA%d 연산 불가)",
+                        code, bars, self.min_history_bars, self.min_history_bars,
+                    )
+            except Exception as e:
+                logger.warning("⛔ [OHLCV 조회 오류 차단] %s — %s", code, e)
+
+        removed = len(codes) - len(passed)
+        if removed:
+            logger.info("🔒 [프리필터] %d종 신규상장·데이터부족 제거 → 잔여 %d종", removed, len(passed))
+        return passed
 
     def execute_daily_scan(self, force_date: str | None = None) -> list[str]:
         """
@@ -146,7 +192,14 @@ class LiveScreener:
             top_df = final_sorted.head(self.top_n)
 
             scanned_codes = top_df["code"].tolist()
-            logger.info("✅ 필터 통과 %d종 (Top %d 상한)", len(scanned_codes), self.top_n)
+            logger.info("✅ 1차 필터 통과 %d종 (거래대금·시총 Top %d)", len(scanned_codes), self.top_n)
+
+            # [프리필터] 신규 상장주·데이터 부족 종목 사전 차단 (MA120 NaN 노이즈 원천 봉쇄)
+            scanned_codes = self._filter_by_min_history(scanned_codes, target_date)
+            logger.info("✅ 2차 필터 통과 %d종 (최소 일봉 %d개 이상)", len(scanned_codes), self.min_history_bars)
+
+            # top_df도 scanned_codes 기준으로 재필터하여 메타 리포트 정합성 유지
+            top_df = top_df[top_df["code"].isin(scanned_codes)]
 
             self._write_bundle(scanned_codes, target_date, top_df=top_df)
             return scanned_codes

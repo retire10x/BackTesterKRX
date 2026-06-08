@@ -34,6 +34,7 @@ class LiveScreenerConfig:
     top_n: int
     screener_time: str
     universe_output: str
+    min_history_bars: int  # 신규 상장주 차단 최소 일봉 수 (기본 120)
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ def live_config_from_dict(raw: dict) -> LiveTradingConfig:
             top_n=int(scr["top_n"]),
             screener_time=str(scr.get("screener_time", "15:15")),
             universe_output=str(scr.get("universe_output", "config/live_today_universe.json")),
+            min_history_bars=int(scr.get("min_history_bars", 122)),
         ),
         strategy=LiveStrategyConfig(
             lookback_window=int(strat.get("lookback_window", 20)),

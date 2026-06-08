@@ -26,11 +26,22 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def min_history_bars(strat: LiveStrategyConfig) -> int:
-    need = strat.lookback_window + 1
+    """
+    explain_entry_signal이 요구하는 ohlcv_df 최소 행 수.
+
+    close_s_confirmed = close_s.iloc[:-1] (당일 미완성 캔들 제외)를 기준으로 산출하므로
+    각 조건에서 confirmed 시리즈에 필요한 행 수 + 1(당일 캔들)이 실제 필요량이다.
+
+    - 듀얼 MA 우상향: ma[-1]·ma[-2] 모두 필요 → confirmed에 w+1행 → ohlcv에 w+2행
+    - price_above_ma: ma[-1]만 필요 → confirmed에 w행 → ohlcv에 w+1행
+    - MA20 반전(yesterday_ma): confirmed에 window+1행 → ohlcv에 window+2행
+    """
     mf = strat.macro_filter
-    need = max(need, mf.price_above_ma)
-    for w in mf.ma_lines:
-        need = max(need, w + 1)
+    need = strat.lookback_window + 2  # MA20 반전 + past_close
+    for w in mf.ma_lines:            # 듀얼 슬로프: ma[-2]까지 필요
+        need = max(need, w + 2)
+    if mf.price_above_ma > 0:        # price_above_ma: ma[-1]만 필요
+        need = max(need, mf.price_above_ma + 1)
     return need
 
 
