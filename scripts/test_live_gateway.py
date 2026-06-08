@@ -95,11 +95,11 @@ def main() -> None:
                 v = o2c.get(k)
                 return float(str(v).replace(",", "")) if v not in (None, "") else 0.0
 
-            cash = max(
-                _m("ord_psbl_cash"),
-                _m("prvs_rcdl_excc_amt"),
-                _m("dnca_tot_amt"),
-                _m("nxdy_excc_amt"),
+            # [수정] dnca_tot_amt 우선 — prvs_rcdl_excc_amt 제외 (주식 평가액 선합산 필드)
+            cash = (
+                _m("dnca_tot_amt")
+                or _m("ord_psbl_cash")
+                or _m("nxdy_excc_amt")
             )
             snap = AccountSnapshot(cash=cash, positions=holdings, open_slot_count=len(holdings))
         except Exception as e:

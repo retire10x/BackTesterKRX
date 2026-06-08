@@ -362,11 +362,14 @@ class LiveAccountGateway:
 
         data = self._raw_balance()
         out2 = (data.get("output2") or [{}])[0]
-        cash = max(
-            self._parse_money(out2.get("ord_psbl_cash")),
-            self._parse_money(out2.get("prvs_rcdl_excc_amt")),
-            self._parse_money(out2.get("dnca_tot_amt")),
-            self._parse_money(out2.get("nxdy_excc_amt")),
+
+        # [수정] dnca_tot_amt(예수금 총액·순수 현금 SSOT) 우선 사용.
+        # prvs_rcdl_excc_amt는 주식 평가액이 선합산된 선결제 정산금으로,
+        # max() 풀에 포함하면 현금이 과대평가되어 total_asset 중복 합산 착시 발생.
+        cash = (
+            self._parse_money(out2.get("dnca_tot_amt"))
+            or self._parse_money(out2.get("ord_psbl_cash"))
+            or self._parse_money(out2.get("nxdy_excc_amt"))
         )
 
         positions = []
@@ -394,10 +397,12 @@ class LiveAccountGateway:
                 }
             )
 
-        total_asset = max(
-            self._parse_money(out2.get("tot_evlu_amt")),
-            self._parse_money(out2.get("nass_amt")),
-            cash + stock_eval,
+        # [수정] tot_evlu_amt(KIS 직접 산출 총평가금액) 우선 사용.
+        # cash + stock_eval 폴백은 tot_evlu_amt가 0일 때만 사용하여 중복 합산 차단.
+        total_asset = (
+            self._parse_money(out2.get("tot_evlu_amt"))
+            or self._parse_money(out2.get("nass_amt"))
+            or (cash + stock_eval)
         )
         if total_asset <= 0:
             total_asset = cash + stock_eval
@@ -509,16 +514,17 @@ class LiveAccountGateway:
             except ValueError:
                 return 0.0
 
-        cash = max(
-            _money("ord_psbl_cash"),
-            _money("prvs_rcdl_excc_amt"),
-            _money("dnca_tot_amt"),
-            _money("nxdy_excc_amt"),
+        # [수정] dnca_tot_amt 우선 — prvs_rcdl_excc_amt 제외 (주식 평가액 선합산 필드)
+        cash = (
+            _money("dnca_tot_amt")
+            or _money("ord_psbl_cash")
+            or _money("nxdy_excc_amt")
         )
-        total_equity = max(
-            _money("tot_evlu_amt"),
-            _money("nass_amt"),
-            cash + stock_eval,
+        # [수정] tot_evlu_amt 우선 — cash + stock_eval 폴백으로만 사용하여 중복 합산 차단
+        total_equity = (
+            _money("tot_evlu_amt")
+            or _money("nass_amt")
+            or (cash + stock_eval)
         )
         if total_equity <= 0:
             total_equity = cash + stock_eval
