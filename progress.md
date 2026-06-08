@@ -109,6 +109,12 @@
 
 ## 2. 최신 변경 이력 (Changelog)
 
+### 2026-06-08 (**v6.18**) 대시보드 유니버스 테이블 네이버증권 핫링크 탑재
+- **유니버스 후보 종목 테이블:** `관제` 컬럼 신설 — `📊 N네이버증권` 버튼 (새 탭 `target="_blank"`)
+- **URL 바인딩:** `https://finance.naver.com/item/main.naver?code={code}` 동적 생성 (6자리 패딩)
+- **CSS:** `.btn-naver-link` (네이버 그린 `#02c75a`) + `.naver-n` (백색 N 뱃지) 컴포넌트 추가
+- **변경 파일:** `src/web/static/index.html`
+
 ### 2026-06-08 (**v6.17**) 스캐너 5대 추세 철벽 필터 복원 (MA20 우상향 긴급 복원)
 - **`_verify_strict_pre_filter`:** MA20 우상향(`ma20[-1] > ma20[-2]`) 조건 추가 — 3대 이평선(MA20·MA60·MA120) 동시 우상향 릴레이 검증 완성
 - **`min_history_bars` 기본값:** 120 → 122 (신규 상장주 방어 강화, `.iloc[:-1]` 확정 기준)

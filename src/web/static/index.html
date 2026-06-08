@@ -62,6 +62,39 @@
       background: #22c55e;
       box-shadow: 0 0 8px #22c55e, 0 0 2px #22c55e;
     }
+    .btn-naver-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #ffffff;
+      background-color: #02c75a;
+      border-radius: 4px;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background-color 0.2s ease;
+      line-height: 1.6;
+    }
+    .btn-naver-link:hover {
+      background-color: #019f47;
+      color: #ffffff;
+    }
+    .btn-naver-link .naver-n {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 14px;
+      height: 14px;
+      background: #ffffff;
+      color: #02c75a;
+      border-radius: 2px;
+      font-size: 10px;
+      font-weight: 900;
+      line-height: 1;
+      flex-shrink: 0;
+    }
   </style>
 </head>
 <body class="min-h-screen text-slate-100 font-sans antialiased">
@@ -138,11 +171,12 @@
               <th class="pb-3 pr-4">순위</th>
               <th class="pb-3 pr-4">종목</th>
               <th class="pb-3 pr-4 text-right">시총</th>
-              <th class="pb-3 text-right">거래대금</th>
+              <th class="pb-3 pr-4 text-right">거래대금</th>
+              <th class="pb-3 text-center">관제</th>
             </tr>
           </thead>
           <tbody id="universe-body">
-            <tr><td colspan="4" class="py-6 text-center text-slate-500">스캔 전 — [주도주 스캔] 클릭</td></tr>
+            <tr><td colspan="5" class="py-6 text-center text-slate-500">스캔 전 — [주도주 스캔] 클릭</td></tr>
           </tbody>
         </table>
       </div>
@@ -550,15 +584,24 @@
       const body = document.getElementById("universe-body");
       const items = data.items || [];
       if (!items.length) {
-        body.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-slate-500">유니버스 없음 — [주도주 스캔] 클릭</td></tr>';
+        body.innerHTML = '<tr><td colspan="5" class="py-6 text-center text-slate-500">유니버스 없음 — [주도주 스캔] 클릭</td></tr>';
         return;
       }
-      body.innerHTML = items.map((u) => `<tr>
-        <td class="py-2 pr-4 text-slate-500">${u.rank ?? "—"}</td>
-        <td class="py-2 pr-4 font-medium">${u.name || u.code} <span class="text-slate-600 text-xs">${u.code}</span></td>
-        <td class="py-2 pr-4 text-right text-slate-400">${u.market_cap || "—"}</td>
-        <td class="py-2 text-right text-slate-400">${u.volume_amt || "—"}</td>
-      </tr>`).join("");
+      body.innerHTML = items.map((u) => {
+        const code = String(u.code || "").padStart(6, "0");
+        const naverUrl = `https://finance.naver.com/item/main.naver?code=${code}`;
+        return `<tr>
+          <td class="py-2 pr-4 text-slate-500">${u.rank ?? "—"}</td>
+          <td class="py-2 pr-4 font-medium">${u.name || code} <span class="text-slate-600 text-xs">${code}</span></td>
+          <td class="py-2 pr-4 text-right text-slate-400">${u.market_cap || "—"}</td>
+          <td class="py-2 pr-4 text-right text-slate-400">${u.volume_amt || "—"}</td>
+          <td class="py-2 text-center">
+            <a href="${naverUrl}" target="_blank" rel="noopener noreferrer" class="btn-naver-link">
+              <span class="naver-n">N</span>네이버증권
+            </a>
+          </td>
+        </tr>`;
+      }).join("");
     }
 
     function lockControlButtons(locked) {
