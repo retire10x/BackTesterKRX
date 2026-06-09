@@ -292,7 +292,7 @@ v5_5:
       min_market_cap: 90000000000
       max_market_cap: 400000000000
       min_daily_volume_amt: 5000000000
-      top_n_limit: 40
+      top_n_limit: 100
 
 # # 1) 7구간 유니버스만 박제 (수 분~수십 분, KRX/FDR)
 # .\venv\Scripts\python.exe run_v5_relay_portfolio.py --section v5_5

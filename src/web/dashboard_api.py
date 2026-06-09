@@ -179,6 +179,14 @@ def get_dashboard_positions() -> dict[str, object]:
             pass
 
     # ── 3. DB 행 + KIS 현재가 병합 ─────────────────────────────────────
+    # 스캔 결과 마스터 메타에서 한글 종목명 매핑을 보조적으로 로드합니다 (DB name이 비었거나 ticker 코드인 경우 대비)
+    uni = _load_universe_report()
+    uni_name_map = {
+        str(item["code"]).zfill(6): str(item["name"])
+        for item in uni.get("items") or []
+        if item.get("code") and item.get("name")
+    }
+
     positions: list[dict[str, object]] = []
     for r in rows:
         sym = str(r["symbol"]).zfill(6)
@@ -188,9 +196,14 @@ def get_dashboard_positions() -> dict[str, object]:
         profit_rate = kis_info.get("profit_rate")
         if profit_rate is None and entry_price > 0:
             profit_rate = (current_price - entry_price) / entry_price
+
+        db_name = str(r.get("name") or "").strip()
+        name = db_name if (db_name and db_name != sym) else (uni_name_map.get(sym) or db_name or sym)
+
         positions.append(
             {
                 **r,
+                "name": name,
                 "current_price": current_price,
                 "profit_rate": float(profit_rate or 0.0),
             }

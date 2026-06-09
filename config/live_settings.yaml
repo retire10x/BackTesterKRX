@@ -3,19 +3,19 @@ live_trading:
   account:
     broker: "korea_investment"
     mode: "paper"                      # paper: 모의(1천만) | real_money: 실전(0원·주의)
-    bet_amount_per_slot: 50000         # 1슬롯 정액 베팅 5만 원
+    bet_amount_per_slot: 58000         # 1슬롯 정액 베팅 58,000원(수수료 감안)
     min_slots_limit: 1                 # 동적 슬롯 하한
     max_slots_limit: 5                 # 동적 슬롯 상한 (과분산 방지)
-    minimum_operational_capital: 50000 # 총자산 미만 시 매수 셧다운
+    minimum_operational_capital: 58000 # 총자산 미만 시 매수 셧다운
     buy_cost_ratio: 0.00015
     sell_cost_ratio: 0.00195
 
   screener:
     market: "KOSDAQ"
     min_market_cap: 90000000000        # 900억 이상
-    max_market_cap: 400000000000       # 4,000억 이하
+    max_market_cap: 900000000000       # 9,000억 이하
     min_live_volume_amt: 5000000000    # 당일 거래대금 50억 이상
-    top_n: 20
+    top_n: 100
     screener_time: "15:15"             # 장마감 전 유니버스 스캔 (KST)
     universe_output: "config/live_today_universe.json"
     min_history_bars: 122              # 신규 상장주 차단 — MA120 듀얼 슬로프(ma[-1]·ma[-2]) 보장 최소 일봉 수

@@ -361,6 +361,20 @@ class LiveAccountGateway:
             }
 
         data = self._raw_balance()
+        # # ====================================================================
+        # # 추적용 실시간 RAW 로그 배치
+        # # ====================================================================
+        # try:
+        #     raw_output2 = (data.get("output2") or [{}])[0]
+        #     logger.info("==================================================")
+        #     logger.info("🚨 [사령탑 KIS RAW PACKET LOG] 🚨")
+        #     logger.info(f" -> 한투 총평가금액 (tot_evlu_amt): {raw_output2.get('tot_evlu_amt')}원")
+        #     logger.info(f" -> 한투 순수예수금 (dnca_tot_amt): {raw_output2.get('dnca_tot_amt')}원")
+        #     logger.info(f" -> 한투 순수평가금 (tot_evlu_amt2): {raw_output2.get('tot_evlu_amt2')}원")
+        #     logger.info("==================================================")
+        # except Exception as log_err:
+        #     logger.error(f"❌ 로그 출력 중 백엔드 예외 발생: {log_err}")
+        # # ====================================================================        
         out2 = (data.get("output2") or [{}])[0]
 
         # [수정] dnca_tot_amt(예수금 총액·순수 현금 SSOT) 우선 사용.

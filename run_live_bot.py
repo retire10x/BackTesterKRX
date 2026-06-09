@@ -79,7 +79,8 @@ def main() -> None:
     if args.command == "screener":
         engine.run_screener_if_due(force=True)  # SOP 15:10 선제 스캔 (--force 호환)
     elif args.command == "entry":
-        # SOP: 15:10 선제 스캔 후 저장된 유니버스만 사용 (entry 시 재스캔 금지)
+        # 유니버스 스캔 활성화 (스캔 후 진입)
+        engine.run_screener_if_due(force=args.force)
         result = engine.run_entry_scan(force=args.force)
         if int(result.get("executed_count", 0)) > 0:
             engine.save_daily_asset_snapshot()

@@ -1,113 +1,14 @@
-﻿# 📈 프로젝트 진행 일지 (Progress Log)
+# 📈 프로젝트 진행 일지 (Progress Log)
 
 ## 1. 핵심 기능 체크리스트 (Feature Checklist)
-- [x] 기본 이평선(MA{N}) 골든/데드크로스 신호 생성 로직 (`strategy.py`)
-- [x] 다음 봉 시가 체결 및 거래 비용(설정 가능·기본 매수 0.015% / 매도·세금 0.20%) 반영 시뮬레이터 (`simulator.py`, GUI·YAML 연동)
-- [x] 가변 낙폭(Trailing Stop) 상/하단 분리 청산 기능 (`settings.yaml` 연동)
-- [x] 매수 진입 3대 필터(대세 Slope, 돌파 강도, 시간 버퍼) AND 결합 구현
-- [x] 차트 상단 4단 미디어 플레이어 내비게이션 버튼 (⏪, ◀, ▶, ⏩) UI 이동
-- [x] 매매 규칙 v4.6 설정 바 매수/매도 영역 시각적 그룹화 (UI 분리)
-- [x] 차트 매수/매도 화살표 마킹 시점 및 Y축 앵커 위치 보정 (T일 종가 캔들)
-- [x] 차트 마킹 시점 검증 데이터 파일 (`backtest_signal_debug.txt`) 자동 생성 기능
-- [x] 차트 내비게이션 이동 영업일 수 단축 (일/주) 및 툴팁 문구 동기화
-- [x] 시장 선택 ETF(KR) 상장 종목 검색 및 백테스트 연동 (`data_loader.fdr_stock_listing`)
-- [x] 좌측 패널 수수료 입력·종목 실행 이력(FIFO 최대 30)·검색/이력 리스트 더블클릭 즉시 백테스트 (`gui.py`, `gui_helpers.try_build_config`)
-- [x] 백테스트 종목 이력 `output/backtest_history.json` 저장·재실행 시 자동 불러오기 (`gui.py`)
-- [x] 일봉 기준 종목 스크리너(종료일 이전 확정 분만 이용, 최근 N거래일 변동성·거래대금·고점대비 낙폭·거래량건조 순위분위 융합 상위 M개) 목록 출력·연동 (**GUI는 일괄 루프 없이 단일 백테스트**; 검색 결과·이력 더블클릭 포함) 및 CLI 등 (`stock_screener.py`, GUI·CLI·`settings.yaml` `universe.screener`)
-- [x] 스크리너 하드 필터: 종료일 종가 기준 120일선 역배열 종목 제외 (`stock_screener.py`)
-- [x] 스크리너 시총(상장표 Marcap)·MA20/120 추세 하드 게이트, 차트 패닝 일봉 캐시, Harness 매수 세 조건 동시 적용 YAML 옵션
-- [x] 메인 GUI 그리드 가변(weight)·차트 패널 실측 리사이즈·검색/이력/날짜 컴팩트 배치·매수·매도 **동일 행 2열** 카드 내 필터 **2단 행**·**규칙 헤더 Refresh로 조건 반영 차트 재계산** (`gui.py`; PNG 저장 시 `autofmt_xdate` 등 `backtest_chart.py`)
-- [x] **v4.7** 하단 독립 누적수익률 패널 제거(캔들+거래량 2단)·좌패널 **최고/최저 누적 수익률**·GUI **주가 패널 수익률 음영** 토글(`show_return_overlay`)·저장 후 `plt.close(fig)` (`backtest_chart.py`, `metrics.py`, `gui.py`, `gui_helpers.py`)
-- [x] **v4.10** 백테스트 고속 경로: `data_loader` 상장표 TTL·OHLCV LRU, `metrics.defer_chart_render` + `materialize_backtest_chart_png` 로 통계/차트 분리(GUI), `simulator` ndarray 루프, 수익률 오버레이 기본 OFF (`gui.py`·`metrics.py`·`data_loader.py`·`simulator.py`)
-- [x] **v4.11** 차트 교체 시 캔버스 `PhotoImage` 스왑(`itemconfig`)·PNG 생성 대기 중 이전 이미지 유지·차트 툴바 Braille 로딩·연타 시 materialize 티켓 필터 (`gui.py`)
-- [x] **v4.9** 디스플레이·창 크기 반응형 차트 패널(우패널 `grid_propagate(False)`·실측 추정·지연 리페인트 + `metrics.chart_render_px` → mpl `figsize`/DPI·`gui_target` 여백) (`gui.py`, `metrics.py`, `backtest_chart.py`)
-- [x] **v4.12_Beta** 스크리너 모드 「당일 타점(Event) 추적」: 골든+`simulate_single` 진입 필터(`_buy_filters_pass`) 기준 최근 3영업일 전환·이격도 컬럼·정렬(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
-- [x] **v4.13** 스크리너 「김직선 1봉 캔들 추적」: 장대양봉+20일 최대 거래량 기준봉 후 당일 고가돌파/중심선지지(`stock_screener.py`·`gui.py`·`gui_helpers.py`)
-- [x] **v4.14** GUI 라디오 폐지·**순차 AND 파이프라인** 체크(시총 Top100·매수 규칙 종봉·김직선 1봉); `execute_pipelined_screening`·`PipelineScreenerPick`·통합 목록 포맷; YAML `universe.screener_pipeline`
-- [x] **v4.14_Fix** 파이프라인: 시총 상위 게이트와 별개의 **3000억 하한 미적용**·Top-N 표시 **`disp_cap`** 하한
-- [x] **v4.15** `merge_live_trade_panel_into_strategy` 단일 헬퍼로 백테·검색 `strategy` 동기화 · 2단계 스크린은 **골든 OFF 에도 진입 필터 종봉 AND** 적용(`stock_screener`·`gui_helpers`)
-- [x] **v4.16_Patch** 김직선 1봉: 기준봉 거래량 **300% 또는 20일 TOP3**, 고가돌파 허용 `τ ∈ [T-3,T]`, 패턴 문자열 **`고가돌파 (경과일: N일)`**·파이프라인·GUI 동일 정렬 키
-
-- [x] **v3.0** [1단계] Clean-up: v2.0 SRS·`src/v2_*` 모듈 폐기, `load_v3_0_overnight_scalper_data` 로더
-- [x] **v3.0** [2단계] Signal Generator: 거래량 150%·장대양봉 4%·위꼬리≤20% 종가 진입 (`src/v3_signal_generator.py`)
-- [x] **v3.0** [3단계] Execution Engine: 종가 매수·익일 시가 청산·BUY 0.015% / SELL 0.20% 고정 (`src/v3_execution_engine.py`)
-- [x] **v3.0** [4단계] Analytics: OVERNIGHT PERFORMANCE REPORT 단일 출력 (`src/v3_metrics.py`)
-- [x] **v3.0** 인수검증: `main.py --mode cli` 대시보드만·`SELL_COST=0.0020` 고정
-- [x] **v3.0** Code Freeze: `v3_signal_generator`·`v3_execution_engine` 진입/청산 로직 고정
-- [x] **v3.0** 다중 기간 CLI 검증: 세션 A/B/C (`--start`/`--end`만 변경)·`output/v3_multi_period_report.md`
-- [x] **v3.1** Overnight Scanner GUI: 좌측 검색=스캔 트리거·결과 리스트 `코드|종목명|당일상승률|시총|거래대금`(억 반올림·극대 시총 `천억` 축약) 표시 · `fetch_pykrx_marcap_trade_krw_by_code`/상장 시총·종가×거래량 폴백
-- [x] **v3.1** 레이아웃 다이어트: 우측 상단 매매 규칙/요약 로그 제거·차트 뷰어 확장
-- [x] **v3.1** 레거시 네비/단축키 유지: `[⏪][◀][▶][⏩]` + 키 `1/2/7/8` 기간 이동 시 리스트 비갱신
-- [x] **v3.1** 차트 전용 전환: 주도주/이력 더블클릭 시 백테스트 미실행·기간 OHLC 차트만 렌더
-- [x] **v3.1** 스캐너 디버그 보강: KOSPI 전수(`universe_limit=0`)·단계별 생존 카운트 로그 파일 출력
-- [x] **v3.1** 프로덕션 I/O: GUI 차트(`차트 전용`·연기 백테스트 후처리)는 `output/` `.png` 미생성(`render_backtest_chart_png_bytes`·`materialize_backtest_chart_png_bytes`)
-- [x] **v3.15** 차트 상단 수익률 버튼·`show_return_overlay` 레거시 제거 · 5중 이평(5·10·20·60·120일) 토글 체크박스·기간별 두께/색·`line.set_visible`·범례 연동 (`gui.py`, `backtest_chart.py`, `metrics.py`, `gui_helpers.py`)
-- [x] **v3.16** 차트 X축 날짜 제거·가격/거래량 패널 구분선 · 휠 줌+줌 리셋(메모리 PNG 재렌더) (`backtest_chart.py`, `gui.py`)
-- [x] **v3.70** 스캔 파라미터 SSOT: `v3_scan_config` 엄격 YAML(`KeyError`)·`resolve_effective_pullback_scan_params`(세션 오버레이)·엔진 기본 인자 없음·GUI `bootstrap_gui_pullback_scan_ssot` 초기화 순서
-- [x] **v3.75** 해상도별 폰트 가변 차단 (v3.76에서 철회·아래 참고)
-- [x] **v3.76** OS DPI System-Aware: CTk `set_*_scaling` 미호출(기본 OS DPI) · Tk 폰트 양수 pt(11/10/9)
-- [x] **v3.80** 눌림목 실전 필터: t-1 양봉(종가>시가)·t 종가≥전일 중심선 — 벌크·단일·백테스트 AND
-- [x] **v3.85** 유니버스 Top 1000·ALL(0) · Pass4 종가>MA60 (`src/filters.py`)
-- [x] **v3.86** Top ALL 시 KOSPI+KOSDAQ OHLCV·시총 병합 (`pullback_bulk_markets_for_scan`)
-- [x] **v3.70** pykrx 일별 전종목 벌크 OHLCV 로컬 캐시(`data/cache/ohlcv_by_ticker/*.pkl`)·앵커일만 재조회·폴백 스캔도 캐시 조립
-- [x] **v3.30** 주도주 눌림목 스캔: `scan_leader_pullback_candidates_bulk`(t-1 세력·MA20 지지·거래량 급감)·GUI 명칭·세력 배수/눌림 비율 입력
-- [x] **v3.40** 스캔·백테스트 UI 분리: 파라미터 상단·이력 하단·수수료 UI 제거·단일 종목 눌림목 타임라인 백테스트(`pullback_backtest.py`)
-- [x] **v3.45** UI 폴리싱: 차트 패널 구분선 제거·캔버스 중앙 정렬·맑은 고딕 통일·리스트 10pt·날짜 폭 확대·원금/매도 1행·이력 높이 확장
-- [x] **v3.50** 김직선 정배열 추세 필터: 종가>MA120 · MA5≥MA10 — 역배열·우하향 종목 스캔·백테스트 전면 제외
-- [x] **v3.60** 유니버스 콤보(100/300/500)·`last_session.json` 세션 복원·스캔/백테스트 밀리초 타이머·버튼 컴팩트·연한 레드 중단색
-- [x] **v3.65** 좌측 패널 200px 슬림화·파라미터 2단 행·원금|매도 1행·안내 1줄 압축
-- [x] **v3.66** 모멘텀 필터(MA5≥MA10) GUI 토글·YAML `use_momentum_filter`·스캔/백테스트/parity 동기화 · 유니버스 콤보 `Top 100` / `Top` / `Top 500` 라벨
-- [x] **v3.88** 차트 단일 렌더러 `render_stock_chart`·`update_chart_canvas`·`ticker_to_name` SSOT — 더블클릭·⏪◀▶⏩ 내비·이평 토글 공통 경로·상단 종목명 동기화 (`gui.py`)
-- [x] **v3.89** 입력 패널 날짜 행 1개월 단위 기간 이동(◀▶)·종목 선택 시 차트 자동 갱신 (`gui.py`, `data_loader.months_before`)
-- [x] **v3.90** OHLCV pykrx 단일화(벌크 캐시·by_date)·Pass4 MA60·MA120 듀얼 AND·MA5≥MA10 부트스트랩 기본 ON (`filters.py`, `data_loader.py`, `gui.py`, `gui_helpers.py`)
-- [x] **v3.95** Pass4 Perfect Trend Lock: 종가>MA60·MA120 AND **MA60>MA120** 배열성 (`filters.py`, `data_loader.py`, `gui.py`)
-- [x] **v4.00** Pass0 유동성: 시총·당일 거래대금 하한 SSOT(`settings.yaml` v3_0) · 벌크·폴백·단일 판정 (`filters.py`, `v3_scan_config.py`, `data_loader.py`, `gui.py`)
-- [x] **v4.10** 시장/유니버스 분리: 시장=ALL(KOSPI+KOSDAQ)·Top=ALL(선택 시장 전종목) · 리스트 [주]/[닥] · 스캔 스냅샷 고정 (`filters.py`, `data_loader.py`, `gui.py`, `gui_helpers.py`)
-- [x] **v4.15** Pass2 중심선 OR: MA20 터치 회복 **또는** (MA20 위 + t-1 중심선) — 벌크·단일·백테스트 SSOT (`filters.py`, `data_loader.py`, `pullback_backtest.py`, `gui.py`)
-- [x] **v4.20** 스캔 검출 근거 Excel 스냅샷: `src/engine/exporter.py` · Pass0~4 정량 필드 · Disparity5/20 · GUI 📥 근거 버튼 · `outputs/evidences/`
-- [x] **v4.25** OHLC 4대 가격 스냅샷·이격도 락: t0 Open/High/Low/Close Excel 강제 · Pass2 105%/110% 스캔 게이트 SSOT
-- [x] **v4.0** 스마트머니 연쇄 청산 엔진: `scan_smart_money_universe`·`calculate_cascade_backtest` (`src/engine/smart_money_cascade.py`)
-- [x] **v4.0** LG전자(066570) 3개년 연쇄 청산 실행 스크립트 (`run_v4_test.py` · sys.path 방어 · `_load_ohlcv_pykrx_by_date`)
-- [x] **v4.0** 포트폴리오 매니저·전 종목 백테스트 (`portfolio_manager.py`·`run_v4_portfolio.py` · Phase A~D 검증·`outputs/v4_trades.csv`)
-- [x] **v4.0** Phase G 심폐소생 (눌림 -3%·단리 1천만·손절 -5%·익절 +3.5%) — `portfolio_manager` Phase G 진입/청산
-- [x] **v4.0** Phase G 14시나리오 전체 스윕·눌림목 타점 보고 (`run_v4_tune.py` → `outputs/v4_tune_report.md` §눌림목)
-- [x] **v4.0** Phase H 계단식 박스권 쌍바닥(Double Bottom) 타점 엔진 (`portfolio_manager` Phase H 진입/청산 + `run_v4_tune` `combo_phase_h_double_bottom`)
-- [x] **v4.0** Phase H-2 미세 그리드 스윕 CLI (`run_v4_tune.py --phase-h2-grid`) 및 H 파라미터 주입형 엔진 실행
-- [x] **v4.0** Phase H-3 소액 필드 테스트 모드(10만 원·2슬롯·주가 1천~2만 캡) 및 진입 선필터
-- [x] **v4.0** Phase E SSOT — `config/settings.yaml` `v4_0.*` · `src/v4_config.py` · `src/utils/config.py`
-
-- [x] **v4.0** Phase H-3 소액 필드 테스트 백테스트 실행·H-3 진입 차단 버그 3건 수정 (`run_v4_tune.py`·`v4_config.py`·`settings.yaml`)
-
-- [x] **v4.0** Phase H-3 H-2 미세 그리드(28시나리오·field_test 5만) 스윕 (`run_v4_tune.py --phase-h2-grid`)
-- [x] **v4.0** Phase I 코스닥 탄력주 엔진·백테스트 (`combo_phase_i_kosdaq_sniper` — DoD 미달)
-
-- [x] **v4.0** Phase I 소형 그리드(9시나리오·Top-N·실종·기준봉) 스윕 (`run_v4_tune.py --phase-i-grid`)
-
-- [x] **v4.0** Phase H YAML SSOT 동결 (`h2_sl03_tp10_ec20` · field_test · Phase I 폐기)
-
-- [x] **v5.0 ①** SSOT·`PortfolioManagerV5`·변곡점/MA20 청산 (`ma_inflection_sniper`)
-- [x] **v5.0 ②** field_test 920영업일 완주·`v5_run.log`·BUY 94/SELL 93 (Phase A PnL 검증식은 buy_fee 미반영으로 오탐)
-- [x] **v5.1** 고정 유니버스 JSON·`v5_1` SSOT·실행 전 스캔/백테스트 질문 러너
-- [x] **v5.2** Hit & Run 청산(+6%/-3%/3일)·`ma_inflection_hit_and_run`·`v5_2` SSOT (백테스트 사용자 승인 후)
-- [x] **v5.3** 릴레이 7구간·`v5_relay_screener`·`run_v5_relay_portfolio`·PERIOD_RESET·자산 이월 (실행 사용자 승인 후)
-- [x] **v5.4** 장기 대세 필터(`macro_trend_filter` MA60/120)·`ma_inflection_with_macro_filter`·릴레이 기본 `v5_4`
-- [x] **v5.5** 듀얼 우상향(MA60↑·MA120↑·종가>MA120)·`ma_inflection_with_dual_slope_filter`·릴레이 기본 `v5_5`
-- [x] **v5.5.2 FROZEN** SSOT `+8%/-3%/4일` · `outputs/v5_final_report.md` · v5 수치 튜닝 종결
-- [x] **라이브 봇** `config/live_settings.yaml` · `src/live/*` · `run_live_bot.py` (KIS dry_run 기본)
-- [x] **라이브 스크리너** `LiveScreener`(pykrx)·`live_today_universe.json`/`.meta.json` · `scripts/run_live_screener.py`
-- [x] **라이브 KIS** 모의 계좌 `50191458` · `KIS_PAPER_*` · `test_live_gateway.py --live` 잔고 1천만 검증
-- [x] **라이브 마스터** `run_live_bot.py`(기본=master) · `live_master.py` 15:15/15:20/장중0.5s 자동
-- [x] **라이브 SOP** `docs/live_SOP_guide.md` 하이브리드(08:30 마스터·15:10/16 수동·15:20 자동·15:40 종료)
-- [x] **v6.0 [1단계]** SQLite 스키마 설계 · `src/live/schema.sql` · `docs/작업지시서-v6.0-DB-웹대시보드-로드맵.md`
-- [x] **v6.0 [2단계]** `live_db.py` · JSON→DB 장부 전환 · 청산 `trading_history` 기록
-- [x] **v6.0 [3단계]** FastAPI REST API · `run_live_dashboard.py` · `/api/*` 5종
-- [x] **v6.0 [4단계]** Tailwind + Chart.js 대시보드 UI · `src/web/static/index.html`
-- [x] **v6.4** 실전 장외 격발 시 한투 API 거부 패킷 100% 노출 · `rt_cd != "0"` 장부·잔고 갱신 인터록 · 대시보드 danger 토스트
-- [x] **v6.5** 데이터 출처 이원화 — `/api/positions` KIS 직결 · `/api/summary`·차트·복기 DB 자체 연산
-- [x] **v6.6** `run_live_bot` 마스터 — 08:50 KIS→DB 동기화 · 15:20 rt_cd 인터록 · 15:30 hold_days 벌크업
-- [ ] **v5.0** (④ 스코프 아웃) 파라미터 그리드 `run_v5_tune.py` — v5.5.2 동결 정책
+- [x] **v6.19** 대시보드 자산 성장 곡선 Y축 라벨 1만 원 단위 소수점 정밀 표기 (`src/web/static/index.html`)
 
 ## 2. 최신 변경 이력 (Changelog)
+
+### 2026-06-09 (**v6.19**) 대시보드 자산 성장 곡선 Y축 라벨 정밀도 보정
+- **Y축 라벨:** `Math.round` 절사 방식에서 `toLocaleString()` 소수점 정밀 표기 방식으로 변경
+- **효과:** 1,000만 원 단위 이하의 미세한 자산 변동(예: 1,004.8만)을 차트에서 즉시 식별 가능
+- **변경 파일:** `src/web/static/index.html`
 
 ### 2026-06-08 (**v6.18**) 대시보드 유니버스 테이블 네이버증권 핫링크 탑재
 - **유니버스 후보 종목 테이블:** `관제` 컬럼 신설 — `📊 N네이버증권` 버튼 (새 탭 `target="_blank"`)
