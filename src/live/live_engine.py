@@ -67,12 +67,9 @@ def _norm_date_key(value: str) -> str:
 def _is_same_day_exit_protected(pos: LivePosition, today_s: str) -> bool:
     """
     익일 매도 원칙 인터록 — 당일 매수 종목은 장중 청산 감시 대상에서 제외.
-    매수일=오늘이거나 hold_days==0(15:30 정산 전)이면 패스.
-    hold_days 증가는 `execute_market_close_processing` 15:30 일괄 벌크업 담당.
+    매수일=오늘 이면 패스. (hold_days의 0 체크는 동기화 정합성 이슈 유발하므로 제거).
     """
-    if _norm_date_key(pos.entry_date) == _norm_date_key(today_s):
-        return True
-    return int(pos.hold_days) == 0
+    return _norm_date_key(pos.entry_date) == _norm_date_key(today_s)
 
 
 def _load_positions_json(path: str) -> list[LivePosition]:
@@ -299,6 +296,10 @@ class LiveTradingEngine:
         if positions:
             _save_positions(self, positions, names=names)
             logger.info("📅 [hold_days 벌크업] %d종 보유일수 +1 반영", bumped)
+
+        # KIS 동시호가 체결 처리 및 전산 반영 지연(약 15초) 감안하여 대기 후 동기화 진행
+        logger.info("⏳ KIS 정규장 마감 체결 전산 반영 대기 (15초)...")
+        time.sleep(15.0)
 
         self.sync_positions_from_kis()
         self.print_positions_snapshot()

@@ -1,0 +1,77 @@
+2026-06-10 10:32:18,559 [INFO] \U0001f4f1 텔레그램 알림 활성화 (chat_id=6238442797)
+2026-06-10 10:32:18,596 [INFO] \U0001f4e6 SQLite 스키마 초기화 \u2014 D:\develop\BackTesterKRX\data\live_trading.db
+2026-06-10 10:32:18,600 [INFO] \U0001f4e1 KIS OAuth2 토큰 발급 (paper)
+2026-06-10 10:32:21,389 [INFO] \u2705 OAuth2 토큰 발급 성공
+2026-06-10 10:32:21,396 [INFO] \U0001f680 [무인 자동화 봇] v5.5.2 코스닥 스나이퍼 완전 자동 마스터 엔진
+2026-06-10 10:32:21,396 [INFO]    스케줄 KST: 08:50 KIS동기화 · 15:15 스캔 · 15:20 진입 · 15:30 정산 · 09:00~15:30 감시(0.5s) · dry_run=False
+2026-06-10 10:32:21,400 [INFO] [실시간 실전 감시 시작] 현재 추적 중인 종목: ['052900', '357880'] · poll=0.5s
+2026-06-10 10:41:40,322 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 10:41:40 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 10:51:40,511 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 10:51:40 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:01:40,582 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:01:40 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:11:40,708 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:11:40 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:21:41,109 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:21:41 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:31:41,582 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:31:41 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:41:41,958 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:41:41 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 11:51:42,226 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 11:51:42 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:01:42,328 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:01:42 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:11:42,776 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:11:42 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:21:43,223 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:21:43 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:31:43,693 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:31:43 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:41:43,821 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:41:43 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 12:51:43,988 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 12:51:43 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 13:01:44,256 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 13:01:44 | 봇 엔진 이상 없음 (구동 중)
+2026-06-10 13:11:44,457 [INFO] \U0001f493 [Engine Heartbeat] 2026-06-10 13:11:44 | 봇 엔진 이상 없음 (구동 중)
+^C2026-06-10 13:24:16,489 [INFO] \U0001f4f1 텔레그램 알림 활성화 (chat_id=6238442797)
+2026-06-10 13:24:16,511 [INFO] \U0001f4e6 SQLite 스키마 초기화 \u2014 D:\develop\BackTesterKRX\data\live_trading.db
+2026-06-10 13:24:16,519 [INFO] \U0001f4e1 KIS OAuth2 토큰 발급 (paper)
+2026-06-10 13:24:19,224 [INFO] \u2705 OAuth2 토큰 발급 성공
+2026-06-10 13:24:19,270 [INFO] \U0001f680 [무인 자동화 봇] v5.5.2 코스닥 스나이퍼 완전 자동 마스터 엔진
+2026-06-10 13:24:19,270 [INFO]    스케줄 KST: 08:50 KIS동기화 · 15:15 스캔 · 15:20 진입 · 15:30 정산 · 09:00~15:30 감시(0.5s) · dry_run=False
+2026-06-10 13:24:19,324 [INFO] [실시간 실전 감시 시작] 현재 추적 중인 종목: ['052900', '357880'] · poll=0.5s
+2026-06-10 13:24:19,735 [INFO] \U0001f6a8 [청산] 357880 | STOP_LOSS @ 4,316
+2026-06-10 13:24:20,243 [INFO]    청산 357880 STOP_LOSS hold=1d
+2026-06-10 13:26:20,179 [WARNING] Matplotlib is building the font cache; this may take a moment.
+2026-06-10 13:26:23,360 [INFO] Failed to open font file C:\Windows\Fonts\NotoSerifKR-VF.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\NotoSerifKR-VF.ttf'
+2026-06-10 13:26:23,360 [INFO] Failed to open font file C:\Windows\Fonts\constan.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\constan.ttf'
+2026-06-10 13:26:23,360 [INFO] Failed to open font file C:\Windows\Fonts\georgiai.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\georgiai.ttf'
+2026-06-10 13:26:23,361 [INFO] Failed to open font file C:\Windows\Fonts\HTOWERTI.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\HTOWERTI.TTF'
+2026-06-10 13:26:23,361 [INFO] Failed to open font file C:\Windows\Fonts\SegUIVar.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\SegUIVar.ttf'
+2026-06-10 13:26:23,361 [INFO] Failed to open font file C:\Windows\Fonts\simsunb.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\simsunb.ttf'
+2026-06-10 13:26:23,361 [INFO] Failed to open font file C:\Windows\Fonts\GOUDOSB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\GOUDOSB.TTF'
+2026-06-10 13:26:23,362 [INFO] Failed to open font file C:\Windows\Fonts\GOUDYSTO.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\GOUDYSTO.TTF'
+2026-06-10 13:26:23,362 [INFO] Failed to open font file C:\Windows\Fonts\verdana.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\verdana.ttf'
+2026-06-10 13:26:23,362 [INFO] Failed to open font file C:\Windows\Fonts\couri.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\couri.ttf'
+2026-06-10 13:26:23,362 [INFO] Failed to open font file C:\Windows\Fonts\symbol.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\symbol.ttf'
+2026-06-10 13:26:23,363 [INFO] Failed to open font file C:\Windows\Fonts\corbelb.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\corbelb.ttf'
+2026-06-10 13:26:23,363 [INFO] Failed to open font file C:\Windows\Fonts\taile.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\taile.ttf'
+2026-06-10 13:26:23,363 [INFO] Failed to open font file C:\Windows\Fonts\FRAHV.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\FRAHV.TTF'
+2026-06-10 13:26:23,363 [INFO] Failed to open font file C:\Program Files\Common Files\Thales\openJDK\jre\lib\fonts\DejaVuSansMono.ttf: [Errno 13] Permission denied: 'C:\\Program Files\\Common Files\\Thales\\openJDK\\jre\\lib\\fonts\\DejaVuSansMono.ttf'
+2026-06-10 13:26:23,364 [INFO] Failed to open font file C:\Windows\Fonts\segoesc.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\segoesc.ttf'
+2026-06-10 13:26:23,364 [INFO] Failed to open font file C:\Windows\Fonts\COLONNA.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\COLONNA.TTF'
+2026-06-10 13:26:23,364 [INFO] Failed to open font file C:\Program Files\Common Files\Thales\openJDK\jre\lib\fonts\DejaVuSansCondensed-Bold.ttf: [Errno 13] Permission denied: 'C:\\Program Files\\Common Files\\Thales\\openJDK\\jre\\lib\\fonts\\DejaVuSansCondensed-Bold.ttf'
+2026-06-10 13:26:23,364 [INFO] Failed to open font file C:\Windows\Fonts\courbd.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\courbd.ttf'
+2026-06-10 13:26:23,365 [INFO] Failed to open font file C:\Windows\Fonts\BAUHS93.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\BAUHS93.TTF'
+2026-06-10 13:26:23,365 [INFO] Failed to open font file C:\Windows\Fonts\BELLB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\BELLB.TTF'
+2026-06-10 13:26:23,365 [INFO] Failed to open font file C:\Windows\Fonts\BRLNSDB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\BRLNSDB.TTF'
+2026-06-10 13:26:23,365 [INFO] Failed to open font file C:\Windows\Fonts\GILBI___.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\GILBI___.TTF'
+2026-06-10 13:26:23,366 [INFO] Failed to open font file C:\Windows\Fonts\FRAHVIT.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\FRAHVIT.TTF'
+2026-06-10 13:26:23,366 [INFO] Failed to open font file C:\Windows\Fonts\palai.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\palai.ttf'
+2026-06-10 13:26:23,366 [INFO] Failed to open font file C:\Windows\Fonts\l_10646.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\l_10646.ttf'
+2026-06-10 13:26:23,366 [INFO] Failed to open font file C:\Windows\Fonts\segmdl2.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\segmdl2.ttf'
+2026-06-10 13:26:23,367 [INFO] Failed to open font file C:\Windows\Fonts\GOTHICBI.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\GOTHICBI.TTF'
+2026-06-10 13:26:23,367 [INFO] Failed to open font file C:\Windows\Fonts\LFAXDI.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\LFAXDI.TTF'
+2026-06-10 13:26:23,367 [INFO] Failed to open font file C:\Windows\Fonts\H2GSRB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\H2GSRB.TTF'
+2026-06-10 13:26:23,368 [INFO] Failed to open font file C:\Windows\Fonts\arialbi.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\arialbi.ttf'
+2026-06-10 13:26:23,368 [INFO] Failed to open font file C:\Windows\Fonts\SCHLBKB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\SCHLBKB.TTF'
+2026-06-10 13:26:23,368 [INFO] Failed to open font file C:\Windows\Fonts\webdings.ttf: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\webdings.ttf'
+2026-06-10 13:26:23,369 [INFO] Failed to open font file C:\Windows\Fonts\TCCEB.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\TCCEB.TTF'
+2026-06-10 13:26:23,369 [INFO] Failed to open font file C:\Windows\Fonts\Nirmala.ttc: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\Nirmala.ttc'
+2026-06-10 13:26:23,369 [INFO] Failed to open font file C:\Windows\Fonts\H2MJRE.TTF: [Errno 13] Permission denied: 'C:\\Windows\\Fonts\\H2MJRE.TTF'
+2026-06-10 13:27:27,356 [INFO] generated new fontManager
+2026-06-10 13:27:30,243 [INFO] \U0001f4f1 텔레그램 알림 활성화 (chat_id=6238442797)
+2026-06-10 13:27:30,291 [INFO] \U0001f4e6 SQLite 스키마 초기화 \u2014 D:\develop\BackTesterKRX\data\live_trading.db
+2026-06-10 13:27:30,294 [INFO] \U0001f4e1 KIS OAuth2 토큰 발급 (paper)
+2026-06-10 13:27:33,658 [INFO] \u2705 OAuth2 토큰 발급 성공
+2026-06-10 13:27:33,660 [INFO] \U0001f680 [무인 자동화 봇] v5.5.2 코스닥 스나이퍼 완전 자동 마스터 엔진
+2026-06-10 13:27:33,660 [INFO]    스케줄 KST: 08:50 KIS동기화 · 15:15 스캔 · 15:20 진입 · 15:30 정산 · 09:00~15:30 감시(0.5s) · dry_run=False
+2026-06-10 13:27:33,663 [INFO] [실시간 실전 감시 시작] 현재 추적 중인 종목: ['052900'] · poll=0.5s
