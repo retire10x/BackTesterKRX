@@ -24,14 +24,35 @@ if project_root not in sys.path:
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-)
-# matplotlib 최초 폰트 캐시 스캔 시 Windows .TTF Permission denied 노이즈 억제
-logging.getLogger("matplotlib").setLevel(logging.WARNING)
-logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+def _setup_logging() -> None:
+    """UTF-8 파일 로그 — Windows cmd >> 리다이렉트(CP949) 한글 깨짐 방지."""
+    log_dir = os.path.join(project_root, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "live_bot.log")
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(fmt)
+    root.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(fmt)
+    root.addHandler(console_handler)
+
+    # matplotlib 최초 폰트 캐시 스캔 시 Windows .TTF Permission denied 노이즈 억제
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
+
+
+_setup_logging()
 
 
 def _load_env_file(path: str) -> None:
