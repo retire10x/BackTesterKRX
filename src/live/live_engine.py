@@ -25,6 +25,7 @@ from src.live.live_account import (
 from src.overnight_parity import prime_project_dotenv_from_root
 from src.live.live_config import LiveTradingConfig, load_live_config, resolve_live_paths
 from src.live.live_db import (
+    _load_position_names,
     ensure_db_ready,
     insert_trading_history,
     load_holding_positions,
@@ -208,7 +209,7 @@ class LiveTradingEngine:
         """한투 API 실잔고·보유종목 → 로컬 SQLite 장부 강제 동기화."""
         logger.info("📡 [장개시 전 전산 동기화] 한투 잔고 조회 시작")
         local = {p.code: p for p in _load_positions(self)}
-        names = self._load_universe_names()
+        names = self._load_all_names()
         today = _now_kst().strftime("%Y-%m-%d")
 
         try:
@@ -288,7 +289,7 @@ class LiveTradingEngine:
         """15:30 장마감 — hold_days 일괄 +1 · KIS 자산 스냅샷."""
         logger.info("⏰ [스케줄러 트리거] 15:30 정규장 마감 정산")
         positions = _load_positions(self)
-        names = self._load_universe_names()
+        names = self._load_all_names()
         bumped = 0
         for pos in positions:
             pos.hold_days += 1
@@ -332,9 +333,37 @@ class LiveTradingEngine:
         except Exception:
             return {}
 
-    def _display_name(self, code: str, names: dict[str, str]) -> str:
+    def _load_all_names(self) -> dict[str, str]:
+        """유니버스 메타 + DB 보유종목명 병합."""
+        names = self._load_universe_names()
+        if use_json_fallback():
+            return names
+        for c6, raw in _load_position_names(self.db_path).items():
+            n = str(raw or "").strip()
+            if n and n != c6:
+                names.setdefault(c6, n)
+        return names
+
+    def _resolve_stock_name(self, code: str, names: dict[str, str] | None = None) -> str:
+        """종목명 조회 — 메타/DB/pykrx 순 폴백 (텔레그램·장부 표기용)."""
         c6 = str(code).zfill(6)
-        return names.get(c6) or c6
+        pool = names if names is not None else self._load_all_names()
+        hit = str(pool.get(c6) or "").strip()
+        if hit and hit != c6:
+            return hit
+        if not use_json_fallback():
+            db_hit = str(_load_position_names(self.db_path).get(c6) or "").strip()
+            if db_hit and db_hit != c6:
+                return db_hit
+        try:
+            from pykrx import stock
+
+            py_hit = str(stock.get_market_ticker_name(c6) or "").strip()
+            if py_hit:
+                return py_hit
+        except Exception:
+            pass
+        return c6
 
     def send_order_kis(self, code: str, qty: int, price: float) -> dict[str, Any]:
         """KIS 시장가 주문 — 실전(LIVE_DRY_RUN=0) 시 원본 응답 패킷 100% 노출."""
@@ -378,7 +407,7 @@ class LiveTradingEngine:
         tg_client.send_message(
             build_exit_message(
                 code=pos.code,
-                name=name or pos.code,
+                name=name or self._resolve_stock_name(pos.code),
                 entry_price=pos.entry_price,
                 exit_price=exit_price,
                 quantity=pos.qty,
@@ -402,7 +431,7 @@ class LiveTradingEngine:
         uni_path = self.paths["universe_json"]
         logger.info("📂 유니버스 로드 — %s (재스캔 없음)", uni_path)
         codes = load_live_universe(config=self.cfg, project_root=self.root)
-        names = self._load_universe_names()
+        names = self._load_all_names()
         positions = _load_positions(self)
         executed = 0
         rejected = 0
@@ -424,7 +453,7 @@ class LiveTradingEngine:
 
         for idx, code in enumerate(codes, 1):
             c6 = str(code).zfill(6)
-            label = self._display_name(c6, names)
+            label = self._resolve_stock_name(c6, names)
 
             try:
                 self.gateway.check_dynamic_slot_lock(snapshot=snap, local_positions=positions)
@@ -589,7 +618,7 @@ class LiveTradingEngine:
 
         now = _now_kst()
         today_s = now.strftime("%Y-%m-%d")
-        names = self._load_universe_names()
+        names = self._load_all_names()
         remaining: list[LivePosition] = []
 
         for pos in positions:
@@ -626,7 +655,7 @@ class LiveTradingEngine:
                 exit_price=exit_px,
                 exit_type=exit_type,
                 exit_date=today_s,
-                name=self._display_name(pos.code, names),
+                name=self._resolve_stock_name(pos.code, names),
             )
             logger.info("   청산 %s %s hold=%dd", pos.code, exit_type, pos.hold_days)
 
@@ -652,7 +681,7 @@ class LiveTradingEngine:
                     exit_price=exit_px,
                     exit_type="TIME_STOP_EOD",
                     exit_date=today_s,
-                    name=self._display_name(pos.code, names),
+                    name=self._resolve_stock_name(pos.code, names),
                 )
             _save_positions(self, eod_remaining, names=names)
             return len(eod_remaining)

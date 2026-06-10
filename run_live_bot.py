@@ -29,6 +29,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
+# matplotlib 최초 폰트 캐시 스캔 시 Windows .TTF Permission denied 노이즈 억제
+logging.getLogger("matplotlib").setLevel(logging.WARNING)
+logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 
 
 def _load_env_file(path: str) -> None:
