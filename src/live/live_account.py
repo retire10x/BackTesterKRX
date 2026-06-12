@@ -308,7 +308,14 @@ class LiveAccountGateway:
 
     def _fetch_current_price(self, symbol: str) -> int:
         """주식현재가 시세 (FHKST01010100)."""
+        return int(self.fetch_quote_bar(symbol)["close"])
+
+    def fetch_quote_bar(self, symbol: str) -> dict[str, float]:
+        """당일 OHLC 근사 — KIS 현재가 API (장중 감시 SSOT)."""
         c6 = str(symbol).zfill(6)
+        if self.dry_run:
+            return {"open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0}
+
         url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price"
         params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": c6}
         data = self._get_json_with_retry(
@@ -318,10 +325,23 @@ class LiveAccountGateway:
             label="현재가 조회",
         )
         output = data.get("output") or {}
-        price = int(output.get("stck_prpr") or 0)
-        if price <= 0:
+
+        def _px(key: str, fallback: float = 0.0) -> float:
+            raw = output.get(key)
+            if raw is None or raw == "":
+                return fallback
+            try:
+                return float(str(raw).replace(",", ""))
+            except ValueError:
+                return fallback
+
+        close = _px("stck_prpr")
+        if close <= 0:
             raise RuntimeError(f"유효하지 않은 현재가: {c6}")
-        return price
+        open_px = _px("stck_oprc", close)
+        high = _px("stck_hgpr", max(open_px, close))
+        low = _px("stck_lwpr", min(open_px, close))
+        return {"open": open_px, "high": high, "low": low, "close": close}
 
     @staticmethod
     def _parse_money(value: object) -> float:
@@ -739,4 +759,8 @@ class LiveAccountGateway:
         if response.status_code != 200:
             logger.error("❌ 매도 실패: %s", response.text)
             return False
-        return response.json()
+        body = response.json()
+        if str(body.get("rt_cd", "1")) != "0":
+            logger.error("❌ 매도 거부: %s", body)
+            return body
+        return body

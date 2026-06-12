@@ -49,3 +49,14 @@ CREATE TABLE IF NOT EXISTS universe_candidates (
 );
 
 CREATE INDEX IF NOT EXISTS idx_universe_candidates_scan_date ON universe_candidates(scan_date);
+
+-- 매수 체결 SSOT — KIS sync 지연·장부 유실 시 entry_date 복원용
+CREATE TABLE IF NOT EXISTS entry_ledger (
+    symbol       TEXT PRIMARY KEY,
+    name         TEXT NOT NULL DEFAULT '',
+    entry_date   TEXT NOT NULL,
+    entry_price  REAL NOT NULL CHECK (entry_price > 0),
+    quantity     INTEGER NOT NULL CHECK (quantity > 0),
+    hold_days    INTEGER NOT NULL DEFAULT 0 CHECK (hold_days >= 0),
+    recorded_at  TEXT NOT NULL
+);

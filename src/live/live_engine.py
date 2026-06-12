@@ -29,7 +29,10 @@ from src.live.live_db import (
     ensure_db_ready,
     insert_trading_history,
     load_holding_positions,
+    lookup_entry_ledger,
     persist_universe_candidates_from_meta,
+    record_entry_ledger,
+    remove_entry_ledger,
     save_holding_positions,
     upsert_daily_snapshot,
     use_json_fallback,
@@ -44,6 +47,9 @@ from src.automation.telegram_client import (
 
 KST = ZoneInfo("Asia/Seoul")
 logger = logging.getLogger("LiveEngine")
+# KIS 15:20 체결이 장마감 sync(15:30)에 미반영될 수 있음 — 로컬 장부 유지 일수
+KIS_SETTLEMENT_GRACE_DAYS = 2
+KIS_CLOSE_SYNC_WAIT_SEC = 60.0
 
 
 def _now_kst() -> datetime:
@@ -66,11 +72,37 @@ def _norm_date_key(value: str) -> str:
 
 
 def _is_same_day_exit_protected(pos: LivePosition, today_s: str) -> bool:
-    """
-    익일 매도 원칙 인터록 — 당일 매수 종목은 장중 청산 감시 대상에서 제외.
-    매수일=오늘 이면 패스. (hold_days의 0 체크는 동기화 정합성 이슈 유발하므로 제거).
-    """
+    """하위 호환 별칭 — `_blocks_intraday_exit` 사용 권장."""
     return _norm_date_key(pos.entry_date) == _norm_date_key(today_s)
+
+
+def _blocks_intraday_exit(pos: LivePosition, now: datetime, entry_time_hm: str) -> bool:
+    """
+    당일 매수 청산 정책 — 15:20 진입 시각 **이전**에만 장중 TP/SL 차단.
+    진입 시각 이후(15:20~15:30) 및 익일부터는 손절·익절 감시 허용.
+    (구: 당일 전면 차단 → KIS sync 오류 시 +8% 익절 영구 누락 버그 유발)
+    """
+    today_s = now.strftime("%Y-%m-%d")
+    if _norm_date_key(pos.entry_date) != _norm_date_key(today_s):
+        return False
+    return not _at_or_after(now, entry_time_hm)
+
+
+def _days_since_entry(entry_date: str, today_s: str) -> int:
+    a = datetime.strptime(_norm_date_key(entry_date), "%Y%m%d").date()
+    b = datetime.strptime(_norm_date_key(today_s), "%Y%m%d").date()
+    return (b - a).days
+
+
+def _sell_order_ok(result: bool | dict[str, Any]) -> bool:
+    """KIS 매도 응답 성공 여부."""
+    if result is False or result is None:
+        return False
+    if result is True:
+        return True
+    if isinstance(result, dict):
+        return str(result.get("rt_cd", "1")) == "0"
+    return bool(result)
 
 
 def _load_positions_json(path: str) -> list[LivePosition]:
@@ -161,8 +193,14 @@ def fetch_ohlcv_history(
     return df.sort_index()
 
 
-def fetch_intraday_bar(code: str) -> dict[str, float] | None:
-    """당일 봉 근사 — FDR 최신 일봉(실시간은 KIS 시세 API로 교체 가능)."""
+def fetch_intraday_bar(code: str, *, gateway: LiveAccountGateway | None = None) -> dict[str, float] | None:
+    """당일 봉 — KIS 실시간 우선, 실패 시 FDR 일봉 폴백."""
+    if gateway is not None and not gateway.dry_run:
+        try:
+            return gateway.fetch_quote_bar(code)
+        except Exception as exc:
+            logger.debug("KIS 시세 폴백(FDR): %s — %s", code, exc)
+
     df = fetch_ohlcv_history(code, lookback_calendar_days=5)
     if df.empty:
         return None
@@ -219,22 +257,45 @@ class LiveTradingEngine:
             return {"synced_count": 0, "error": str(e)}
 
         synced: list[LivePosition] = []
+        kis_symbols: set[str] = set()
         for item in balances.get("positions") or []:
             symbol = str(item.get("symbol", "")).zfill(6)
             qty = int(item.get("quantity") or 0)
             if qty <= 0:
                 continue
+            kis_symbols.add(symbol)
             avg = float(item.get("entry_price") or 0)
             prev = local.get(symbol)
+            ledger = (
+                lookup_entry_ledger(self.db_path, symbol)
+                if not use_json_fallback()
+                else None
+            )
             if prev:
                 synced.append(
                     LivePosition(
                         code=symbol,
                         qty=qty,
-                        entry_price=avg,
+                        entry_price=avg if avg > 0 else prev.entry_price,
                         entry_date=prev.entry_date,
                         hold_days=prev.hold_days,
                     )
+                )
+            elif ledger:
+                synced.append(
+                    LivePosition(
+                        code=symbol,
+                        qty=qty,
+                        entry_price=avg if avg > 0 else ledger.entry_price,
+                        entry_date=ledger.entry_date,
+                        hold_days=ledger.hold_days,
+                    )
+                )
+                logger.info(
+                    "📒 [entry_ledger 복원] %s entry_date=%s hold=%dd",
+                    symbol,
+                    ledger.entry_date,
+                    ledger.hold_days,
                 )
             else:
                 synced.append(
@@ -246,11 +307,38 @@ class LiveTradingEngine:
                         hold_days=0,
                     )
                 )
+                logger.warning(
+                    "⚠️ [KIS 신규] %s — ledger 없음, entry_date=%s (수동 보정 필요할 수 있음)",
+                    symbol,
+                    today,
+                )
             item_name = str(item.get("name") or "").strip()
             if item_name:
                 names[symbol] = item_name
 
+        # KIS 체결 지연 — 로컬에만 있는 최근 매수는 grace 기간 동안 유지
+        for symbol, prev in local.items():
+            if symbol in kis_symbols:
+                continue
+            age = _days_since_entry(prev.entry_date, today)
+            if age <= KIS_SETTLEMENT_GRACE_DAYS:
+                synced.append(prev)
+                logger.warning(
+                    "⏳ [KIS 미반영 유지] %s entry=%s (+%dd, grace=%dd)",
+                    symbol,
+                    prev.entry_date,
+                    age,
+                    KIS_SETTLEMENT_GRACE_DAYS,
+                )
+
         _save_positions(self, synced, names=names)
+        if not use_json_fallback():
+            for pos in synced:
+                record_entry_ledger(
+                    self.db_path,
+                    pos,
+                    name=names.get(pos.code, ""),
+                )
 
         if not use_json_fallback():
             upsert_daily_snapshot(
@@ -297,10 +385,20 @@ class LiveTradingEngine:
         if positions:
             _save_positions(self, positions, names=names)
             logger.info("📅 [hold_days 벌크업] %d종 보유일수 +1 반영", bumped)
+            if not use_json_fallback():
+                for pos in positions:
+                    record_entry_ledger(
+                        self.db_path,
+                        pos,
+                        name=names.get(pos.code, ""),
+                    )
 
-        # KIS 동시호가 체결 처리 및 전산 반영 지연(약 15초) 감안하여 대기 후 동기화 진행
-        logger.info("⏳ KIS 정규장 마감 체결 전산 반영 대기 (15초)...")
-        time.sleep(15.0)
+        # KIS 동시호가 체결 처리 및 전산 반영 지연 감안하여 대기 후 동기화 진행
+        logger.info(
+            "⏳ KIS 정규장 마감 체결 전산 반영 대기 (%.0f초)...",
+            KIS_CLOSE_SYNC_WAIT_SEC,
+        )
+        time.sleep(KIS_CLOSE_SYNC_WAIT_SEC)
 
         self.sync_positions_from_kis()
         self.print_positions_snapshot()
@@ -420,6 +518,8 @@ class LiveTradingEngine:
                 self.on_exit_recorded(pos, name, exit_price, exit_type)
             except Exception:
                 logger.exception("on_exit_recorded 콜백 오류")
+        if not use_json_fallback():
+            remove_entry_ledger(self.db_path, pos.code)
 
     def run_entry_scan(self, *, force: bool = False) -> dict[str, Any]:
         """진입 연산. 반환=체결·거부 집계 dict."""
@@ -534,6 +634,8 @@ class LiveTradingEngine:
                 positions.append(new_pos)
                 executed += 1
                 _save_positions(self, positions, names=names)
+                if not use_json_fallback():
+                    record_entry_ledger(self.db_path, new_pos, name=label)
                 spent = qty * last_close * (1.0 + self.cfg.account.buy_cost_ratio)
                 snap = snapshot_after_local_fill(
                     snap, positions, cash_spent=spent, account=self.cfg.account
@@ -622,11 +724,11 @@ class LiveTradingEngine:
         remaining: list[LivePosition] = []
 
         for pos in positions:
-            if _is_same_day_exit_protected(pos, today_s):
+            if _blocks_intraday_exit(pos, now, self.strat.entry_time):
                 remaining.append(pos)
                 continue
 
-            bar = fetch_intraday_bar(pos.code)
+            bar = fetch_intraday_bar(pos.code, gateway=self.gateway)
             if bar is None:
                 remaining.append(pos)
                 continue
@@ -644,12 +746,20 @@ class LiveTradingEngine:
                 continue
 
             exit_px, exit_type = exit_info
-            self.gateway.sell_all(
+            sell_result = self.gateway.sell_all(
                 pos.code,
                 pos.qty,
                 exit_type=exit_type,
                 dry_run_note=f"@ {exit_px:,.0f}",
             )
+            if not _sell_order_ok(sell_result):
+                logger.error(
+                    "❌ [청산 주문 실패] %s %s — 장부 유지 (재시도 대기)",
+                    pos.code,
+                    exit_type,
+                )
+                remaining.append(pos)
+                continue
             self._record_exit(
                 pos,
                 exit_price=exit_px,
@@ -665,17 +775,21 @@ class LiveTradingEngine:
         if positions and _at_or_after(now, self.cfg.watch.market_close):
             eod_remaining: list[LivePosition] = []
             for pos in positions:
-                if _is_same_day_exit_protected(pos, today_s):
+                if _blocks_intraday_exit(pos, now, self.strat.entry_time):
                     eod_remaining.append(pos)
                     continue
-                bar = fetch_intraday_bar(pos.code)
+                bar = fetch_intraday_bar(pos.code, gateway=self.gateway)
                 exit_px = float(bar["close"]) if bar else pos.entry_price
-                self.gateway.sell_all(
+                sell_result = self.gateway.sell_all(
                     pos.code,
                     pos.qty,
                     exit_type="TIME_STOP_EOD",
                     dry_run_note="장마감",
                 )
+                if not _sell_order_ok(sell_result):
+                    logger.error("❌ [장마감 청산 실패] %s — 장부 유지", pos.code)
+                    eod_remaining.append(pos)
+                    continue
                 self._record_exit(
                     pos,
                     exit_price=exit_px,
@@ -696,7 +810,7 @@ class LiveTradingEngine:
             return
         print(f"📊 당일 포지션 스냅샷 ({len(positions)}종)")
         for p in positions:
-            bar = fetch_intraday_bar(p.code)
+            bar = fetch_intraday_bar(p.code, gateway=self.gateway)
             close = bar["close"] if bar else p.entry_price
             pnl = (close / p.entry_price - 1.0) * 100.0 if p.entry_price > 0 else 0.0
             print(

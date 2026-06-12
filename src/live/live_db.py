@@ -242,7 +242,107 @@ def migrate_from_json(db_path: str, positions_json_path: str) -> int:
         len(positions),
         positions_json_path,
     )
-    return len(positions)
+    return len(positions            )
+
+
+def record_entry_ledger(
+    db_path: str,
+    pos: LivePosition,
+    *,
+    name: str = "",
+) -> None:
+    """매수 체결 SSOT — KIS sync 지연 시 entry_date 복원."""
+    c6 = str(pos.code).zfill(6)
+    now = _now_kst_iso()
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO entry_ledger
+                (symbol, name, entry_date, entry_price, quantity, hold_days, recorded_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+                name = excluded.name,
+                entry_date = excluded.entry_date,
+                entry_price = excluded.entry_price,
+                quantity = excluded.quantity,
+                hold_days = excluded.hold_days,
+                recorded_at = excluded.recorded_at
+            """,
+            (
+                c6,
+                name or "",
+                _to_db_date(pos.entry_date),
+                float(pos.entry_price),
+                int(pos.qty),
+                int(pos.hold_days),
+                now,
+            ),
+        )
+
+
+def lookup_entry_ledger(db_path: str, symbol: str) -> LivePosition | None:
+    """entry_ledger에서 최신 매수 메타 조회."""
+    c6 = str(symbol).zfill(6)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT symbol, entry_date, entry_price, quantity, hold_days
+            FROM entry_ledger WHERE symbol = ?
+            """,
+            (c6,),
+        ).fetchone()
+    if row is None:
+        return None
+    return LivePosition(
+        code=c6,
+        qty=int(row["quantity"]),
+        entry_price=float(row["entry_price"]),
+        entry_date=_from_db_date(str(row["entry_date"])),
+        hold_days=int(row["hold_days"]),
+    )
+
+
+def remove_entry_ledger(db_path: str, symbol: str) -> None:
+    c6 = str(symbol).zfill(6)
+    with _connect(db_path) as conn:
+        conn.execute("DELETE FROM entry_ledger WHERE symbol = ?", (c6,))
+
+
+def patch_holding_entry(
+    db_path: str,
+    symbol: str,
+    *,
+    entry_date: str,
+    hold_days: int | None = None,
+) -> bool:
+    """holding_positions·entry_ledger entry_date/hold_days 일괄 보정."""
+    c6 = str(symbol).zfill(6)
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT quantity, entry_price, hold_days FROM holding_positions WHERE symbol = ?",
+            (c6,),
+        ).fetchone()
+        if row is None:
+            return False
+        hd = int(row["hold_days"]) if hold_days is None else int(hold_days)
+        conn.execute(
+            "UPDATE holding_positions SET entry_date = ?, hold_days = ?, updated_at = ? WHERE symbol = ?",
+            (_to_db_date(entry_date), hd, _now_kst_iso(), c6),
+        )
+        conn.execute(
+            """
+            INSERT INTO entry_ledger
+                (symbol, name, entry_date, entry_price, quantity, hold_days, recorded_at)
+            SELECT symbol, name, ?, entry_price, quantity, ?, ?
+            FROM holding_positions WHERE symbol = ?
+            ON CONFLICT(symbol) DO UPDATE SET
+                entry_date = excluded.entry_date,
+                hold_days = excluded.hold_days,
+                recorded_at = excluded.recorded_at
+            """,
+            (_to_db_date(entry_date), hd, _now_kst_iso(), c6),
+        )
+    return True
 
 
 def fetch_holding_rows(db_path: str) -> list[dict[str, object]]:
