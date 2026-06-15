@@ -1,12 +1,12 @@
 """
-v7.0.0 주도주 낙폭과대(Extreme Fear) 검증 러너.
+v7.1.0 Pivot 검증 러너.
 
-진입: 500억 혈통 + RSI/엔벨로프 과매도 + 거래량 급감(<30%)
-청산: +8%/-5%/4일
+진입: 20영업일 200억 수급 메모리 + 낙폭과대 + 브레이크 캔들 + 거래량 급감(<30%)
+청산: +8%/-3%/4일
 유니버스: 코스닥 전종목
 
 실행:
-  python run_v7_00_alpha_research.py --prewarm 120 --mode dynamic_warmup --universe all --yes
+  python run_v7_10_alpha_research.py --prewarm 120 --mode dynamic_warmup --universe all --yes
 """
 from __future__ import annotations
 
@@ -53,8 +53,6 @@ from src.engine.portfolio_manager import (  # noqa: E402
     load_merged_market_day_frames,
 )
 from src.engine.portfolio_manager_v626 import DEFAULT_PREWARM_BARS  # noqa: E402
-from src.engine.portfolio_manager_v628 import PortfolioManagerV628  # noqa: E402
-from src.engine.portfolio_manager_v700 import PortfolioManagerV700  # noqa: E402
 from src.engine.portfolio_manager_v710 import PortfolioManagerV710  # noqa: E402
 from src.v5_config import load_v5_relay_config  # noqa: E402
 from src.v5_relay_screener import (  # noqa: E402
@@ -65,10 +63,8 @@ from src.v5_relay_screener import (  # noqa: E402
 from src.v5_universe import _fetch_pykrx_listed_shares_by_code  # noqa: E402
 
 OUT_DIR = os.path.join(project_root, "outputs")
-V628_TRADES_CSV = os.path.join(OUT_DIR, "v6_28_baseline_trades.csv")
-V700_TRADES_CSV = os.path.join(OUT_DIR, "v7_00_alpha_trades.csv")
-V710_TRADES_CSV = os.path.join(OUT_DIR, "v7_10_pivot_trades.csv")
-REPORT_MD = os.path.join(OUT_DIR, "v7_00_alpha_research_report.md")
+ALPHA_TRADES_CSV = os.path.join(OUT_DIR, "v7_10_pivot_trades.csv")
+REPORT_MD = os.path.join(OUT_DIR, "v7_10_alpha_research_report.md")
 
 
 def _prompt_yes_no(question: str, *, default: str = "n") -> bool:
@@ -182,7 +178,7 @@ def _run_relay(
         trade_id_offset = manager._trade_id_counter
         m = result.metrics
         print(
-            f"  [{phase.phase_id}] {phase.segment_start}~{phase.segment_end} → "
+            f"  [{phase.phase_id}] {phase.segment_start}~{phase.segment_end} -> "
             f"{cash:,.0f}원 · SELL {m['total_trades']}건 · 승률 {m['win_rate_pct']:.1f}% · PF {m['profit_factor']:.2f}",
             flush=True,
         )
@@ -238,7 +234,7 @@ def _fmt_metrics(name: str, metrics: dict, detail: pd.DataFrame) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="v7.0.0 Extreme Fear 검증")
+    p = argparse.ArgumentParser(description="v7.1.0 Pivot 검증")
     p.add_argument(
         "--prewarm", type=int, default=DEFAULT_PREWARM_BARS,
         help=f"히스토리 프리워밍 영업일 (기본 {DEFAULT_PREWARM_BARS})",
@@ -257,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     prewarm = int(args.prewarm)
     if args.mode == "dynamic_warmup" and prewarm != DEFAULT_PREWARM_BARS:
         print(
-            f"⚠️  dynamic_warmup 모드: --prewarm={prewarm} → "
+            f"dynamic_warmup 모드: --prewarm={prewarm} -> "
             f"{DEFAULT_PREWARM_BARS}으로 강제 적용",
             flush=True,
         )
@@ -265,30 +261,29 @@ def main(argv: list[str] | None = None) -> int:
 
     v5 = load_v5_relay_config(section="v5_5")
 
-    print("--- v7.0.0 Extreme Fear / v7.1.0 Pivot 검증 ---", flush=True)
+    print("--- v7.1.0 Pivot 검증 ---", flush=True)
     print(f"  기간     : {RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END} ({len(RELAY_PHASES)}구간)", flush=True)
     print(f"  모드     : {args.mode} · prewarm={prewarm}영업일", flush=True)
-    print("  v7.0 진입: 500억 혈통 + RSI≤30|MA20-10% + 거래량<30%", flush=True)
-    print("  v7.1 진입: 20일 200억 수급 + 낙폭과대 + 브레이크 캔들 + 거래량<30%", flush=True)
-    print("  청산     : v7.0 +8%/-5%/4일 · v7.1 +8%/-3%/4일", flush=True)
+    print("  진입     : 20일 200억 수급 + 낙폭과대 + 브레이크 캔들 + 거래량<30%", flush=True)
+    print("  청산     : +8%/-3%/4일", flush=True)
     print("  유니버스 : 코스닥 전종목", flush=True)
     print(f"  슬롯     : {v5.portfolio.max_slots} × {v5.portfolio.slot_invest_amount:,.0f}원", flush=True)
 
-    if not args.yes and not _prompt_yes_no("위 설정으로 v7.0.0/v7.1.0 검증 백테스트를 실행할까요?", default="n"):
+    if not args.yes and not _prompt_yes_no("위 설정으로 v7.1.0 검증 백테스트를 실행할까요?", default="n"):
         print("취소했습니다.")
         return 0
 
-    print(f"\n🚀 벌크 로딩 ({RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END})…", flush=True)
+    print(f"\n벌크 로딩 ({RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END})...", flush=True)
     day_frames, bdays = load_merged_market_day_frames(
         RELAY_BACKTEST_START, RELAY_BACKTEST_END, force_bulk=True
     )
-    print(f"📊 벌크 로드 완료: {len(day_frames)} 영업일", flush=True)
+    print(f"벌크 로드 완료: {len(day_frames)} 영업일", flush=True)
 
-    print("\n🔎 코스닥 종목 마스크 로딩…", flush=True)
+    print("\n코스닥 종목 마스크 로딩...", flush=True)
     kosdaq_mask = _load_kosdaq_mask()
     print(f"   코스닥 {len(kosdaq_mask):,}종", flush=True)
 
-    print("\n📦 일별 시가총액 캐시 구축…", flush=True)
+    print("\n일별 시가총액 캐시 구축...", flush=True)
     marcap_cache = _build_marcap_cache(bdays, kosdaq_mask)
     shares_fb = _load_shares_fallback(RELAY_BACKTEST_START)
     print(f"   캐시 {len(marcap_cache):,}건 · 상장주식수 폴백 {len(shares_fb):,}종", flush=True)
@@ -299,75 +294,41 @@ def main(argv: list[str] | None = None) -> int:
         phase_universes[phase.phase_id] = uni
         print(f"   구간 {phase.phase_id} 유니버스: {len(uni):,}종", flush=True)
 
-    manager_kwargs = {
+    alpha_kwargs = {
         "prewarm_bars": prewarm,
         "enable_prewarm": True,
         "marcap_by_date_code": marcap_cache,
         "shares_by_code": shares_fb,
     }
 
-    v628_eq, v628_tr, v628_td, v628_m = _run_relay(
-        label="V6.28 BASELINE (v6.x MA20+회전율, +8%/-3%)",
-        manager_cls=PortfolioManagerV628,
-        day_frames=day_frames,
-        bdays=bdays,
-        v5=v5,
-        phase_universes=phase_universes,
-        manager_kwargs=manager_kwargs,
-    )
-    v700_eq, v700_tr, v700_td, v700_m = _run_relay(
-        label="V7.0.0 EXTREME FEAR (+8%/-5%)",
-        manager_cls=PortfolioManagerV700,
-        day_frames=day_frames,
-        bdays=bdays,
-        v5=v5,
-        phase_universes=phase_universes,
-        manager_kwargs=manager_kwargs,
-    )
-    v710_eq, v710_tr, v710_td, v710_m = _run_relay(
-        label="V7.1.0 PIVOT (+8%/-3%)",
+    alpha_eq, alpha_tr, alpha_td, alpha_m = _run_relay(
+        label="V7.1.0 PIVOT (200억 완화 + 브레이크 캔들 + -3% 롤백)",
         manager_cls=PortfolioManagerV710,
         day_frames=day_frames,
         bdays=bdays,
         v5=v5,
         phase_universes=phase_universes,
-        manager_kwargs=manager_kwargs,
+        manager_kwargs=alpha_kwargs,
     )
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    v628_td.to_csv(V628_TRADES_CSV, index=False, encoding="utf-8-sig")
-    v700_td.to_csv(V700_TRADES_CSV, index=False, encoding="utf-8-sig")
-    v710_td.to_csv(V710_TRADES_CSV, index=False, encoding="utf-8-sig")
+    alpha_td.to_csv(ALPHA_TRADES_CSV, index=False, encoding="utf-8-sig")
 
-    v628_tu = _trade_unit_winrate(v628_td)
-    v700_tu = _trade_unit_winrate(v700_td)
-    v710_tu = _trade_unit_winrate(v710_td)
-    delta_wr = v710_tu["win_rate_pct"] - v700_tu["win_rate_pct"]
-    delta_ret = v710_m["cumulative_return_pct"] - v700_m["cumulative_return_pct"]
-    delta_pf = v710_m["profit_factor"] - v700_m["profit_factor"]
-    entry_delta = v710_tu["entries"] - v700_tu["entries"]
-    pf_target_ok = v710_m["profit_factor"] >= 1.5
-
-    v628_block = _fmt_metrics("V6.28 BASELINE — v6.x 레거시 (+8%/-3%)", v628_m, v628_td)
-    v700_block = _fmt_metrics("V7.0.0 EXTREME FEAR — 낙폭과대 역추세 (+8%/-5%)", v700_m, v700_td)
-    v710_block = _fmt_metrics("V7.1.0 PIVOT — 수급 완화 + 브레이크 확인 (+8%/-3%)", v710_m, v710_td)
+    alpha_tu = _trade_unit_winrate(alpha_td)
+    pf_target_ok = alpha_m["profit_factor"] >= 1.5
+    alpha_block = _fmt_metrics(
+        "V7.1.0 PIVOT — 200억 완화 + 브레이크 캔들 + -3% 롤백",
+        alpha_m,
+        alpha_td,
+    )
 
     report = "\n".join([
-        "# v7.0.0 Extreme Fear / v7.1.0 Pivot 검증 리포트",
+        "# v7.1.0 Pivot 검증 리포트",
         "",
         f"- 기간: {RELAY_BACKTEST_START} ~ {RELAY_BACKTEST_END} ({len(RELAY_PHASES)}구간)",
         f"- 모드: `{args.mode}` · prewarm={prewarm}영업일",
-        f"- 유니버스: 코스닥 전종목",
+        "- 유니버스: 코스닥 전종목",
         f"- 슬롯: {v5.portfolio.max_slots} × {v5.portfolio.slot_invest_amount:,.0f}원",
-        "",
-        "## v7.0.0 진입 명세",
-        "",
-        "| 조건 | 내용 |",
-        "|------|------|",
-        "| 주도주 혈통 | 최근 10일 최고 거래대금 ≥ 500억 |",
-        "| 낙폭과대 | RSI(14)≤30 OR 종가≤MA20×0.90 |",
-        "| 거래량 급감 | 당일 거래량 < 최근 10일 최대×30% |",
-        "| 청산 | +8% / -5% / 4일 |",
         "",
         "## v7.1.0 피벗 명세",
         "",
@@ -379,41 +340,37 @@ def main(argv: list[str] | None = None) -> int:
         "| 거래량 급감 | 당일 거래량 < 최근 20일 최대×30% |",
         "| 청산 | +8% / -3% / 4일 |",
         "",
-        "## 비교 요약 (V7.0.0 → V7.1.0)",
+        "## 결과 요약",
         "",
-        "| 지표 | V7.0.0 | V7.1.0 | Δ |",
-        "|------|--------|--------|---|",
-        f"| 진입 표본 | {v700_tu['entries']} | {v710_tu['entries']} | {entry_delta:+d} |",
-        f"| 진입 승률 | {v700_tu['win_rate_pct']:.2f}% | {v710_tu['win_rate_pct']:.2f}% | {delta_wr:+.2f}%p |",
-        f"| 누적 수익률 | {v700_m['cumulative_return_pct']:+.2f}% | {v710_m['cumulative_return_pct']:+.2f}% | {delta_ret:+.2f}%p |",
-        f"| PF | {v700_m['profit_factor']:.2f} | {v710_m['profit_factor']:.2f} | {delta_pf:+.2f} |",
-        f"| MDD | {v700_m['mdd_pct']:.2f}% | {v710_m['mdd_pct']:.2f}% | — |",
+        f"- 진입 표본: {alpha_tu['entries']}건",
+        f"- 진입 승률: {alpha_tu['win_rate_pct']:.2f}% ({alpha_tu['wins']}승)",
+        f"- 누적 수익률: {alpha_m['cumulative_return_pct']:+.2f}%",
+        f"- PF: {alpha_m['profit_factor']:.2f}",
+        f"- MDD: {alpha_m['mdd_pct']:.2f}%",
         "",
-        v628_block,
-        v700_block,
-        v710_block,
+        alpha_block,
         "## Sign-off",
         "",
-        f"- PF 목표 (≥1.5): V7.1.0 PF **{v710_m['profit_factor']:.2f}** "
-        f"({'✅ 달성' if pf_target_ok else '❌ 미달'})",
+        f"- PF 목표 (≥1.5): V7.1.0 PF **{alpha_m['profit_factor']:.2f}** "
+        f"({'달성' if pf_target_ok else '미달'})",
         "",
-        f"- 거래 CSV: `{V710_TRADES_CSV}`",
+        f"- 거래 CSV: `{ALPHA_TRADES_CSV}`",
         "",
     ])
     with open(REPORT_MD, "w", encoding="utf-8") as fh:
         fh.write(report + "\n")
 
     print("\n" + "=" * 60, flush=True)
-    print("📈 v7.1.0 Pivot 검증 결과 요약", flush=True)
+    print("v7.1.0 Pivot 검증 결과 요약", flush=True)
     print("=" * 60, flush=True)
-    print(f"진입 표본   : V7.0 {v700_tu['entries']} → V7.1 {v710_tu['entries']} ({entry_delta:+d})", flush=True)
-    print(f"진입 승률   : {v700_tu['win_rate_pct']:.2f}% → {v710_tu['win_rate_pct']:.2f}% ({delta_wr:+.2f}%p)", flush=True)
-    print(f"누적 수익률 : {v700_m['cumulative_return_pct']:+.2f}% → {v710_m['cumulative_return_pct']:+.2f}% ({delta_ret:+.2f}%p)", flush=True)
-    print(f"PF          : {v700_m['profit_factor']:.2f} → {v710_m['profit_factor']:.2f} ({delta_pf:+.2f})", flush=True)
-    print(f"MDD         : {v700_m['mdd_pct']:.2f}% → {v710_m['mdd_pct']:.2f}%", flush=True)
-    print(f"PF 목표     : {'✅' if pf_target_ok else '❌'} (≥1.5)", flush=True)
+    print(f"진입 표본   : {alpha_tu['entries']}", flush=True)
+    print(f"진입 승률   : {alpha_tu['win_rate_pct']:.2f}% ({alpha_tu['wins']}승)", flush=True)
+    print(f"누적 수익률 : {alpha_m['cumulative_return_pct']:+.2f}%", flush=True)
+    print(f"PF          : {alpha_m['profit_factor']:.2f}", flush=True)
+    print(f"MDD         : {alpha_m['mdd_pct']:.2f}%", flush=True)
+    print(f"PF 목표     : {'달성' if pf_target_ok else '미달'} (>=1.5)", flush=True)
     print(f"\n리포트   : {REPORT_MD}", flush=True)
-    print(f"거래 CSV : {V710_TRADES_CSV}", flush=True)
+    print(f"거래 CSV : {ALPHA_TRADES_CSV}", flush=True)
     print("=" * 60, flush=True)
     return 0
 

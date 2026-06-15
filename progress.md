@@ -1,379 +1,51 @@
 # 📈 프로젝트 진행 일지 (Progress Log)
 
-## 1. 핵심 기능 체크리스트 (Feature Checklist)
-- [x] **v6.19** 대시보드 자산 성장 곡선 Y축 라벨 1만 원 단위 소수점 정밀 표기 (`src/web/static/index.html`)
-
-## 2. 최신 변경 이력 (Changelog)
-
-### 2026-06-09 (**v6.19**) 대시보드 자산 성장 곡선 Y축 라벨 정밀도 보정
-- **Y축 라벨:** `Math.round` 절사 방식에서 `toLocaleString()` 소수점 정밀 표기 방식으로 변경
-- **효과:** 1,000만 원 단위 이하의 미세한 자산 변동(예: 1,004.8만)을 차트에서 즉시 식별 가능
-- **변경 파일:** `src/web/static/index.html`
-
-### 2026-06-08 (**v6.18**) 대시보드 유니버스 테이블 네이버증권 핫링크 탑재
-- **유니버스 후보 종목 테이블:** `관제` 컬럼 신설 — `📊 N네이버증권` 버튼 (새 탭 `target="_blank"`)
-- **URL 바인딩:** `https://finance.naver.com/item/main.naver?code={code}` 동적 생성 (6자리 패딩)
-- **CSS:** `.btn-naver-link` (네이버 그린 `#02c75a`) + `.naver-n` (백색 N 뱃지) 컴포넌트 추가
-- **변경 파일:** `src/web/static/index.html`
-
-### 2026-06-08 (**v6.17**) 스캐너 5대 추세 철벽 필터 복원 (MA20 우상향 긴급 복원)
-- **`_verify_strict_pre_filter`:** MA20 우상향(`ma20[-1] > ma20[-2]`) 조건 추가 — 3대 이평선(MA20·MA60·MA120) 동시 우상향 릴레이 검증 완성
-- **`min_history_bars` 기본값:** 120 → 122 (신규 상장주 방어 강화, `.iloc[:-1]` 확정 기준)
-- **5대 조건 AND 체인:** ①`len >= 122` ②MA20↑ ③MA60↑ ④MA120↑ ⑤`종가 > MA60`
-- **변경 파일:** `src/live/live_screener.py`
-
-### 2026-06-07 (**v6.9.2**) 대시보드 초기화 시 텔레그램 알림 추가
-- **트리거 5** `control_bridge.run_reset_sync`: 대시보드 `/api/control/reset` 실행 성공 시 텔레그램 알림 전송
-- **`build_reset_message`:** 초기화 완료 시각·원금·세척 완료 메시지 빌더 (`src/automation/telegram_client.py`)
-- **변경 파일:** `src/automation/telegram_client.py`, `src/web/control_bridge.py`
-
-### 2026-06-06 (**v6.9.1**) 청산 기록 수익률 순수 호가 기준으로 통일
-- **원인:** `_record_exit`가 `compute_profit_rate`(수수료 포함)로 저장 → 손절 트리거(-3.00% 가격) 대비 기록은 -3.21%로 표시돼 오해 유발
-- **수정:** `profit_rate = (exit_price - entry_price) / entry_price` 순수 가격 등락률로 교체
-- **불변:** `evaluate_hit_and_run_exit` 손절 트리거는 순수 가격 비교 유지, `compute_profit_rate` 함수 자체는 `live_db.py`에서 삭제하지 않음
-- **변경 파일:** `src/live/live_engine.py`
-
-### 2026-06-06 (**v6.9**) 텔레그램 비동기 알림 모듈 + 4대 트리거
-- **`src/automation/telegram_client.py`:** `TelegramClient` daemon-Thread 비동기 전송 · 메시지 빌더 4종(sync/entry/exit/close)
-- **트리거 1** `live_master._run_startup_sync_routine`: 장전 동기화 후 예수금·이월종목 브리핑
-- **트리거 2** `live_engine.run_entry_scan`: 매수 체결(`rt_cd=="0"`) 즉시 종목·수량·투입금 알림
-- **트리거 3** `live_engine._record_exit`: 청산(익절/손절/타임스탑) 즉시 손익률·확정손익 알림
-- **트리거 4** `live_master._run_close_routine`: 15:30 정산 후 총자산·이월종목 일일 마감 보고
-- **변경 파일:** `src/automation/__init__.py`, `src/automation/telegram_client.py`, `src/live/live_engine.py`, `src/live/live_master.py`
-
-### 2026-06-06 (**v6.8**) 하트비트 모니터링 — LED 깜빡이 + 10분 봇 생존 로그
-- **`dashboard_api`:** FastAPI startup async task → 1초마다 WS `HEARTBEAT` 브로드캐스트 (타임스탬프 ms 포함)
-- **`live_master`:** `_emit_heartbeat_if_due()` → `tick()` 마다 경과 체크, 10분마다 `💓 [Engine Heartbeat]` logger.info 강제 출력
-- **`index.html`:** 사령탑 헤더 녹색 LED + 밀리초 시계 추가 · HEARTBEAT 수신 시 LED 점등·시계 갱신 · 3초 무신호 시 LED 소등
-- **변경 파일:** `src/web/dashboard_api.py`, `src/live/live_master.py`, `src/web/static/index.html`
-
-### 2026-06-06 (**v6.7**) DB 독자 장부 마스터 + KIS 잔고 참조 패널 분리
-- **원칙:** dry_run·실전 모드 무관, `holding_positions` SQLite가 보유 종목 SSOT
-- **`/api/positions`:** DB 장부 전량 조회 → 실전 모드 시 KIS 현재가 보강(심볼 매칭) → `kis_snapshot` 참조 필드 포함
-- **`index.html`:** 보유 종목 테이블 `DB 독자 장부` 레이블 · `📡 증권사 잔고 현황` 참조 패널(총자산·예수금·평가액·종목수) 추가
-- **변경 파일:** `src/web/dashboard_api.py`, `src/web/static/index.html`
-
-### 2026-06-06 (**대시보드**) dry_run 모드 보유 종목 UI 미표시 수정
-- **원인:** `/api/positions` → `get_inquire_balance(local_positions=None)` → `dry_run` 시 `get_snapshot(None)` → 빈 리스트 반환
-- **수정:** `dry_run=True` 시 `fetch_holding_rows(DB)` 직접 조회로 대체 (`source: "db_dry_run"`)
-- **변경 파일:** `src/web/dashboard_api.py`
-
-### 2026-06-06 (**라이브 계좌**) KIS OAuth2 EGW00133 자동 재시도
-- **원인:** KIS 토큰은 1분/1회 발급 제한 — 대시보드·봇 연속 실행 시 `EGW00133` 으로 즉시 크래시
-- **수정:** `_issue_oauth_token`에 `EGW00133` 감지 시 65초 대기 후 1회 재시도 (`_retry` 파라미터)
-- **변경 파일:** `src/live/live_account.py`
-
-### 2026-06-06 (**라이브 스크리너**) 휴일·주말 스캔 0건 수정
-- **원인:** `execute_daily_scan`이 `datetime.now(KST)`를 그대로 사용 → 토/일/공휴일에 pykrx 거래 데이터 없어 0건 반환
-- **수정:** 기존 `resolve_overnight_scan_anchor` (`src/utils/date_helper.py`) 재사용 → `anchor_date`(마지막 영업일) 자동 결정
-- **정책:** `force_date` 명시 시 그대로 사용, 미지정 시 `anchor_policy_reason` 로그 출력 후 최근 거래일 기준 스캔
-- **변경 파일:** `src/live/live_screener.py`
-
-### 2026-06-05 (**v6.6**) run_live_bot 코어 엔진 동기화
-- **`live_engine`:** `sync_positions_from_kis` · `execute_market_close_processing` · `execute_market_scanner` · `is_monitor_running`
-- **`live_master`:** 08:50 KIS동기화 · 15:30 hold_days 벌크업·정산 · 15:20 거부 인터록 · 틱당 hold_days 중복증가 제거
-- **`run_live_bot`:** `sync` 서브커맨드 · entry 체결 시에만 스냅샷
-
-### 2026-06-05 (**v6.5**) 한투 잔고 동기화 · 자체 통계 이원화
-- **`live_account`:** `get_inquire_balance` — KIS 실시간 총자산·예수금·평가·보유종목
-- **`dashboard_api`:** `/api/positions` 한투 직결 · `/api/summary` DB 자체 연산(승률·누적·오늘)
-- **`index.html`:** 총자산 카드 KIS SSOT · 보유 테이블 `profit_rate` 반영
-
-### 2026-06-05 (**v6.4**) 한투 API 거부 로그 노출 · 장부 인터록
-- **`live_account`:** `place_market_order` — KIS 원본 응답 패킷 반환
-- **`live_engine`:** `send_order_kis` · `rt_cd != "0"` 시 SQLite 저장·잔고 갱신 차단 · `calculate_entry_signals` dict 반환
-- **`control_bridge`/`dashboard_api`:** 거부 시 `status: rejected` · `ENTRY_REJECTED` WS
-- **`index.html`:** 거부 토스트 danger(빨간색) · HTTP rejected 응답 처리
-
-### 2026-06-05 (**v6.3**) 토스트 알림 · alert 전면 제거
-- **`showToast`:** success/info/danger/warning · 2.5초 자동 소멸 · 우상단 스택
-- **WS 연동:** SCAN/ENTRY/EXIT/RESET 이벤트별 색상 토스트
-
-### 2026-06-05 (**v6.3**) WebSocket 3대 모드 · 사령탑 제어 센터
-- **`ws_hub.py`:** `/ws` · `SCAN_COMPLETED` · `ENTRY_TRIGGERED` · `EXIT_TRIGGERED` 브로드캐스트
-- **`live_engine`:** `on_entry_filled` · `on_exit_recorded` 외곽 콜백
-- **`index.html`:** 마스터 콘트롤 패널 · Silent 정적 · WS 이벤트 시에만 1회 갱신
-
-### 2026-06-05 (**v6.1**) 대시보드 실시간 사령탑 · 수동 개입 연동
-- **`control_bridge.py`:** LiveScreener / LiveEngine 메모리 직접 호출 · 0.5s 감시 스레드
-- **`dashboard_api`:** `POST /api/control/scan|entry|watch/toggle` · `GET /api/universe`
-- **`index.html`:** 상단 사령탑 패널 · 유니버스 후보 테이블
-
-### 2026-06-05 (**v6.0**) Tailwind 대시보드 UI 4단계
-- **`index.html`:** 요약 카드 · 자산/청산 Chart.js · 보유·복기 테이블 · 8초 폴링
-- **`dashboard_api`:** `GET /` UI 서빙 · `/static` 마운트
-
-### 2026-06-05 (**v6.0**) FastAPI 대시보드 API 3단계
-- **`dashboard_api.py`:** `/api/positions` · `/history` · `/snapshots` · `/summary` · `/health`
-- **`run_live_dashboard.py`:** `127.0.0.1:8765` · OpenAPI `/docs` · DB 읽기 전용
-- **`live_db`:** `fetch_holding_rows` · `fetch_trading_history` · `fetch_daily_snapshots` · `fetch_trading_summary`
-
-### 2026-06-05 (**v6.0**) SQLite 장부 · JSON→DB 2단계
-- **`schema.sql`:** `holding_positions` · `trading_history` · `daily_snapshots` DDL 정본
-- **`live_db.py`:** `init_schema` · CRUD · `migrate_from_json` · `LIVE_USE_JSON_LEDGER` 폴백
-- **`live_engine`:** DB 장부 연동 · 청산 시 `_record_exit` → `trading_history` 누적
-- **`.gitignore`:** `data/live_trading.db` (+ WAL/SHM)
-
-### 2026-06-04 (**청소**) v4·구형 v5 러너 폐기 · 릴레이 SSOT 유지
-- **삭제:** `run_v4_*.py` · `run_v5_breakout.py` · `run_v5_portfolio.py` · `scripts/` 구형 테스트 4종
-- **보존:** `run_live_bot.py` · `run_v5_relay_portfolio.py` · `src/live/*` · `validate_phase_a_trades` → `src/v5_backtest_validate.py`
-
-### 2026-06-04 (**라이브** 동적 슬롯 1~5 · 마진콜 셧다운)
-- **`live_settings`:** `min_slots_limit`/`max_slots_limit`/`minimum_operational_capital` · 고정 `max_slots` 폐기
-- **`check_dynamic_slot_lock`:** 총자산=floor(equity/5만) 슬롯 · 5만 미만 매수 올스톱
-
-### 2026-06-04 (**라이브** KIS API 초당 한도 대응)
-- **`live_account`:** 호출 간격 0.5s·EGW00201 재시도 · 주문 후 `snapshot_after_local_fill`(잔고 재조회 생략)
-- **`live_engine`:** 체결 즉시 `live_positions.json` 저장
-
-### 2026-06-04 (**라이브** OHLCV pykrx 250일 lookback)
-- **`fetch_ohlcv_history`:** FDR 폐기 → `load_ohlcv`(pykrx by_date, target−250일) · MA120용 121봉+ 확보
-
-### 2026-06-04 (**라이브** entry 디버그 로그 · 재스캔 제거)
-- **`run_live_bot.py entry`:** `live_today_universe.json`만 로드(재스캔 없음)
-- **`explain_entry_signal`:** `[연산]`/`[탈락]`/`🔥 [진입 시그널 포착]` logger.info 사유 문자열
-
-### 2026-06-04 (**라이브** SOP 가이드북 · 하이브리드 운영)
-- **`docs/live_SOP_guide.md`:** 08:30 마스터 기동 · 15:10 screener · 15:16 entry dry-run · 15:40 watch --once · 절전 OFF
-- **로그 SSOT:** `[실시간 실전 감시 시작]` · `🔥 [진입 시그널 포착]` · `print_positions_snapshot`
-- **`live_daily_manual.md`:** SOP 링크 허브로 축소
-
-### 2026-06-04 (**라이브** 완전 자동 마스터 — 3단계 조립)
-- **`live_master.py`:** KST 스케줄 · 주말 대기 · `live_master_state.json` 당일 중복 방지
-- **`live_engine`:** `calculate_entry_signals` · `monitor_market_realtime`(1틱) · `LiveEngine` 별칭
-- **`run_live_bot.py`:** 기본 `python run_live_bot.py` = 종일 마스터 루프
-- **`docs/live_daily_manual.md`:** 수동 절차 폐기 → 출근 1줄 자동 운영 가이드
-
-### 2026-06-04 (**라이브** 일일 수동 절차 · 유니버스 스캐너) — superseded by 마스터 자동화
-- **`live_screener`:** `LiveScreener` + `run_live_screener`/`load_live_universe` 엔진 브릿지 · pykrx 컬럼 동적 매핑 · `.env` KRX_ID/PW
-- **`config/live_today_universe.json`:** 초기 `[]` · 스캔 후 Top40 코드 배열 · `live_today_universe.meta.json` 가독 리포트
-- **`docs/live_daily_manual.md`:** 15:15 스캔 / 15:20 진입 / 장중 watch 수동 체크리스트 (자동화 보류)
-- **`scripts/run_live_screener.py`:** `--date` · `--show` 수동 테스트 CLI
-
-### 2026-06-03 (**라이브** v5.5.2 코스닥 스나이퍼 봇 3단계)
-- **`config/live_settings.yaml`:** 시총 900억~4,000억 · Hit&Run · 듀얼 MA
-- **`live_account`:** OAuth2·슬롯 락 · `LIVE_DRY_RUN`
-- **`live_screener`:** `live_today_universe.json` · **`live_engine`:** 15:20 진입·장중 감시
-
-### 2026-06-03 (**v5.5.2** SSOT 동결 · v5 브랜치 마감)
-- **`v5_5`:** `target_profit_ratio: 0.08` · `stop_loss_ratio: 0.03` · `max_hold_days: 4` (수치 변경 금지)
-- **`outputs/v5_final_report.md`:** v5.0→v5.5.2 튜닝 여정·DoD·재현 명령 SSOT
-
-### 2026-06-03 (**v5.5** 듀얼 우상향 필터 — MA60↑ & MA120↑ & 종가>MA120)
-- **`dual_slope_alignment`:** MA오늘 > MA어제 · `check_prices_above_ma: 120`
-- **v5.4 호환:** `ma_window` 단독(종가>MA) 모드 유지
-
-### 2026-06-03 (**v5.4** 장기 이평 대세 필터 — 변곡 + MA60)
-- **`macro_trend_filter`:** `enabled` · `ma_window` 60/120 — 진입 시 종가 > 장기 MA
-- **`v5_4`:** v5.3 릴레이 + Hit&Run · `run_v5_relay_portfolio.py --section v5_4` (기본 섹션)
-
-### 2026-06-03 (**v5.3** 릴레이 동적 유니버스 — 6개월 주도주 교체)
-- **`v5_3`:** `universe_dir` · `screener` · v5.2 손익비 청산 · 7구간(2023-01~2026-05)
-- **`v5_relay_screener.py`:** `univ_phase_1~7.json` + meta(억 원) + `relay_manifest.json` · 락 휴장일 자동 보정
-- **`run_v5_relay_portfolio.py`:** 구간별 자산 이월 · `PERIOD_RESET` · `v5_relay_equity_curve.csv` / `v5_relay_trades.csv` 병합
-
-### 2026-06-03 (**v5.2** Hit & Run — MA20 추세청산 → 고정 손익비)
-- **원인(분석):** 변곡 당일 윗꼬리·단발 테마 → `TREND_EXIT_MA20` 시 손실 누적
-- **`v5_2`:** 동일 40종 JSON · `target_profit_ratio` 0.06 · `stop_loss_ratio` 0.03 · `max_hold_days` 3
-- **`portfolio_manager_v5`:** 장중 H/L 손절·익절 · `STOP_LOSS`/`TAKE_PROFIT`/`TIME_STOP` · 진입 `ENTRY_MA_INFLECTION_HIT_RUN`
-- **기본 섹션:** `DEFAULT_V5_SECTION=v5_2` · `python run_v5_breakout.py` (실행 전 Y/N)
-
-### 2026-06-03 (Python venv 정합 — Cursor·의존성)
-- **`venv/`:** `pip install -r requirements.txt` 동기화 · `src.v5_config` import 검증
-- **`.vscode/settings.json`:** `python.terminal.activateEnvironment: true`
-- **`activate.ps1`:** 루트에서 `.\activate.ps1` 로 venv 활성화
-
-### 2026-06-03 (**v5.1** lock 스캔 Fix — pykrx 과거 0 · FDR 폴백)
-- **원인:** `get_market_cap/ohlcv_by_ticker(2022-12-30)` 가 종가·거래대금 0 반환
-- **Fix:** FDR per-ticker + `data/cache/v5_universe_lock/KOSDAQ_20221230.pkl` · 시총=종가×상장주식수
-- **검증:** 정예 **40종** 박제 가능 (`fdr_lock_day_snapshot`)
-
-### 2026-06-03 (**v5.1** meta.json 가독성 — 억 원·scanned_items_report)
-- **`kosdaq_sniper_universe.meta.json`:** `hard_filters`·`scanned_items_report`(rank/code/name/시총/거래대금) · `format_krw_eok`
-- **`min_trade_krw`:** 50억 원 SSOT · 조건 통과 종목만 박제(40 미만 가능)
-
-### 2026-06-03 (**v5.1** 유니버스 락 — Look-ahead 방지 박제)
-- **`universe_lock`:** `lock_date: 2022-12-30` · `backtest_start: 2023-01-01` · 코스닥 시총 700억~3,000억 · 거래대금 Top40
-- **`v5_universe.py`:** pykrx **당시** 시총·거래대금만 사용 · `.meta.json` 동반 저장 · lock≥start 차단
-- **스캔:** 사용자 실행 대기 — `python run_v5_breakout.py --scan-universe` (백테스트는 별도 승인)
-
-### 2026-06-03 (**v5.1** 고정 유니버스 SSOT · 실행 전 질문)
-- **`v5_1`:** `universe_profile` → `config/kosdaq_sniper_universe.json` · 가격 필터 제거
-- **`src/v5_universe.py`:** JSON 로드 · 코스닥 스캔 일회 저장
-- **`portfolio_manager_v5`:** `target_universe` 고정 풀만 순회
-- **`run_v5_portfolio` / `run_v5_breakout`:** 스캔 Y/N · 백테스트 Y/N 질문(기본 N) · `--yes`만 무질문 실행
-- **정책:** 전략 설계 단계 — **승인 없이 백테스트 자동 실행 금지**
-
-### 2026-06-03 (**v5.0** 변곡점 스나이퍼 — 첫 field_test 시뮬레이션 점화)
-- **실행:** `python run_v5_breakout.py` (~8분) · 920영업일 · `outputs/v5_run.log`
-- **결과:** 10만 → **65,996원** (-34.0%) · **93** SELL · 승률 **34.4%** · PF **0.82** · MDD **-86.1%**
-- **청산:** `TREND_EXIT_MA20` 93건 · 진입 `ENTRY_MA_INFLECTION_20D` 94건
-- **Phase A:** SELL 건수·cash_after OK · PnL 샘플 10/10 불일치 — 검증식이 **매수 수수료 미반영**(엔진 `buy_cost_paid` 정상)
-- **다음:** ③ DoD(PF≥1·보유일·MA20 청산 효율) — **PF 0.82로 미달**
-
-### 2026-06-03 (**v5.0** 20일선 변곡점 스나이퍼 — 전략 교체·① 재완료)
-- **`config/settings.yaml`:** `ma_inflection_sniper` · `lookback_window`/`exit_ma_window` 20 · 거래량 돌파 제거
-- **`portfolio_manager_v5.py`:** `_is_ma_inflection_turning_up`(어제≤MA20·오늘>20영업일전종가) · `ENTRY_MA_INFLECTION_20D`
-- **`v5_config.py`:** `exit_ma_window` SSOT · `volume_spike_ratio` 제거
-- **`run_v5_breakout.py`:** Tee Unicode(cp949) 방어
-
-### 2026-06-03 (**v5.0** 3단계 실행 로드맵 문서화)
-- **`docs/작업지시서-v5.0-3단계-실행로드맵.md`:** ① 소스/YAML · ② field_test 완주·`v5_run.log` · ③ DoD(PF·보유일·추세청산) 순차 SSOT
-- **`run_v5_breakout.py`:** `run_v5_portfolio` 래핑 + 로그 Tee
-- **다음:** ② `python run_v5_breakout.py`
-
-### 2026-06-03 (**v5.0** 20일 전고점 돌파 엔진 — 마스터 스펙 반영)
-- **`config/settings.yaml`:** `v5_0` 추세추종 단일 SSOT — `twenty_day_breakout` · lookback 20 · 거래량 2배 · field_test · 매수/매도 비용 분리
-- **`src/engine/portfolio_manager_v5.py`:** `PortfolioManagerV5` — 전고점+거래량 돌파 진입 · MA20 종가 이탈 청산 (Phase H/I·고정 SL/TP 제거)
-- **`src/v5_config.py`:** v4 어댑터 제거 · `V5Config` 전용 파서
-- **`run_v5_portfolio.py`:** v5 전용 러너
-- **다음:** `python run_v5_portfolio.py` 베이스라인
-
-### 2026-06-03 (**v5.0** 착수 — 브랜치·초기 커밋)
-- **브랜치:** `v5.0` (`v4.0` HEAD 분기) · `origin/v5.0` 푸시
-- **`docs/작업지시서-v5.0-Kosdaq-Sniper.md`** · `docs/money_management_principles.md`
-
-### 2026-06-03 (**v4.0** Phase H — YAML SSOT 동결 · v4.0 검증 브랜치 마감)
-- **`config/settings.yaml`:** `engine.phase_mode=h` · field_test 10만/2슬롯/5만 · **SL 3% / TP 10% / emperor 20% / 5일 타임스탑 / 관망 5영업일** · deploy 45%
-- **`src/v4_config.py`:** `V4EngineConfig`·`emperor_cap_ratio`·`phase_h_min_wait_bdays` 파싱
-- **`portfolio_manager.py`:** Phase H SL/TP/emperor/wait/time_stop **YAML SSOT** 바인딩 (튜닝 오버라이드 없을 때)
-- **`run_v4_portfolio.py`:** `engine.phase_mode` 기준 Phase H 실행
-- **정책:** Phase I 라인 폐기 · main/GUI 병합 보류 유지 (Harness)
-
-### 2026-06-03 (**v4.0** Phase I — 소형 그리드 스윕)
-- **`run_v4_tune.py`:** `--phase-i-grid` — 기준봉 10억/30억 × 실종 10%/15% × Top15/30 (9시나리오)
-- **실행:** `python run_v4_tune.py --phase-i-grid` (~42분)
-- **PF 1위:** `i1_anc10e8_dry15_top15` — PF **0.71** · 79,351원 (-20.6%) · 62 SELL · 승률 **30.6%**
-- **핵심:** **Top15 >> Top30** (79k vs 44k) · 기준봉 10억/30억 동일(Top15 구간) · **PF≥1·흑자·승률45% 모두 미달**
-- **대비 Phase H-3:** PF 0.69·93,828원(-6.2%) — Phase I 그리드 최선도 **열위**
-- **산출:** `outputs/v4_tune_results.csv` · `v4_tune_run_phase_i_grid.log`
-
-### 2026-06-03 (**v4.0** Phase I — 코스닥 스나이퍼 백테스트·DoD 미달)
-- **엔진:** `scan_phase_i_kosdaq_universe`(코스닥·시총 700억~5,000억·거래대금 Top30≥30억) · `_phase_i_entry_allowed`(거래량 실종 15%+H-2 쌍바닥) · SL **-4%**/TP **+10%**
-- **Fix:** `_get_daily_ohlcv`에 `Volume` 누락 → 거래량 실종 필터 무력(진입 0건) 수정
-- **실행:** `python run_v4_tune.py --only combo_phase_i_kosdaq_sniper`
-- **결과:** 10만 → **44,533원** (-55.5%) · **74** SELL · 승률 **23.0%** · PF **0.37** · `STOP_LOSS_H` **42** — **PF≥1·흑자·승률45% 모두 미달**
-- **대비 Phase H-3:** 23 SELL·PF 0.67·-6.2% — Phase I는 거래·손절 급증·성과 악화
-- **산출:** `outputs/v4_tune_results.csv` · `v4_tune_report.md` §Phase I DoD · `v4_tune_run_phase_i.log`
-
-### 2026-06-03 (**v4.0** Phase H-3 — H-2 미세 그리드 field_test 스윕)
-- **코드:** `run_v4_tune.py` — `field_test` 시 그리드 `phase_h_fixed_amount` 300만 주입 제거·기준선 `combo_phase_h_double_bottom`(Phase H)
-- **실행:** `python run_v4_tune.py --phase-h2-grid` (28시나리오 · 920영업일 · ~70분)
-- **결과:** PF≥1 **0/28** · 흑자 **0/28** · **PF 1위** `h2_sl03_tp10_ec20` (SL3%/TP10%/황제주20%) PF **0.69** · 최종 **94,518원** (-5.48%) · **최종자산 1위** 동일
-- **baseline 대비:** `combo_phase_h_double_bottom` PF 0.67·93,828원 → TP10%+ec20에서 PF +0.02·손실 -0.69%p 개선
-- **산출:** `outputs/v4_tune_results.csv` · `outputs/v4_tune_report.md` · `outputs/v4_tune_run_h3_h2_grid.log`
-
-### 2026-06-03 (**v4.0** Phase H-3 — 10만 원 필드 테스트 백테스트 실행)
-- **실행:** `python run_v4_tune.py --only combo_phase_h_double_bottom` (920영업일 · field_test SSOT)
-- **버그 수정(진입 0건 원인):** `run_v4_tune` Phase H `phase_h_fixed_amount` 기본값 300만 강제 주입 → `None` 시 YAML field_test(5만) 사용 · `min_invest_amount`·`max_daily_cash_deploy_ratio(0.45)`·정수 주수 캡이 5만 베팅과 충돌 → H-3 전용 하한·배분 1.0
-- **결과:** 초기 10만 → 최종 **93,828원** (-6.17%) · **23** SELL · PF **0.67** · MDD **-11.97%** · `STOP_LOSS_H` **12**건 · PF≥1 **0/1**
-- **산출:** `outputs/v4_tune_results.csv` · `outputs/v4_tune_report.md` · `outputs/v4_tune_run_h3_field_test.log`
-- **비교(H-2·3천만):** 동일 Phase H PF 0.62·-10.31% 대비 소액 유니버스(1천~2만·황제주 1.5만)에서 **거래 136→23건**·**MDD -12.7%→-12.0%**·Ruin(-97%) 회피
-
-### 2026-06-02 (**v4.0** Phase H-3 — 10만 원 소액 필드 테스트 인프라)
-- **`config/settings.yaml`:** `v4_0.environment.mode=field_test`·`initial_cash=100000` · `portfolio.max_slots=2` · `strategy.field_test_invest_amount=50000` · `stock_price_floor=1000` · `stock_price_ceiling=20000`
-- **`src/v4_config.py`:** `environment` 섹션 파싱 및 `V4Config` 확장(`environment_mode`, `environment_initial_cash`) · field_test 시 `portfolio.initial_cash`를 환경값으로 대체
-- **`src/engine/portfolio_manager.py`:** `_phase_h_entry_allowed` 신설 — **주가 floor/ceiling 선검사 후** `_phase_h_tactical_filter` 수행(연산량 절감) · field_test 모드 기본 H 베팅금=5만 적용
-
-### 2026-06-02 (**v4.0** Phase H-2 — 손절·익절·황제주컷 미세 그리드)
-- **`run_v4_tune.py`:** `--phase-h2-grid` 추가 (`sl` 3/4/5%, `tp` 6/8/10%, `emperor_cap` 30/20/15%) · `--quick` 시 축소 그리드
-- **`run_v4_tune.py`:** Phase H 결과 열 `phase_h_sl_ratio`·`phase_h_tp_ratio`·`phase_h_emperor_cap_ratio`·`phase_h_fixed_amount` CSV/리포트 반영
-- **`src/engine/portfolio_manager.py`:** Phase H 하이퍼파라미터를 생성자 주입값으로 수용(시나리오별 미세 튜닝 실행 가능)
-
-### 2026-06-02 (**v4.0** Phase H-2 — 시간·황제주·저점 윈도우 정합성 패치)
-- **`_phase_h_tactical_filter`:** 달력일 `.days` 제거 → **영업일 5일** 관망 · 황제주(종가 > 베팅금 30%) 진입 차단 · 로컬 저점 **20영업일** · 정수 주수 기준 `invest_amount` 캡(수량 누수 방지)
-- **`run_v4_tune.py`:** `--only SCENARIO ...` (부분 스윕)
-
-### 2026-06-02 (**v4.0** Phase H — 계단식 박스권 쌍바닥 타점 엔진)
-- **`src/engine/portfolio_manager.py`:** `phase_h_mode` 추가 · 5일선 하회+MA10/20 수렴+쌍바닥 지지 진입 · SL -3% / TP +10% / 5일 타임스탑 청산(`STOP_LOSS_H`/`TAKE_PROFIT_H`/`TIME_STOP_H`)
-- **운용:** Phase H는 1회차 단일 진입만 허용(연쇄 stage 진입 비활성) · 슬롯당 300만 단리·당일 배분 상한 유지
-- **`run_v4_tune.py`:** 시나리오 구조 `(name, overrides, phase_mode)`로 확장 · `combo_phase_h_double_bottom` 추가 · 결과 CSV에 `phase_mode`/`stop_loss_h_count` 기록
-- **DoD 보고:** 튜닝 리포트에 `## Phase H DoD 체크` 자동 생성(거래수 감소율, `STOP_LOSS_H` 건수, PF 1.0 돌파 여부)
-
-### 2026-06-02 (**v4.0** Phase G — 14시나리오 전체 스윕·최적 눌림목 도출)
-- **실행:** `python run_v4_tune.py` (벌크 1회 · 920영업일 · ~162분) → `outputs/v4_tune_results.csv` · `v4_tune_report.md`
-- **결과:** PF≥1 **0/14** · 흑자 **0/14** — 현 그리드로 Ruin 해소 불가
-- **PF 1위:** `rr_asym_sl3_tp5` (손절 3%·익절 5%) PF **0.69**, 최종 261만(-91.3%)
-- **최종 자산 1위:** `combo_def3m_rr_wide` (300만·deploy 20%·눌림 4%·SL5/TP5) **872만**(-70.9%), PF **0.68**
-- **눌림목 단독(1천만·deploy 45%·SL/TP 동일):** 2% PF 0.57 ≈ 3% baseline 0.57 > 5% PF 0.50 — **얕은 2%** PF 우세, 자산은 baseline(63만)이 2%(60만)보다 근소 우세
-- **코드:** `run_v4_tune.py` 보고서에 `## 눌림목 타점` 섹션 추가 · `docs/v4_ruin_analysis.md` §7 갱신
-- **YAML:** 자동 반영 없음(main 병합 없음) — 채택 시 `nuliim_ratio`·사이징·손익비 수동 검토
-
-### 2026-06-01 (**v4.0** Phase G — Ruin 서면·튜닝 러너, main 병합 없음)
-- **`docs/v4_ruin_analysis.md`:** Ruin 메커니즘·Phase B/C 인용·튜닝 레버 표
-- **`run_v4_tune.py`:** `v4_0.strategy` 시나리오 스윕 · `outputs/v4_tune_results.csv`·`v4_tune_report.md` · `--quick`
-- **`src/v4_config.py`:** `v4_config_with_strategy_overrides()` — YAML 덮어쓰기 헬퍼
-- **정책:** 현재 브랜치 유지 · main/PR 보류
-- **`--quick` 7시나리오 (~86분):** PF≥1 **0/7** · 흑자 **0/7** · 최선 `defense_3m_deploy15` 최종 **813만**(-72.9%, PF 0.56) · PF 1위 `rr_wide_5pct` PF **0.64**(-96.4%)
-
-### 2026-06-01 (**v4.0** Phase F — Harness §4 progress 아카이브)
-- **`docs/progress_archive.md`:** §2 changelog **2026-05-22 ~ 2026-05-31** 원문 누적 이관 (~315행).
-- **`progress.md`:** v4.0 Phase A~G·엔진 착수 이력만 §2 유지 · §3 아카이브 구간 갱신.
-
-### 2026-06-01 (**v4.0** Phase E — settings.yaml SSOT 이관)
-- **`config/settings.yaml`:** `v4_0.strategy`·`portfolio`·`costs` 블록 추가 (눌림·단리·손익·tracked 만료·수수료)
-- **`src/v4_config.py`:** `V4Config` dataclass · `load_v4_config()` (v3_scan_config 패턴)
-- **`portfolio_manager.py`:** `PHASE_G_*`·`INITIAL_EQUITY` 하드코딩 제거 → 생성자 YAML 바인딩
-- **검증:** `run_v4_parity.py` **3/3 일치** (phase_g_mode=False) · `run_v4_portfolio.py` Phase A/G DoD 통과
-- **벌크 재실행(Phase G+YAML):** 최종 633,906원 (-97.89%) · 828 SELL · PF 0.57 · MDD -97.98%
-- **참고:** `outputs/backup_pre_phase_e`는 중단된 짧은 G 실행분(158행)이라 전체 diff 동치 기준 아님 — 상수값은 이관 전과 동일
-
-### 2026-06-01 (**v4.0** Phase G — 심폐소생 패치)
-- **G-1:** 기준봉 당일 매수 금지 · 종가 ≤ 앵커×(1-3%) 눌림목
-- **G-2:** 슬롯당 1,000만 원 단리 (`fixed_invest_amount`)
-- **G-3:** STOP_LOSS -5% · TAKE_PROFIT +3.5% · 3일 TIME_STOP (장중 고/저가)
-
-### 2026-06-01 (**v4.0** Phase D — 로직 정합성 패치·전 포트 재검증 완료)
-- **D-1:** 동일 `code` open position 시 추가 BUY 차단 (`portfolio_manager._process_entries`)
-- **D-2:** `TRACKED_EXPIRE_BDAYS=30` — stage==1·미보유만 tracked 만료 (연쇄 2회차+ 유지)
-- **D-3:** `compute_stage_invest_amount` + 당일 현금 45% 배분 상한 (`MAX_DAILY_CASH_DEPLOY_RATIO`)
-- **Fix:** `candidate_codes`마다 매일 `_append_history_bar` — 선적재 후 진입 0건 버그 제거
-- **재실행:** `run_v4_parity.py` **3/3 일치** · `run_v4_portfolio.py` BUY 1,189 / SELL 1,186 · Phase A DoD 통과
-- **성과(패치 후):** 최종 57,701원 (-99.81%) · PF 0.35 · MDD -99.84% — 패리티 유지했으나 **Ruin 미해소**(전략·총자산 비례 사이징 한계)
-- **보류:** D-4 엔진 통합·D-5 `hold_days` — Phase E/G 또는 별도 착수
-- **다음:** Phase E — `settings.yaml` v4_0 SSOT
-
-### 2026-06-01 (**v4.0** Phase C — LG전자 패리티 동치 검증 완료)
-- **`run_v4_parity.py`:** Top20+1,500억 첫 앵커(2023-02-08) · 격리 포트(066570만·max_slots=1·OHLCV 선적재)
-- **`portfolio_manager.py`:** `allowed_codes`·`anchor_first_smart_money_only`·`preload_ohlcv` · **`_ohlcv_history_as_of`**(미래봉 참조 차단)
-- **결과:** 단일 vs 격리 포트 **3건 키 100% 일치** · `outputs/v4_parity_report.md`
-- **시사:** 전 종목 포트 -99%는 엔진 로직 오류보다 **다종목 자금/슬롯 경쟁** 가능성 큼 → Phase D
-- **다음:** Phase D 로직 패치
-
-### 2026-06-01 (**v4.0** Phase B — 자산 소멸 집중 감사 완료)
-- **`scripts/audit_v4_phase_b.py`:** B-1 사이징·B-2 유령(기준봉 지연)·B-3 LG diff — `outputs/v4_audit_sizing.md`·`v4_audit_ghost.csv`·`v4_logic_diff_066570.md`
-- **B-1:** 현금 초과 매수·음수 cash 없음 · slot_budget=equity/3 동적 반영 · 동시 3종목 1회차 시 현금 최대 50% 투입
-- **B-2:** 30일 초과 진입 16.3% · 최대 지연 837일 · 실현손실 최대는 delay 0~5일 구간
-- **B-3:** LG 1~2회차 일치·3회차 불일치(단일 04-24 vs 포트 11-03) — 다종목 경쟁으로 연쇄 시퀀스 어긋남
-- **1차 원인:** PF 0.36+총자산 비례 재투자 Ruin · 유령 tracked · 포트/단일 엔진 불일치
-- **다음:** Phase C 패리티 또는 Phase D 패치
-
-### 2026-06-01 (**v4.0** Phase A — `v4_trades.csv` 익스포트 완료)
-- **`portfolio_manager.py`:** BUY/SELL 각 1행 · `trade_id`·`cash_after`·`total_equity_after`·`slot_budget_at_entry`·`alloc_ratio` 등 `trades_detail` 누적
-- **`run_v4_portfolio.py`:** `outputs/v4_trades.csv`·`v4_pass_log.txt`(있을 때) · Phase A DoD 자동 검증
-- **인수:** SELL 1,042건 = metrics 일치 · `cash_after` 음수 0건 · PnL 샘플 10건 OK · BUY 1,045(기말 미청산 3건 추정)
-- **다음 착수:** Phase B — 사이징·유령 tracked·로직 diff 감사
-
-### 2026-06-01 (**v4.0** Portfolio Validation Roadmap — 문서화)
-- **`docs/작업지시서-v4.0-Portfolio-Validation.md`:** Phase A~G 순차 작업지시 · main/GUI 병합 보류
-
-### 2026-06-01 (**v4.0** Portfolio Manager Engine)
-- **`src/engine/portfolio_manager.py`:** 일자별 시뮬레이션 루프 · Total Equity 3천만 · Max Slots 3 · 슬롯/현금 부족 시 진입 Pass · 보유 포지션 청산(+3.5%/3일 타임스탑) 우선 처리 후 진입 · Equity Curve/MDD 산출
-- **`run_v4_portfolio.py`:** `.env` 로드(KRX ID/PW) · 벌크 로드 강제 · `outputs/v4_equity_curve.csv` 자동 저장 · 승률/프로핏팩터/수익률/MDD 출력
-- **Fix:** 거래대금(종가×거래량) `int32` 오버플로우 방지(float64 캐스팅)로 유니버스 0건 문제 해결
-
-### 2026-06-01 (**v4.0** Smart Money Cascade Engine)
-- **`src/engine/smart_money_cascade.py`:** Pass0~1 유니버스(1,500억·Top20) · 1~4회차 종가 매수(MA3/5/10/20+거래량 건조) · 익일~3영업일 +3.5% 익절/타임스탑 · 비용 0.00215 · 미청산 중복 진입 차단
-- **`run_v4_test.py`:** 프로젝트 루트 `sys.path` 주입 · `src.data_loader._load_ohlcv_pykrx_by_date` · LG전자 첫 스마트머니 기준봉 연쇄 리포트
-- **인수:** `python run_v4_test.py` 단일 실행 · 1회차 익절 후 2~3회차 순차 레벨업(중복 진입 없음)
-
-## 3. 보관 및 아키텍처 요약 (Harness §4)
-
-- **과거 changelog 원문:** `docs/progress_archive.md` — 2026-05-21~05-20 · **2026-05-22~05-31**(Phase F, 2026-06-01)
-- **main/GUI:** 단일종목 다음봉 시가 체결 · 매수 AND / 매도 OR · `settings.yaml` · 스크리너·차트 패닝 캐시
-- **v4.0 브랜치:** `smart_money_cascade` + `portfolio_manager` · `v4_0.*` SSOT · `run_v4_tune.py` 튜닝 · Ruin 서면 `docs/v4_ruin_analysis.md` — **main 병합 없음** (동결)
-- **v5.0 브랜치:** MA20 변곡점 스나이퍼 · `portfolio_manager_v5` · `run_v5_breakout.py` · ② 완주(③ DoD 대기)
+## 1. 현재 진행 중인 핵심 태스크
+- [x] **실행 완료:** `python run_v7_20_alpha_research.py --prewarm 120 --mode dynamic_warmup --universe all --yes > outputs/v7_20_final_run.log 2>&1`
+- [x] **산출물:** `outputs/v7_20_final_trades.csv`, `outputs/v7_20_final_research_report.md`, `outputs/v7_20_final_run.log`
+- [ ] **Sign-off 미달:** PF `0.69`로 목표 `>= 1.5` 미달. 2023년 폭락 구간 `[MARKET INTERCEPT]` 차단 로그는 정상 확인.
+
+## 2. 핵심 기능 체크리스트
+- [x] v7.1.0 Pivot 매니저 추가 (`src/engine/portfolio_manager_v710.py`)
+- [x] v7.1.0 전용 리서치 러너 생성 (`run_v7_10_alpha_research.py`)
+- [x] V710 임포트 및 `_run_relay` 호출부를 `alpha_eq/alpha_tr/alpha_td/alpha_m` 구조로 정리
+- [x] v7.2.0 Final Master 매니저 추가 (`src/engine/portfolio_manager_v720.py`)
+- [x] v7.2.0 전용 리서치 러너 생성 (`run_v7_20_alpha_research.py`)
+- [x] v7.2.0 전체 백테스트 실행 및 `[MARKET INTERCEPT]` 로그 검토
+
+## 3. 최신 변경 이력
+
+### 2026-06-15 (**v7.2.0**) Final Master 지수 인터록 탑재
+- **신규 엔진:** `PortfolioManagerV720`이 `PortfolioManagerV710`을 상속하고 `kosdaq_index_df` 주입을 필수화.
+- **시장 필터:** KOSDAQ 종가가 3일 이동평균선 아래면 `_process_entries()` 초입에서 당일 신규 매수 전면 차단 및 `[MARKET INTERCEPT]` 로그 출력.
+- **신규 러너:** `run_v7_20_alpha_research.py`에서 KOSDAQ 지수 일봉을 로드해 릴레이 매니저에 전달.
+- **검증:** `python -B -m py_compile "src/engine/portfolio_manager_v720.py" "run_v7_20_alpha_research.py"` 통과.
+- **백테스트:** 7구간 전체 실행 완료. PF `0.69`, 누적 수익률 `-75.41%`, MDD `-80.66%`, 목표 PF `1.5` 미달.
+- **차단 확인:** 2023-09~10, 2024-08, 2026-03 등 지수 하락일에 `[MARKET INTERCEPT]` 로그 정상 격발.
+
+### 2026-06-14 (**v7.1.0**) 다음 실행 작업 정리
+- **다음 명령:** `python run_v7_10_alpha_research.py --prewarm 120 --mode dynamic_warmup --universe all --yes`
+- **상태:** 사용자가 내일 다시 실행 예정. 오늘은 실행 보류.
+- **목적:** V7.1.0 Pivot 전략의 7구간 릴레이 백테스트 실행 및 PF `1.5` 달성 여부 확인.
+- **산출 예정:** `outputs/v7_10_pivot_trades.csv`, `outputs/v7_10_alpha_research_report.md`
+
+### 2026-06-14 (**v7.1.0**) Pivot 러너 생성
+- **신규 파일:** `run_v7_10_alpha_research.py`
+- **핵심 연결:** `PortfolioManagerV710` 단독 실행, `_run_relay(... manager_cls=PortfolioManagerV710, manager_kwargs=alpha_kwargs)`
+- **검증:** `python -m py_compile "run_v7_10_alpha_research.py"` 통과
+
+### 2026-06-14 (**v7.1.0**) Pivot 엔진 추가
+- **신규 파일:** `src/engine/portfolio_manager_v710.py`
+- **진입 조건:** 최근 20영업일 최고 거래대금 `>= 200억`, 낙폭과대, 양봉 또는 긴 아랫꼬리 브레이크 캔들, 거래량 급감
+- **청산:** `+8% / -3% / 4일`
+- **검증:** `python -m py_compile "src/engine/portfolio_manager_v710.py"` 통과
+
+## 4. 최신 아키텍처 상태
+- **V7.0:** `src/engine/portfolio_manager_v700.py`, `run_v7_00_alpha_research.py`
+- **V7.1:** `src/engine/portfolio_manager_v710.py`, `run_v7_10_alpha_research.py`
+- **릴레이 기간/유니버스:** `src/v5_relay_screener.py`의 7구간, 코스닥 전종목 마스크
+- **청소 기록:** 2026-06-08~06-09 이전 최신 changelog는 `docs/progress_archive.md`로 이관
 
 ---
 
-변경 반영 후 **§2 맨 위**에 새 블록을 누적. 분량·Done 누적 시 위 아카이브로 이관.
+변경 반영 후 **§3 맨 위**에 새 블록을 누적. 완료 항목이 5개 이상이거나 파일이 100줄을 넘으면 `docs/progress_archive.md`로 이관.
