@@ -1,0 +1,47 @@
+# v8.0.0 ORB 시가 돌파 모멘텀 — 실전 SSOT (v5.5.2 live_settings.yaml 과 분리)
+live_trading:
+  account:
+    broker: "korea_investment"
+    mode: "paper"
+    bet_amount_per_slot: 100000
+    min_slots_limit: 1
+    max_slots_limit: 3
+    minimum_operational_capital: 100000
+    buy_cost_ratio: 0.00015
+    sell_cost_ratio: 0.00195
+
+  screener:
+    market: "KOSDAQ"
+    min_market_cap: 90000000000
+    max_market_cap: 900000000000
+    min_live_volume_amt: 50000000000       # 전일(D-1) 거래대금 500억+
+    top_n: 50
+    screener_time: "08:55"                 # 프리마켓 유니버스 (v7 15:15 폐기)
+    universe_output: "config/live_orb_universe.json"
+    min_history_bars: 5
+
+  strategy:
+    engine: "orb_v800"
+    lookback_window: 1
+    target_profit_ratio: 0.05              # +5% 익절
+    stop_loss_ratio: 0.02                  # -2% 손절
+    max_hold_days: 0                       # 당일 청산 (오버나이트 금지)
+    entry_time: "09:05"                    # Opening High 돌파 시작
+    entry_cutoff: "09:30"                  # 09:30 이후 신규 진입 금지
+    time_stop: "14:50"                     # 당일 강제 청산
+    gap_min_ratio: 0.02
+    gap_max_ratio: 0.07
+    opening_range_minutes: 5
+    macro_filter:
+      ma_lines: []
+      price_above_ma: 0
+
+  watch:
+    poll_interval_sec: 0.5
+    market_open: "09:00"
+    market_close: "15:00"                  # v8 마스터 15:00 강제 종료
+
+  master:
+    startup_sync: "08:50"
+    shutdown: "15:00"
+    opening_high_lock: "09:05"
