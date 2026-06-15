@@ -302,3 +302,31 @@ v5_5:
 # .\venv\Scripts\python.exe run_v5_relay_portfolio.py
 # # 3) 기존 JSON으로 바로 백테스트
 # .\venv\Scripts\python.exe run_v5_relay_portfolio.py --yes      
+
+# v9.0.0 대형주 피보나치 스윙 (Risk-Free Swing) — 15:20 일봉 종가
+# 실행: python run_v9_00_alpha_research.py --prewarm 220 --yes
+v9_0:
+  environment:
+    mode: "field_test"
+    initial_cash: 2000000
+    relay_interval_months: 6
+    universe_dir: "config/relay_universes/"
+
+  portfolio:
+    max_slots: 4
+    slot_invest_amount: 500000
+    trading_costs:
+      buy_cost_ratio: 0.00015
+      sell_cost_ratio: 0.00195
+
+  strategy:
+    strategy_name: "fib_swing_risk_free"
+    lookback_window: 200
+    macro_trend_filter:
+      enabled: false
+    screener:
+      market: "ALL"
+      min_market_cap: 500000000000
+      max_market_cap: 0
+      min_daily_volume_amt: 0
+      top_n_limit: 0

@@ -3,10 +3,10 @@ live_trading:
   account:
     broker: "korea_investment"
     mode: "paper"                      # paper: 모의(1천만) | real_money: 실전(0원·주의)
-    bet_amount_per_slot: 58000         # 1슬롯 정액 베팅 58,000원(수수료 감안)
+    bet_amount_per_slot: 100000         # 1슬롯 정액 베팅 58,000원(수수료 감안)
     min_slots_limit: 1                 # 동적 슬롯 하한
     max_slots_limit: 5                 # 동적 슬롯 상한 (과분산 방지)
-    minimum_operational_capital: 58000 # 총자산 미만 시 매수 셧다운
+    minimum_operational_capital: 100000 # 총자산 미만 시 매수 셧다운
     buy_cost_ratio: 0.00015
     sell_cost_ratio: 0.00195
 
