@@ -1,14 +1,14 @@
 # 📈 프로젝트 진행 일지 (Progress Log)
 
 ## 1. 현재 진행 중인 핵심 태스크
-- [x] **v10.2.1-Rebuild:** `portfolio_manager_v1021.py` · `run_v10_2_rebuild_research.py`
-- [x] **평가손익 휩쏘 방지 + Safety Buffer:** 확정청산일만 EOD 정산 · 200~210만 완충구간
-- [x] **Cut-off 재검증 (3.5년):** PF 1.32 ❌ · MDD -37.97% · 수확/수혈 59회 (기존 859회)
-- [x] **v10.2 Safe Vault:** `capital_buffer_manager.py` · 수확/수혈 EOD
-- [x] **v9.0 Fib Swing:** PF 3.17 벤치마크 (`portfolio_manager_v900.py`)
+- [x] **v11.0 ORB Daytrading:** `orb_strategy_v11.py` · `portfolio_manager_v11.py` · `run_v11_daytrading_research.py`
+- [ ] **v11 Cut-off 검증:** Overnight 0건 · PF/승률 도출 · 전체 백테스트
+- [x] **v10.2.1-Rebuild:** Fib + Safe Vault (v10.0 브랜치 커밋 완료)
 
 ## 2. 핵심 기능 체크리스트
-- [x] v10.2.1 Safe Vault 휩쏘 방지 — `has_realized_pnl_today` · 5% 버퍼(210만 수확)
+- [x] v11.0 ORB 데이트레이딩 PM — 15:20 Time-stop · Safe Vault · 일봉 Intraday Proxy
+- [x] v11.0 ORB 전략 코어 (`orb_strategy_v11.py`) — ORB 돌파 · MA5 · 손익/타임스탑
+- [x] v11.0 리서치 러너 (`run_v11_daytrading_research.py`) — smoke PASS
 - [x] v10.2.1 리서치 러너 (`run_v10_2_rebuild_research.py`) — 2023~2026 통합
 - [x] v10.1 통합 PM (`portfolio_manager_v101.py`) — 일별 regime + 슬롯 공유
 - [x] v10.1 백테스트 러너 (`run_v10_1_integrated_research.py`)
@@ -20,6 +20,13 @@
 - [x] v9.0 Fib Swing 백테스트 (`portfolio_manager_v900.py`)
 
 ## 3. 최신 변경 이력
+
+### 2026-06-17 (**v11.0**) ORB 데이트레이딩 + EOD Safe Vault
+- **전략:** ORB 15분 돌파 · 09~10:30 진입 · -2.5%손절 · +3%50% · +5%전량 · 15:20 Time-stop.
+- **유니버스:** 전일 거래대금 Top100 + MA5 정배열 · 4슬롯×50만.
+- **Proxy:** 일봉 OHLC 장중 돌파 추정 (분봉 없음).
+- **Vault:** 거래일 EOD 15:30 CapitalBufferManager (210만/200만).
+- **Smoke:** `run_v11_daytrading_research.py --smoke` PASS.
 
 ### 2026-06-17 (**v10.2.1**) 평가손익 휩쏘 방지 · Safety Buffer
 - **문제:** 평가손익 변동만으로 매일 수확/수혈 859회(402+457) → PF 1.32 왜곡.
@@ -52,6 +59,7 @@
 - **스윙:** 1:1:2 분할매수 · Risk-Free 본전 스탑.
 
 ## 4. 최신 아키텍처 상태
+- **V11.0 (백테):** `orb_strategy_v11.py` · `portfolio_manager_v11.py` · `run_v11_daytrading_research.py`
 - **V10.2.1-Rebuild (백테):** `portfolio_manager_v1021.py` · `run_v10_2_rebuild_research.py` (Fib+Vault only)
 - **V10.1 (실전+백테):** `market_classifier` · `portfolio_manager_v101` · `run_v10_1_integrated_research.py`
 - **V10.0:** `v10_live_core.py` · `high_tight_flag_strategy.py` · `fib_swing_strategy.py`
