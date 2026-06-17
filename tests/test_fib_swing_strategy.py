@@ -6,11 +6,13 @@ import pandas as pd
 
 from src.engine.fib_swing_strategy import (
     FIB_RATIOS,
+    TRANCHE_AMOUNTS_KRW,
     build_fib_setup_from_history,
     compute_fib_setup,
     detect_tranche_signal,
     evaluate_exit,
     find_golden_cross_index,
+    resolve_swing_entry_order,
 )
 
 
@@ -105,10 +107,24 @@ def test_full_stop_swing_low():
     assert stop[0] == "STOP_SWING_LOW"
 
 
+def test_resolve_swing_entry_order_amounts():
+    setup = type("S", (), {
+        "fib_prices": (38_200.0, 37_000.0, 35_800.0),
+        "swing_high": 40_000.0,
+        "swing_low": 34_000.0,
+        "gc_date": pd.Timestamp("2024-01-01"),
+    })()
+    for tf, expected in enumerate(TRANCHE_AMOUNTS_KRW):
+        sig = detect_tranche_signal(setup.fib_prices[tf], tf, setup)  # type: ignore[arg-type]
+        assert sig is not None
+        assert sig.amount_krw == expected
+
+
 def run_unit_tests() -> None:
     test_golden_cross_detected()
     test_fib_levels_ordered()
     test_tranche_signal_at_fib()
+    test_resolve_swing_entry_order_amounts()
     test_partial_tp_then_breakeven()
     test_full_stop_swing_low()
     setup = build_fib_setup_from_history(_synthetic_uptrend())

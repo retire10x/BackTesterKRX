@@ -6,6 +6,7 @@ v9.0.0 대형주 피보나치 스윙 (Risk-Free Swing) — 순수 신호 로직.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -252,17 +253,27 @@ def _normalize_ohlcv(df: pd.DataFrame) -> pd.DataFrame:
 
 def detect_swing_entry(ohlcv_df: pd.DataFrame, *, tranches_filled: int = 0) -> tuple[bool, str]:
     """장기 정배열 + 피보나치 분할 매수 타점 (0.382/0.500/0.618)."""
+    ok, msg, _ = resolve_swing_entry_order(ohlcv_df, tranches_filled=tranches_filled)
+    return ok, msg
+
+
+def resolve_swing_entry_order(
+    ohlcv_df: pd.DataFrame,
+    *,
+    tranches_filled: int = 0,
+) -> tuple[bool, str, float]:
+    """분할 매수 격발 여부 + 1:1:2 금액(원). tranches_filled=0 → 1차 125,000원."""
     setup = build_fib_setup_from_history(_normalize_ohlcv(ohlcv_df))
     if setup is None:
-        return False, "골든크로스·피보나치 셋업 없음"
+        return False, "골든크로스·피보나치 셋업 없음", 0.0
 
     close_s = pd.to_numeric(_normalize_ohlcv(ohlcv_df)["close"], errors="coerce")
     today_close = float(close_s.iloc[-1])
     sig = detect_tranche_signal(today_close, tranches_filled, setup)
     if sig is None:
         ratio = FIB_RATIOS[tranches_filled] if tranches_filled < len(FIB_RATIOS) else 0
-        return False, f"피보나치 {ratio:.3f} 레벨 미접촉"
-    return True, f"통과 — FIB {sig.fib_ratio:.3f} @ {sig.fib_price:,.0f}"
+        return False, f"피보나치 {ratio:.3f} 레벨 미접촉", 0.0
+    return True, f"통과 — FIB {sig.fib_ratio:.3f} @ {sig.fib_price:,.0f}", float(sig.amount_krw)
 
 
 def evaluate_swing_exit(
@@ -304,6 +315,23 @@ class FibSwingEngine(V10PresetEngineBase):
     def entry_signal(self, ohlcv_df: pd.DataFrame) -> tuple[bool, str]:
         return detect_swing_entry(ohlcv_df, tranches_filled=0)
 
+    def supports_tranche_add(self) -> bool:
+        return True
+
+    def resolve_entry_order(
+        self,
+        ohlcv_df: pd.DataFrame,
+        *,
+        state: dict | None = None,
+    ) -> tuple[bool, str, float]:
+        tranches_filled = int(state.get("tranches_filled", 0)) if state else 0
+        return resolve_swing_entry_order(ohlcv_df, tranches_filled=tranches_filled)
+
+    def on_tranche_fill(self, state: dict[str, Any], *, tranches_filled: int) -> dict[str, Any]:
+        state = dict(state)
+        state["tranches_filled"] = tranches_filled
+        return state
+
     def scan_universe(self) -> list[str]:
         return scan_swing_universe(project_root=self.project_root)
 
@@ -323,7 +351,7 @@ class FibSwingEngine(V10PresetEngineBase):
             state=state,
         )
 
-    def init_position_state(self, ohlcv_df: pd.DataFrame) -> dict:
+    def init_position_state(self, ohlcv_df: pd.DataFrame) -> dict[str, Any]:
         setup = build_fib_setup_from_history(_normalize_ohlcv(ohlcv_df))
         if setup is None:
             return {"tranches_filled": 1}
@@ -337,7 +365,7 @@ class FibSwingEngine(V10PresetEngineBase):
             "breakeven_stop": 0.0,
         }
 
-    def on_partial_exit(self, state: dict, entry_price: float) -> dict:
+    def on_partial_exit(self, state: dict[str, Any], entry_price: float) -> dict[str, Any]:
         state = dict(state)
         state["partial_tp_done"] = True
         state["risk_free"] = True
