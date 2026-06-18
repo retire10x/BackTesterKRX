@@ -96,15 +96,6 @@ flowchart LR
 
 조건: `orb_high > open_px`, 15봉 미만이면 해당 종목 ORB 미설정
 
-> **⚠️ 주의 — 임시 테스트 패치**  
-> 현재 `lock_orb_setups()`에 아래 코드가 있습니다.
->
-> ```python
-> setup.orb_high = setup.open_px * 0.5  # [임시] 돌파 기준선을 시가의 50%로 낮춤
-> ```
->
-> 설계상은 15분 고가 최대값이지만, **지금은 시가의 50%로 덮어쓰는 테스트 패치**가 적용되어 있습니다. 실전 운용 전 이 줄 제거 여부를 반드시 확인하세요.
-
 ---
 
 ## 4. Phase 3 — 진입 (09:16 ~ 10:30)
@@ -344,9 +335,9 @@ Streamlit 대시보드 (1분 갱신)
 
 ## 13. 현재 코드에서 확인할 사항
 
-1. **`lock_orb_setups` 임시 패치** — `orb_high = open_px * 0.5` 가 들어가 있어 설계와 다르게 동작할 수 있습니다.
-2. **`.env` KIS 설정** — `KIS_PAPER_*` 키·모의계좌번호, `LIVE_DRY_RUN=0` (실주문 시)
-3. **실전 계좌 오발송 방지** — v11은 `mode=paper` 강제, `KIS_PAPER_ACCOUNT_NUMBER` 사용
+1. **`.env` KIS 설정** — `KIS_PAPER_*` 키·모의계좌번호, `LIVE_DRY_RUN=0` (실주문 시)
+2. **실전 계좌 오발송 방지** — v11은 `mode=paper` 강제, `KIS_PAPER_ACCOUNT_NUMBER` 사용
+3. **장전 Mock 검증** — `python run_v11_live_paper_trading.py --mock --speed 0` 로 PASS 확인
 
 ---
 

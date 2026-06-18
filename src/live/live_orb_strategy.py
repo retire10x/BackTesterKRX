@@ -207,9 +207,6 @@ class LiveORBStrategy:
         for code, bars in bars_by_code.items():
             setup = build_orb_setup_from_minutes(bars)
             if setup is not None:
-                # 👇 [임시] 돌파 기준선을 시가의 반값으로 떡락시킵니다.
-                setup.orb_high = setup.open_px * 0.5
-
                 self.setups[code] = setup
                 count += 1
                 logger.info(
@@ -333,6 +330,10 @@ class LiveORBStrategy:
             p.partial_tp_done = True
             p.risk_free = True
             p.breakeven_stop = p.entry_price
+            if hasattr(self.broker, "_save_meta_from_position"):
+                self.broker._save_meta_from_position(p)
+                if hasattr(self.broker, "_persist"):
+                    self.broker._persist()
 
         nm = self.name_lookup(code)
         logger.info(

@@ -1,7 +1,8 @@
 """
-v11.0 ORB (Opening Range Breakout) 데이트레이딩 전략 코어.
+v11.2 라이브 ORB (Opening Range Breakout) 데이트레이딩 전략 코어.
 
-일봉 OHLC 기반 장중 돌파 추정(Intraday Proxy) — 분봉 데이터 없이 ORB 시뮬레이션.
+한국투자증권(KIS) 실시간 당일 1분봉 OHLCV 기반 정밀 돌파 진입 및 청산 엔진.
+09:00~09:15 분봉 기준선 확정 ──> 09:16~10:30 돌파 진입 ──> 실시간 TP/SL/본전 스탑 감시.
 """
 from __future__ import annotations
 

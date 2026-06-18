@@ -1,0 +1,71 @@
+{
+  "updated_at": "2026-06-18 15:30:00",
+  "watch_count": 10,
+  "watch_items": [
+    {
+      "rank": 1,
+      "code": "005930",
+      "name": "삼성전자",
+      "avg_volume": 23921851.6
+    },
+    {
+      "rank": 2,
+      "code": "000660",
+      "name": "SK하이닉스",
+      "avg_volume": 4681916.0
+    },
+    {
+      "rank": 3,
+      "code": "035420",
+      "name": "NAVER",
+      "avg_volume": 2614522.0
+    },
+    {
+      "rank": 4,
+      "code": "051910",
+      "name": "LG화학",
+      "avg_volume": 296406.0
+    },
+    {
+      "rank": 5,
+      "code": "006400",
+      "name": "삼성SDI",
+      "avg_volume": 463777.2
+    },
+    {
+      "rank": 6,
+      "code": "035720",
+      "name": "카카오",
+      "avg_volume": 2113372.8
+    },
+    {
+      "rank": 7,
+      "code": "005380",
+      "name": "현대차",
+      "avg_volume": 1238277.6
+    },
+    {
+      "rank": 8,
+      "code": "068270",
+      "name": "셀트리온",
+      "avg_volume": 552332.2
+    },
+    {
+      "rank": 9,
+      "code": "028260",
+      "name": "삼성물산",
+      "avg_volume": 573164.6
+    },
+    {
+      "rank": 10,
+      "code": "105560",
+      "name": "KB금융",
+      "avg_volume": 1592279.8
+    }
+  ],
+  "positions": [],
+  "open_slot_count": 0,
+  "max_slots": 4,
+  "available_cash": 1964691.7557674693,
+  "total_equity": 1964691.7557674693
+}
