@@ -31,6 +31,7 @@ from run_v7_10_alpha_research import (  # noqa: E402
 from src.data_loader import fetch_pykrx_marcap_trade_krw_by_code  # noqa: E402
 from src.engine.portfolio_manager import load_merged_market_day_frames  # noqa: E402
 from src.engine.portfolio_manager_v11 import Alpha11Config, PortfolioManagerV11  # noqa: E402
+from src.marcap_bulk_cache import build_marcap_cache_dual  # noqa: E402
 from src.v5_config import V5MacroTrendFilterConfig, load_v5_relay_config  # noqa: E402
 from src.v5_universe import _fetch_pykrx_listed_shares_by_code  # noqa: E402
 
@@ -70,26 +71,6 @@ def _build_v11_config():
             macro_trend_filter=macro_off,
         ),
     )
-
-
-def _build_marcap_cache_dual(
-    bdays: pd.DatetimeIndex,
-    *,
-    verbose: bool = True,
-) -> dict[tuple[str, str], float]:
-    cache: dict[tuple[str, str], float] = {}
-    total = len(bdays)
-    for i, dt in enumerate(bdays):
-        date_s = pd.Timestamp(dt).normalize().strftime("%Y-%m-%d")
-        for market in ("KOSPI", "KOSDAQ"):
-            snap = fetch_pykrx_marcap_trade_krw_by_code(date_s, market=market)
-            for code, (mc, _ta) in snap.items():
-                c6 = str(code).zfill(6)
-                if mc is not None and np.isfinite(mc) and float(mc) > 0:
-                    cache[(date_s, c6)] = float(mc)
-        if verbose and (i == 0 or (i + 1) % 60 == 0 or i + 1 == total):
-            print(f"   시총 캐시 {i + 1}/{total}일 · {len(cache):,}건", flush=True)
-    return cache
 
 
 def _load_shares_fallback(as_of_date: str) -> dict[str, float]:
@@ -160,6 +141,7 @@ def _run_smoke() -> int:
         "src/engine/orb_strategy_v11.py",
         "src/engine/portfolio_manager_v11.py",
         "src/engine/capital_buffer_manager.py",
+        "src/marcap_bulk_cache.py",
         "run_v11_daytrading_research.py",
         "tests/test_orb_strategy_v11.py",
         "tests/test_capital_manager.py",
@@ -213,8 +195,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     print(f"  {len(bdays)} 영업일 · {len(day_frames[0])} 종목(첫일)", flush=True)
 
-    print("시총 캐시 (KOSPI+KOSDAQ) ...", flush=True)
-    marcap_cache = _build_marcap_cache_dual(bdays)
+    print("시총 캐시 (KOSPI+KOSDAQ · 디스크 재개 가능) ...", flush=True)
+    marcap_cache = build_marcap_cache_dual(bdays, fetch_pykrx_marcap_trade_krw_by_code)
     shares = _load_shares_fallback(end_s)
     target_universe = _universe_at_start(day_frames, bdays, start_s)
     print(f"  universe {len(target_universe):,}", flush=True)
