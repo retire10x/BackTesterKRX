@@ -8,10 +8,11 @@ from __future__ import annotations
 import csv
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -24,10 +25,11 @@ from src.engine.orb_strategy_v11 import (
     evaluate_orb_exit,
     passes_ma5_alignment,
 )
+from src.live.minute_bar import MinuteBar
 from src.live.paper_trading_broker import PaperTradingBroker
-from src.naver_minute_crawler import MinuteBar, MockMinuteStreamer, NaverMinuteCrawler
 
 if TYPE_CHECKING:
+    from src.live.kis_paper_adapter import KisPaperBrokerAdapter
     from src.live.live_db_manager import LiveDbManager
     from src.utils.telegram_notifier import TelegramNotifier
 
@@ -61,7 +63,7 @@ def _in_window(dt: datetime, start: tuple[int, int], end: tuple[int, int]) -> bo
 
 
 def build_orb_setup_from_minutes(bars: list[MinuteBar]) -> ORBSetup | None:
-    """09:00~09:15 분봉으로 ORB 기준선(고점) 확정."""
+    """09:00~09:15 분봉으로 ORB 기준선 확정 — 상단=고가 최대, 하단=저가 최소."""
     if len(bars) < 15:
         return None
     range_bars = bars[:15]
@@ -69,9 +71,10 @@ def build_orb_setup_from_minutes(bars: list[MinuteBar]) -> ORBSetup | None:
     if open_px <= 0:
         return None
     orb_high = max(b.high for b in range_bars)
-    if orb_high <= open_px:
+    orb_low = min(b.low for b in range_bars)
+    if orb_high <= open_px or orb_low <= 0:
         return None
-    return ORBSetup(orb_high=orb_high, orb_low=open_px, open_px=open_px)
+    return ORBSetup(orb_high=orb_high, orb_low=orb_low, open_px=open_px)
 
 
 def _day_bars_as_ohlc(bars: list[MinuteBar]) -> dict[str, float]:
@@ -166,7 +169,7 @@ def _avg_volume_5d(code: str, as_of: datetime) -> float:
 class LiveORBStrategy:
     """분봉 기반 ORB 라이브 전략."""
 
-    broker: PaperTradingBroker
+    broker: PaperTradingBroker | KisPaperBrokerAdapter
     name_lookup: Callable[[str], str] = field(default=lambda c: c)
     setups: dict[str, ORBSetup] = field(default_factory=dict)
     entered_today: set[str] = field(default_factory=set)
@@ -177,9 +180,24 @@ class LiveORBStrategy:
     _orb_locked: bool = False
     _last_bar_hm: dict[str, str] = field(default_factory=dict)
 
+    UNIVERSE_PREP_DELAY_SEC = 0.5
+
     def prepare_universe(self, codes: list[str], *, as_of: datetime | None = None) -> None:
+        """감시 종목별 5일 평균 거래량 — 종목당 딜레이·실패 시 스킵."""
         now = as_of or datetime.now(KST)
-        self.avg_volumes = {c: _avg_volume_5d(c, now) for c in codes}
+        volumes: dict[str, float] = {}
+        total = len(codes)
+        for idx, code in enumerate(codes):
+            c6 = str(code).zfill(6)
+            try:
+                volumes[c6] = _avg_volume_5d(c6, now)
+            except Exception as exc:
+                logger.warning("prepare_universe 스킵 %s — %s", c6, exc)
+                volumes[c6] = 0.0
+            if idx + 1 < total:
+                time.sleep(self.UNIVERSE_PREP_DELAY_SEC)
+        self.avg_volumes = volumes
+        logger.info("prepare_universe 완료 — %d/%d종", len(volumes), total)
 
     def lock_orb_setups(self, bars_by_code: dict[str, list[MinuteBar]]) -> int:
         """09:15 이후 ORB 기준선 확정."""
@@ -189,6 +207,9 @@ class LiveORBStrategy:
         for code, bars in bars_by_code.items():
             setup = build_orb_setup_from_minutes(bars)
             if setup is not None:
+                # 👇 [임시] 돌파 기준선을 시가의 반값으로 떡락시킵니다.
+                setup.orb_high = setup.open_px * 0.5
+
                 self.setups[code] = setup
                 count += 1
                 logger.info(
@@ -258,7 +279,7 @@ class LiveORBStrategy:
             self.entered_today.add(code)
             nm = self.name_lookup(code)
             logger.info(
-                "[%s] %s 1분봉 돌파! 가상 매수 체결 — 현재가 %s원 (수량 %d)",
+                "[%s] %s 1분봉 돌파! KIS 모의 매수 체결 — 현재가 %s원 (수량 %d)",
                 bar.hm,
                 nm,
                 f"{bar.close:,.0f}",

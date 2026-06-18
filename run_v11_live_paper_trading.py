@@ -43,8 +43,13 @@ from src.live.live_orb_strategy import (  # noqa: E402
     LiveORBStrategy,
     fetch_prev_day_turnover_universe,
 )
-from src.live.paper_trading_broker import PaperTradingBroker  # noqa: E402
-from src.naver_minute_crawler import MockMinuteStreamer, NaverMinuteCrawler  # noqa: E402
+from src.live.paper_trading_broker import (  # noqa: E402
+    DEFAULT_INITIAL_CASH,
+    MAX_SLOTS,
+    SLOT_BUDGET,
+    PaperTradingBroker,
+)
+from src.live.kis_minute_crawler import KisMinuteCrawler, MockMinuteStreamer  # noqa: E402
 from src.utils.telegram_notifier import TelegramNotifier  # noqa: E402
 
 KST = ZoneInfo("Asia/Seoul")
@@ -52,8 +57,11 @@ logger = logging.getLogger("V11LivePaper")
 
 STATE_REL = "config/v11_paper_state.json"
 BROKER_STATE_REL = "config/v11_paper_broker.json"
+KIS_META_REL = "config/v11_kis_position_meta.json"
+DASHBOARD_SNAPSHOT_REL = "config/v11_dashboard_snapshot.json"
 TRADES_CSV_REL = "outputs/v11_live_trades.csv"
 LEDGER_CSV_REL = "outputs/v11_live_daily_ledger.csv"
+STARTUP_SYNC_TIME = "08:50"
 
 MOCK_UNIVERSE = [
     "005930", "000660", "035420", "051910", "006400",
@@ -156,18 +164,27 @@ def _append_ledger_row(row: dict) -> None:
 
 
 class V11LivePaperRunner:
-    def __init__(self, *, mock: bool = False, mock_speed: float = 0.05):
+    def __init__(
+        self,
+        *,
+        mock: bool = False,
+        mock_speed: float = 0.05,
+        local: bool = False,
+        dry_run: bool | None = None,
+    ):
         self.mock = mock
         self.mock_speed = mock_speed
+        self.local = local
+        self.dry_run = dry_run
         self.root = Path(project_root)
         self.state_path = self.root / STATE_REL
         self.state = _load_state(self.state_path)
         self.capital_buffer = load_capital_buffer(project_root=self.root)
-        self.db = LiveDbManager(project_root=self.root)
         self.telegram = TelegramNotifier(project_root=self.root)
-        self.broker = PaperTradingBroker(
-            state_path=self.root / BROKER_STATE_REL,
-        )
+        self._purge_legacy_local_state()
+        self.db = LiveDbManager(project_root=self.root)
+        self.gateway = self._build_gateway()
+        self.broker = self._build_broker()
         self.strategy = LiveORBStrategy(
             broker=self.broker,
             name_lookup=_stock_name,
@@ -176,9 +193,100 @@ class V11LivePaperRunner:
             db_manager=self.db,
         )
         self.watch_codes: list[str] = []
-        self.crawler: NaverMinuteCrawler | MockMinuteStreamer | None = None
+        self.crawler: KisMinuteCrawler | MockMinuteStreamer | None = None
         self._running = True
         self._mock_pass = False
+
+    def _purge_legacy_local_state(self) -> None:
+        """KIS 이관 — 로컬 가상계좌·오염 DB 자동 정리 (1회)."""
+        if self.mock:
+            return
+        if self.state.get("kis_legacy_purged"):
+            return
+        targets = [
+            self.root / BROKER_STATE_REL,
+            self.root / "data" / "live_trading.db",
+        ]
+        for path in targets:
+            if path.is_file():
+                path.unlink()
+                logger.info("🗑 레거시 삭제 — %s", path.name)
+        self.state["kis_legacy_purged"] = True
+        _save_state(self.state_path, self.state)
+
+    def _build_gateway(self):
+        if self.mock:
+            return None
+
+        from dataclasses import replace
+
+        from src.live.live_account import LiveAccountGateway
+        from src.live.live_config import load_live_config
+
+        cfg = load_live_config()
+        account = replace(
+            cfg.account,
+            mode="paper",
+            bet_amount_per_slot=SLOT_BUDGET,
+            max_slots_limit=MAX_SLOTS,
+            min_slots_limit=1,
+        )
+        gateway = LiveAccountGateway(account, dry_run=self.dry_run)
+        if gateway.mode != "paper":
+            raise RuntimeError("v11 KIS 연동은 paper 모드만 허용합니다.")
+        logger.info(
+            "📡 KIS Gateway — 계좌 %s · dry_run=%s",
+            gateway.account_number,
+            gateway.dry_run,
+        )
+        return gateway
+
+    def _build_broker(self):
+        if self.mock or self.local:
+            return PaperTradingBroker(
+                state_path=None if self.mock else self.root / BROKER_STATE_REL,
+            )
+
+        from src.live.kis_paper_adapter import KisPaperBrokerAdapter
+
+        if self.gateway is None:
+            raise RuntimeError("KIS Gateway 미초기화")
+        logger.info("💰 KIS 모의투자 어댑터 — 예산 %s원", f"{DEFAULT_INITIAL_CASH:,.0f}")
+        return KisPaperBrokerAdapter(
+            gateway=self.gateway,
+            initial_capital=DEFAULT_INITIAL_CASH,
+            max_slots=MAX_SLOTS,
+            slot_budget=SLOT_BUDGET,
+            meta_path=self.root / KIS_META_REL,
+            project_root=self.root,
+        )
+
+    def _sync_kis_if_needed(self) -> None:
+        if hasattr(self.broker, "sync_positions"):
+            if self._already_done("kis_sync_date"):
+                return
+            try:
+                self.broker.sync_positions()
+            except Exception as exc:
+                logger.error("❌ KIS 동기화 실패 (무시하고 진행): %s", exc)
+                return
+            self._mark_done("kis_sync_date")
+
+    def _ensure_kis_sync_catchup(self, now: datetime) -> None:
+        if not hasattr(self.broker, "sync_positions"):
+            return
+        if self._already_done("kis_sync_date"):
+            return
+        h, m = map(int, STARTUP_SYNC_TIME.split(":"))
+        sync_at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if now >= sync_at:
+            logger.info("📡 [동기화 보정] %s 경과 · KIS 잔고 즉시 동기화", STARTUP_SYNC_TIME)
+            try:
+                self.broker.sync_positions()
+            except Exception as exc:
+                logger.error("❌ KIS 동기화 보정 실패 (무시하고 진행): %s", exc)
+                return
+            self._mark_done("kis_sync_date")
 
     def _today_key(self) -> str:
         return _now_kst().strftime("%Y-%m-%d")
@@ -240,7 +348,8 @@ class V11LivePaperRunner:
         )
         if result.cash_delta:
             self.broker.cash += result.cash_delta
-            self.broker._persist()
+            if hasattr(self.broker, "_persist"):
+                self.broker._persist()
         _append_ledger_row({
             "date": self._today_key(),
             "equity": f"{eq:,.0f}",
@@ -274,16 +383,57 @@ class V11LivePaperRunner:
         )
 
     def _record_equity_snapshot(self, sim_now: datetime | None = None) -> None:
+        now = sim_now or _now_kst()
         eq = self.broker.total_equity()
         cash = self.broker.cash
         used = max(0.0, eq - cash)
-        ts = (sim_now or _now_kst()).strftime("%Y-%m-%d %H:%M:%S")
+        ts = now.strftime("%Y-%m-%d %H:%M:%S")
         self.db.insert_equity_snapshot(
             total_equity=eq,
             safe_vault=self.capital_buffer.safe_vault,
             used_cash=used,
             timestamp=ts,
         )
+        self._persist_dashboard_snapshot(now)
+
+    def _persist_dashboard_snapshot(self, now: datetime | None = None) -> None:
+        """대시보드 SSOT — 감시 유니버스·보유 포지션 스냅샷 (매 분 갱신)."""
+        ts = (now or _now_kst()).strftime("%Y-%m-%d %H:%M:%S")
+        last_prices = getattr(self.broker, "_last_prices", {}) or {}
+        positions: list[dict] = []
+        for code, pos in self.broker.positions.items():
+            c6 = str(code).zfill(6)
+            entry = float(pos.entry_price)
+            last_px = float(last_prices.get(c6) or entry)
+            pnl_rate = (last_px - entry) / entry if entry > 0 else 0.0
+            positions.append({
+                "code": c6,
+                "name": _stock_name(c6),
+                "entry_price": entry,
+                "qty": int(pos.qty),
+                "current_price": last_px,
+                "pnl_rate": pnl_rate,
+            })
+        watch_items = [
+            {
+                "rank": idx,
+                "code": str(code).zfill(6),
+                "name": _stock_name(str(code).zfill(6)),
+                "avg_volume": float(self.strategy.avg_volumes.get(str(code).zfill(6), 0)),
+            }
+            for idx, code in enumerate(self.watch_codes, 1)
+        ]
+        payload = {
+            "updated_at": ts,
+            "watch_count": len(self.watch_codes),
+            "watch_items": watch_items,
+            "positions": positions,
+            "open_slot_count": len(positions),
+            "max_slots": getattr(self.broker, "max_slots", 4),
+            "available_cash": float(self.broker.cash),
+            "total_equity": float(self.broker.total_equity()),
+        }
+        _save_state(self.root / DASHBOARD_SNAPSHOT_REL, payload)
 
     def _process_bars(self, bars_by_code: dict[str, list], sim_now: datetime | None = None) -> None:
         now = sim_now or _now_kst()
@@ -339,6 +489,7 @@ class V11LivePaperRunner:
         self.strategy.reset_day()
         self.watch_codes = self._build_universe()
         self.strategy.prepare_universe(self.watch_codes)
+        self._persist_dashboard_snapshot()
         preview = ", ".join(_stock_name(c) for c in self.watch_codes[:3])
         self.telegram.notify_startup(watch_count=len(self.watch_codes), watch_preview=preview)
         streamer = MockMinuteStreamer(self.watch_codes, speed_sec=self.mock_speed)
@@ -386,14 +537,30 @@ class V11LivePaperRunner:
         return passed
 
     async def _live_loop_async(self) -> None:
+        self._sync_kis_if_needed()
         self.strategy.reset_day()
+
+        # 👇 [수정] 어디서 멈추는지 확인하기 위한 추적 로그 추가
+        logger.info("⏳ KRX 유니버스(코스피200) 데이터 수집 시작...")
         self.watch_codes = self._build_universe()
+        logger.info(f"✅ 유니버스 수집 완료! (총 {len(self.watch_codes)}종목)")
+
         self.strategy.prepare_universe(self.watch_codes)
-        preview = ", ".join(_stock_name(c) for c in self.watch_codes[:3])
-        self.telegram.notify_startup(watch_count=len(self.watch_codes), watch_preview=preview)
+        self._persist_dashboard_snapshot()
+        preview = ", ".join(_stock_name(c) for c in self.watch_codes[:3]) if self.watch_codes else "None"
+
+        logger.info("⏳ 텔레그램 시작 알림 전송 중...")
+        try:
+            self.telegram.notify_startup(watch_count=len(self.watch_codes), watch_preview=preview)
+            logger.info("✅ 텔레그램 알림 전송 완료!")
+        except Exception as e:
+            logger.error(f"❌ 텔레그램 전송 실패 (무시하고 진행): {e}")
+
         logger.info("📋 감시 유니버스 %d종: %s", len(self.watch_codes), ", ".join(self.watch_codes[:5]) + "...")
 
-        crawler = NaverMinuteCrawler(self.watch_codes)
+        if self.gateway is None:
+            raise RuntimeError("KIS Gateway 필요 — mock 모드가 아닌 경우 gateway가 없습니다.")
+        crawler = KisMinuteCrawler(self.watch_codes, gateway=self.gateway)
         self.crawler = crawler
         last_minute: tuple[int, int] | None = None
         last_equity_minute: tuple[int, int] | None = None
@@ -405,6 +572,7 @@ class V11LivePaperRunner:
 
         while self._running:
             now = _now_kst()
+            self._ensure_kis_sync_catchup(now)
             last_equity_minute = self._force_equity_log_if_new_minute(now, last_equity_minute)
 
             if not _is_market_hours(now):
@@ -429,10 +597,19 @@ class V11LivePaperRunner:
                 self._process_bars(bars_by_code, sim_now=now)
                 last_minute = hm
 
+                # 👇 [여기에 하트비트 로그 추가] 👇
+                logger.info(f"👀 {now.strftime('%H:%M')} 장중 감시 중... (현재 유니버스 {len(self.watch_codes)}종목 추적 중)")
+
             await asyncio.sleep(1)
 
     def run_live(self) -> None:
-        logger.info("🚀 v11.2 ORB 실시간 모의투자 시작 — 09:00~15:30 KST")
+        broker_mode = "KIS 모의투자" if hasattr(self.broker, "sync_positions") else "로컬 가상"
+        quote_mode = "KIS 분봉"
+        logger.info(
+            "🚀 v11.2 ORB 실시간 모의투자 (%s · %s) — 09:00~15:30 KST",
+            broker_mode,
+            quote_mode,
+        )
         self._wait_until_market_open()
         try:
             asyncio.run(self._live_loop_async())
@@ -445,10 +622,37 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="v11.2 ORB Live Paper Trading")
     parser.add_argument("--mock", action="store_true", help="Mock 분봉 스트리밍 검증")
     parser.add_argument("--speed", type=float, default=0.05, help="Mock 분당 지연(초). 0=즉시")
+    parser.add_argument("--local", action="store_true", help="로컬 PaperTradingBroker 사용 (KIS 미연동)")
+    parser.add_argument("--dry-run", action="store_true", help="KIS 주문 없이 시뮬 (LIVE_DRY_RUN=1)")
+    parser.add_argument("--reset", action="store_true", help="로컬 가상계좌·DB 초기화 후 종료")
     args = parser.parse_args()
 
+    if args.reset:
+        from src.live.live_db_manager import init_v11_schema
+
+        targets = [
+            Path(project_root) / "config" / "v11_paper_broker.json",
+            Path(project_root) / "config" / "v11_kis_position_meta.json",
+            Path(project_root) / "data" / "live_trading.db",
+            Path(project_root) / "data" / "live_trading.db-wal",
+            Path(project_root) / "data" / "live_trading.db-shm",
+        ]
+        for path in targets:
+            if path.exists():
+                path.unlink()
+                print(f"Deleted: {path.name}")
+        init_v11_schema(project_root=project_root)
+        print("[OK] v11 DB reset complete — live_equity · live_trades schema created.")
+        return 0
+
     _setup_logging()
-    runner = V11LivePaperRunner(mock=args.mock, mock_speed=args.speed)
+    dry = True if args.dry_run else None
+    runner = V11LivePaperRunner(
+        mock=args.mock,
+        mock_speed=args.speed,
+        local=args.local,
+        dry_run=dry,
+    )
 
     if args.mock:
         ok = runner.run_mock()

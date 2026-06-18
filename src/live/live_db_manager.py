@@ -49,13 +49,15 @@ def default_db_path(project_root: str | Path | None = None) -> Path:
 
 
 @contextmanager
-def _connect(db_path: str | Path):
+def _connect(db_path: str | Path, *, ensure_schema: bool = True):
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path), timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+        if ensure_schema:
+            conn.executescript(V11_SCHEMA)
         yield conn
         conn.commit()
     except Exception:

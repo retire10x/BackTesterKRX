@@ -18,11 +18,13 @@ import requests
 from zoneinfo import ZoneInfo
 
 from src.live.live_config import LiveAccountConfig
+from src.live.minute_bar import MinuteBar
 from src.overnight_parity import prime_project_dotenv_from_root
 
 KST = ZoneInfo("Asia/Seoul")
 KIS_BASE_REAL = "https://openapi.koreainvestment.com:9443"
 KIS_BASE_PAPER = "https://openapivts.koreainvestment.com:29443"
+KIS_HTTP_TIMEOUT = float(os.getenv("KIS_HTTP_TIMEOUT_SEC", "5"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("LiveAccount")
@@ -186,7 +188,7 @@ class LiveAccountGateway:
                 url,
                 headers={"content-type": "application/json"},
                 data=json.dumps(payload),
-                timeout=15,
+                timeout=KIS_HTTP_TIMEOUT,
             )
             if response.status_code != 200:
                 err_body = response.text
@@ -248,7 +250,27 @@ class LiveAccountGateway:
         last_err = ""
         for attempt in range(max_attempts):
             self._throttle_kis()
-            response = requests.get(url, headers=headers, params=params, timeout=15)
+            try:
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    params=params,
+                    timeout=KIS_HTTP_TIMEOUT,
+                )
+            except requests.Timeout as exc:
+                last_err = f"timeout ({KIS_HTTP_TIMEOUT}s)"
+                logger.warning("%s 타임아웃 — %s (%d/%d)", label, last_err, attempt + 1, max_attempts)
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.0 + attempt * 0.5)
+                    continue
+                raise RuntimeError(f"{label} 타임아웃") from exc
+            except requests.RequestException as exc:
+                last_err = str(exc)
+                logger.warning("%s 통신 오류 — %s (%d/%d)", label, last_err, attempt + 1, max_attempts)
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.0 + attempt * 0.5)
+                    continue
+                raise RuntimeError(f"{label} 통신 실패: {last_err}") from exc
             self._mark_kis_call()
             body = response.text
             if response.status_code == 200:
@@ -284,12 +306,27 @@ class LiveAccountGateway:
         last_err = ""
         for attempt in range(max_attempts):
             self._throttle_kis()
-            response = requests.post(
-                url,
-                headers=headers,
-                data=json.dumps(payload),
-                timeout=15,
-            )
+            try:
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    data=json.dumps(payload),
+                    timeout=KIS_HTTP_TIMEOUT,
+                )
+            except requests.Timeout as exc:
+                last_err = f"timeout ({KIS_HTTP_TIMEOUT}s)"
+                logger.warning("%s 타임아웃 — %s (%d/%d)", label, last_err, attempt + 1, max_attempts)
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.0 + attempt * 0.5)
+                    continue
+                raise RuntimeError(f"{label} 타임아웃") from exc
+            except requests.RequestException as exc:
+                last_err = str(exc)
+                logger.warning("%s 통신 오류 — %s (%d/%d)", label, last_err, attempt + 1, max_attempts)
+                if attempt + 1 < max_attempts:
+                    time.sleep(1.0 + attempt * 0.5)
+                    continue
+                raise RuntimeError(f"{label} 통신 실패: {last_err}") from exc
             self._mark_kis_call()
             body = response.text
             if response.status_code == 200:
@@ -342,6 +379,107 @@ class LiveAccountGateway:
         high = _px("stck_hgpr", max(open_px, close))
         low = _px("stck_lwpr", min(open_px, close))
         return {"open": open_px, "high": high, "low": low, "close": close}
+
+    @staticmethod
+    def _parse_kis_px(value: object, *, default: float = 0.0) -> float:
+        if value is None or value == "":
+            return default
+        try:
+            return float(str(value).replace(",", ""))
+        except ValueError:
+            return default
+
+    def fetch_today_minute_bars(
+        self,
+        symbol: str,
+        *,
+        end_dt: datetime | None = None,
+        market_open_hm: tuple[int, int] = (9, 0),
+    ) -> list[MinuteBar]:
+        """
+        KIS 주식당일분봉조회 (FHKST03010200) — 30건씩 역방향 페이지하여 09:00~현재 수집.
+        실패·dry_run 시 빈 리스트 (하드코딩 가격 없음).
+        """
+        from src.live.minute_bar import MinuteBar as MB
+
+        c6 = str(symbol).zfill(6)
+        if self.dry_run:
+            return []
+
+        cur = end_dt or datetime.now(KST)
+        if cur.tzinfo is None:
+            cur = cur.replace(tzinfo=KST)
+        market_open = cur.replace(
+            hour=market_open_hm[0],
+            minute=market_open_hm[1],
+            second=0,
+            microsecond=0,
+        )
+
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+        tr_id = "FHKST03010200"
+        hour_cursor = cur.strftime("%H%M%S")
+        collected: dict[str, MB] = {}
+
+        for _ in range(24):
+            params = {
+                "FID_ETC_CLS_CODE": "",
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": c6,
+                "FID_INPUT_HOUR_1": hour_cursor,
+                "FID_PW_DATA_INCU_YN": "Y",
+            }
+            try:
+                data = self._get_json_with_retry(
+                    url,
+                    headers=self._api_headers(tr_id),
+                    params=params,
+                    label=f"당일분봉 {c6}",
+                )
+            except Exception as exc:
+                logger.warning("당일분봉 조회 실패 %s @ %s: %s", c6, hour_cursor, exc)
+                break
+
+            rows = data.get("output2") or []
+            if not rows:
+                break
+
+            earliest_dt: datetime | None = None
+            for item in rows:
+                date_s = str(item.get("stck_bsop_date") or cur.strftime("%Y%m%d"))
+                time_s = str(item.get("stck_cntg_hour") or "").zfill(6)
+                if len(time_s) < 6:
+                    continue
+                try:
+                    dt = datetime.strptime(f"{date_s}{time_s}", "%Y%m%d%H%M%S").replace(tzinfo=KST)
+                except ValueError:
+                    continue
+
+                o = self._parse_kis_px(item.get("stck_oprc"))
+                h = self._parse_kis_px(item.get("stck_hgpr"))
+                l = self._parse_kis_px(item.get("stck_lwpr"))
+                c = self._parse_kis_px(item.get("stck_prpr") or item.get("stck_clpr"))
+                vol = int(self._parse_kis_px(item.get("cntg_vol") or item.get("acml_vol")))
+                if not all(v > 0 for v in (o, h, l, c)):
+                    continue
+
+                key = dt.strftime("%Y%m%d%H%M%S")
+                collected[key] = MB(code=c6, dt=dt, open=o, high=h, low=l, close=c, volume=vol)
+                if earliest_dt is None or dt < earliest_dt:
+                    earliest_dt = dt
+
+            if earliest_dt is None:
+                break
+            if earliest_dt <= market_open:
+                break
+
+            prev = earliest_dt - timedelta(minutes=1)
+            if prev < market_open:
+                break
+            hour_cursor = prev.strftime("%H%M%S")
+
+        bars = sorted(collected.values(), key=lambda b: b.dt)
+        return [b for b in bars if b.dt >= market_open and b.dt <= cur.replace(second=59)]
 
     @staticmethod
     def _parse_money(value: object) -> float:
@@ -750,12 +888,19 @@ class LiveAccountGateway:
             "ORD_QTY": str(sell_qty),
             "ORD_UNPR": "0",
         }
-        response = requests.post(
-            url,
-            headers=self._api_headers(tr_id),
-            data=json.dumps(payload),
-            timeout=15,
-        )
+        try:
+            response = requests.post(
+                url,
+                headers=self._api_headers(tr_id),
+                data=json.dumps(payload),
+                timeout=KIS_HTTP_TIMEOUT,
+            )
+        except requests.Timeout:
+            logger.error("❌ 매도 타임아웃 %s (%ss)", c6, KIS_HTTP_TIMEOUT)
+            return {"rt_cd": "1", "msg1": "timeout"}
+        except requests.RequestException as exc:
+            logger.error("❌ 매도 통신 실패 %s: %s", c6, exc)
+            return {"rt_cd": "1", "msg1": str(exc)}
         if response.status_code != 200:
             logger.error("❌ 매도 실패: %s", response.text)
             return False
